@@ -46,11 +46,15 @@ class FailureClassifier:
 
     @staticmethod
     def repairable(reports: Sequence[FailureReport]) -> list[FailureReport]:
-        return [
-            report
-            for report in reports
-            if report.retryable and report.failure_type in _REPAIRABLE_FAILURES
-        ]
+        normalized = list(reports)
+        if not normalized:
+            return []
+        if any(
+            not report.retryable or report.failure_type not in _REPAIRABLE_FAILURES
+            for report in normalized
+        ):
+            return []
+        return normalized
 
     @staticmethod
     def terminalize(
