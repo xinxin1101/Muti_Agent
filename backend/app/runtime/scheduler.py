@@ -129,8 +129,8 @@ class DAGScheduler:
                 invalid.append(f"{task_id}={state.value}")
         if invalid:
             raise RuntimeError(
-                "scheduler invariant violation: failed dependency would block active/terminal tasks: "
-                + ", ".join(invalid)
+                "scheduler invariant violation: failed dependency would block "
+                "active/terminal tasks: " + ", ".join(invalid)
             )
 
     def _require_task(self, task_id: str) -> TaskScheduleState:
