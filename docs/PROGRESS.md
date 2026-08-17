@@ -5,9 +5,9 @@ This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The developmen
 ## Current position
 
 - Phase: **Phase 1 — V0.1 Single Task Evidence Loop**
-- Completed step: **Step 1.3 — SiliconFlow provider**
-- Next step: **Step 1.4 — Planner structured output**
-- Step 1.4 status: **NOT STARTED**
+- Completed step: **Step 1.4 — Planner structured output**
+- Next step: **Step 1.5 — Workspace and Git scope enforcement**
+- Step 1.5 status: **NOT STARTED**
 
 ## Step 1.1 — ACCEPTED
 
@@ -79,6 +79,34 @@ Acceptance evidence:
 - CI made **no real SiliconFlow API call** and required no paid API key.
 - No Planner behavior, workspace/Git tooling, or Agent execution loop was introduced early.
 
-## Gate before Step 1.4
+## Step 1.4 — ACCEPTED
 
-Step 1.4 may implement only Planner behavior: the Planner prompt contract, structured `TaskContract` output, Pydantic parsing, and bounded schema-repair retry. It may call the provider through `AgentDriver`, but must not introduce workspace/Git tooling (Step 1.5), Developer tools (Step 1.6), verification execution (Step 1.7), or later orchestration prematurely.
+Merged through PR #4: `Phase 1 Step 1.4: add Planner structured output gate`.
+
+Delivered:
+
+- `PlannerAgent` implementing the first real Agent behavior in DevFlow.
+- Natural-language development requirement to one V0.1 `TaskContract` conversion through the provider-neutral `AgentDriver`.
+- Planner system prompt generated against the current Pydantic `TaskContract` JSON Schema.
+- Strict JSON-only machine output; Markdown fences, prose, missing fields, invalid scopes, and extra keys cannot bypass Pydantic validation.
+- Optional caller-supplied repository context without repository or Git access inside the Planner.
+- Bounded schema-repair retry with a configurable 0–3 attempt budget and default of one repair attempt.
+- Schema repair receives the previous invalid output plus Pydantic validation evidence and runs at temperature `0.0`.
+- `InvalidPlannerOutputError` carrying a normalized `FailureReport(INVALID_AGENT_OUTPUT)` when the schema-repair budget is exhausted.
+- Defensive clipping of invalid-output and validation-error evidence before it is placed into repair prompts/failure evidence.
+- Explicit Ruff first-party package configuration for the flat `backend/app` layout.
+- Unit tests covering first-pass success, successful repair, exhausted repair budget, zero repair budget, empty requirement rejection, caller-supplied repository context, provider-error propagation, and bounded Planner configuration.
+
+Acceptance evidence:
+
+- Strict `ruff check .`: **PASS**.
+- `pytest`: **43 passed in 0.84s**.
+- GitHub Actions `Backend Quality`: **SUCCESS**.
+- Invalid Planner output cannot escape as a `TaskContract`; it is either repaired within the configured budget or converted to terminal `INVALID_AGENT_OUTPUT` evidence.
+- Provider failures propagate separately from schema-validation failures.
+- CI made **no real SiliconFlow API call** and required no paid API key.
+- No repository clone/read/write, Git tooling, Developer loop, target-repository verification, Reviewer behavior, or orchestration was introduced early.
+
+## Gate before Step 1.5
+
+Step 1.5 may implement only the local repository/workspace safety boundary needed before a Developer Agent can edit code: workspace-path containment, repository-relative path resolution, changed-file collection from Git, glob-based writable/read-only scope matching, and golden-test/read-only tamper detection with unit/integration tests against temporary local Git repositories. It must not implement the Developer model/tool loop (Step 1.6), execute target-project verification commands (Step 1.7), add Reviewer/Repair behavior, introduce multi-task worktrees/DAG scheduling, or add Redis/Docker/frontend features prematurely.
