@@ -5,9 +5,9 @@ This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The developmen
 ## Current position
 
 - Phase: **Phase 1 — V0.1 Single Task Evidence Loop**
-- Completed step: **Step 1.2 — Core schemas**
-- Next step: **Step 1.3 — SiliconFlow provider**
-- Step 1.3 status: **NOT STARTED**
+- Completed step: **Step 1.3 — SiliconFlow provider**
+- Next step: **Step 1.4 — Planner structured output**
+- Step 1.4 status: **NOT STARTED**
 
 ## Step 1.1 — ACCEPTED
 
@@ -54,6 +54,31 @@ Acceptance evidence:
 - Invalid scope and inconsistent review/verification payloads are rejected by Pydantic validation.
 - No SiliconFlow API call, Planner behavior, workspace implementation, or execution loop was introduced early.
 
-## Gate before Step 1.3
+## Step 1.3 — ACCEPTED
 
-Step 1.3 may implement only the provider boundary: `AgentDriver`, `SiliconFlowDriver`, provider error normalization, timeout handling, usage/latency capture, role-to-model configuration, and fake-client tests. It must not implement Planner behavior (Step 1.4), workspace/Git tooling (Step 1.5), or later runtime loops prematurely.
+Merged through PR #3: `Phase 1 Step 1.3: add SiliconFlow provider boundary`.
+
+Delivered:
+
+- Provider-neutral `AgentDriver` protocol.
+- `SiliconFlowDriver` backed by the OpenAI-compatible async client.
+- Configurable SiliconFlow base URL, timeout, SDK retry count, and API key loading.
+- Role-to-model configuration for Planner, Developer, Reviewer, and Repair roles.
+- Runtime-stable provider error codes for timeout, rate limit, authentication, permission, bad request, connection, service unavailable, and unknown failures.
+- Mapping from provider failures into the existing `FailureReport` taxonomy.
+- Normalized response content, model, finish reason, token usage, and latency metadata.
+- Fake-client tests covering success, missing usage, empty choices, timeout, 429, 401, and 503 behavior.
+- `.env.example` documentation for provider/model settings without committing a real key.
+
+Acceptance evidence:
+
+- OpenAI-compatible SDK installation: **PASS** (`openai 2.54.0` in CI).
+- `ruff check .`: **PASS** after correcting the single `SIM108` lint finding.
+- `pytest`: **31 passed**.
+- GitHub Actions `Backend Quality`: **SUCCESS**.
+- CI made **no real SiliconFlow API call** and required no paid API key.
+- No Planner behavior, workspace/Git tooling, or Agent execution loop was introduced early.
+
+## Gate before Step 1.4
+
+Step 1.4 may implement only Planner behavior: the Planner prompt contract, structured `TaskContract` output, Pydantic parsing, and bounded schema-repair retry. It may call the provider through `AgentDriver`, but must not introduce workspace/Git tooling (Step 1.5), Developer tools (Step 1.6), verification execution (Step 1.7), or later orchestration prematurely.
