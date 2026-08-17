@@ -13,10 +13,19 @@ class Settings(BaseSettings):
     environment: Literal["development", "test", "production"] = "development"
     log_level: str = "INFO"
     workspace_root: Path = Path(".devflow/workspaces")
+
     siliconflow_api_key: SecretStr | None = Field(
         default=None,
         validation_alias="SILICONFLOW_API_KEY",
     )
+    siliconflow_base_url: str = "https://api.siliconflow.cn/v1"
+    siliconflow_timeout_seconds: float = Field(default=60.0, gt=0.0, le=600.0)
+    siliconflow_max_retries: int = Field(default=0, ge=0, le=5)
+
+    planner_model: str = "Pro/zai-org/GLM-4.7"
+    developer_model: str = "deepseek-ai/DeepSeek-V3.2"
+    reviewer_model: str = "Pro/zai-org/GLM-4.7"
+    repair_model: str = "deepseek-ai/DeepSeek-V3.2"
 
     model_config = SettingsConfigDict(
         env_file=".env",
