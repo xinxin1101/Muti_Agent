@@ -3,8 +3,7 @@ import json
 
 import pytest
 
-from app.agents import InvalidPlannerOutputError, PlannerAgent
-from app.models import AgentRequest, AgentResponse, AgentRole, FailureSource, FailureType
+from app import agents, models
 
 
 VALID_TASK = {
@@ -23,11 +22,11 @@ VALID_TASK = {
 
 
 class FakeDriver:
-    def __init__(self, responses: list[AgentResponse | Exception]) -> None:
+    def __init__(self, responses: list[models.AgentResponse | Exception]) -> None:
         self._responses = list(responses)
-        self.requests: list[AgentRequest] = []
+        self.requests: list[models.AgentRequest] = []
 
-    async def complete(self, request: AgentRequest) -> AgentResponse:
+    async def complete(self, request: models.AgentRequest) -> models.AgentResponse:
         self.requests.append(request)
         if not self._responses:
             raise AssertionError("FakeDriver received more calls than expected")
@@ -38,8 +37,8 @@ class FakeDriver:
         return result
 
 
-def _response(content: str) -> AgentResponse:
-    return AgentResponse(
+def _response(content: str) -> models.AgentResponse:
+    return models.AgentResponse(
         model="test/planner",
         content=content,
         latency_ms=5,
@@ -49,14 +48,14 @@ def _response(content: str) -> AgentResponse:
 
 def test_planner_returns_valid_task_contract_without_repair() -> None:
     driver = FakeDriver([_response(json.dumps(VALID_TASK))])
-    planner = PlannerAgent(driver=driver, model="test/planner")
+    planner = agents.PlannerAgent(driver=driver, model="test/planner")
 
     task = asyncio.run(planner.plan("Add JWT login support to the FastAPI application."))
 
     assert task.task_id == "AUTH-001"
     assert task.writable_files == ["app/auth/**"]
     assert len(driver.requests) == 1
-    assert driver.requests[0].role is AgentRole.PLANNER
+    assert driver.requests[0].role is models.AgentRole.PLANNER
     assert driver.requests[0].model == "test/planner"
     assert driver.requests[0].messages[0].role.value == "system"
     assert "TaskContract JSON Schema" in driver.requests[0].messages[0].content
@@ -70,7 +69,7 @@ def test_planner_repairs_invalid_output_once() -> None:
             _response(json.dumps(VALID_TASK)),
         ]
     )
-    planner = PlannerAgent(
+    planner = agents.PlannerAgent(
         driver=driver,
         model="test/planner",
         max_schema_repair_attempts=1,
@@ -93,18 +92,18 @@ def test_planner_rejects_output_after_schema_repair_budget_is_exhausted() -> Non
             _response(json.dumps({"task_id": "still-invalid"})),
         ]
     )
-    planner = PlannerAgent(
+    planner = agents.PlannerAgent(
         driver=driver,
         model="test/planner",
         max_schema_repair_attempts=1,
     )
 
-    with pytest.raises(InvalidPlannerOutputError) as exc_info:
+    with pytest.raises(agents.InvalidPlannerOutputError) as exc_info:
         asyncio.run(planner.plan("Add JWT login support."))
 
     failure = exc_info.value.failure
-    assert failure.failure_type is FailureType.INVALID_AGENT_OUTPUT
-    assert failure.source is FailureSource.RUNTIME
+    assert failure.failure_type is models.FailureType.INVALID_AGENT_OUTPUT
+    assert failure.source is models.FailureSource.RUNTIME
     assert failure.retryable is False
     assert "schema-repair" in failure.message
     assert len(driver.requests) == 2
@@ -112,13 +111,13 @@ def test_planner_rejects_output_after_schema_repair_budget_is_exhausted() -> Non
 
 def test_planner_does_not_repair_when_budget_is_zero() -> None:
     driver = FakeDriver([_response("```json\n{}\n```")])
-    planner = PlannerAgent(
+    planner = agents.PlannerAgent(
         driver=driver,
         model="test/planner",
         max_schema_repair_attempts=0,
     )
 
-    with pytest.raises(InvalidPlannerOutputError):
+    with pytest.raises(agents.InvalidPlannerOutputError):
         asyncio.run(planner.plan("Create one implementation task."))
 
     assert len(driver.requests) == 1
@@ -126,7 +125,7 @@ def test_planner_does_not_repair_when_budget_is_zero() -> None:
 
 def test_planner_rejects_empty_requirement_before_calling_driver() -> None:
     driver = FakeDriver([])
-    planner = PlannerAgent(driver=driver, model="test/planner")
+    planner = agents.PlannerAgent(driver=driver, model="test/planner")
 
     with pytest.raises(ValueError, match="requirement must not be empty"):
         asyncio.run(planner.plan("   "))
@@ -136,7 +135,7 @@ def test_planner_rejects_empty_requirement_before_calling_driver() -> None:
 
 def test_planner_includes_caller_supplied_repository_context_without_fetching_it() -> None:
     driver = FakeDriver([_response(json.dumps(VALID_TASK))])
-    planner = PlannerAgent(driver=driver, model="test/planner")
+    planner = agents.PlannerAgent(driver=driver, model="test/planner")
 
     asyncio.run(
         planner.plan(
@@ -153,7 +152,7 @@ def test_planner_includes_caller_supplied_repository_context_without_fetching_it
 def test_planner_propagates_provider_failure_without_treating_it_as_schema_error() -> None:
     provider_failure = RuntimeError("provider unavailable")
     driver = FakeDriver([provider_failure])
-    planner = PlannerAgent(driver=driver, model="test/planner")
+    planner = agents.PlannerAgent(driver=driver, model="test/planner")
 
     with pytest.raises(RuntimeError, match="provider unavailable"):
         asyncio.run(planner.plan("Add JWT login support."))
@@ -178,7 +177,7 @@ def test_planner_configuration_is_bounded(
     message: str,
 ) -> None:
     with pytest.raises(ValueError, match=message):
-        PlannerAgent(
+        agents.PlannerAgent(
             driver=FakeDriver([]),
             model=model,
             max_schema_repair_attempts=repair_attempts,
