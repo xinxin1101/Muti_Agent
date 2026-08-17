@@ -5,7 +5,6 @@ import pytest
 
 from app import agents, models
 
-
 VALID_TASK = {
     "task_id": "AUTH-001",
     "objective": "Add JWT login support to the FastAPI application.",
