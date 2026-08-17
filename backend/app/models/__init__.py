@@ -17,6 +17,12 @@ from app.models.review import (
     ReviewSeverity,
 )
 from app.models.run import AgentUsageSummary, RunEvent, SingleTaskRunResult, TaskRunState
+from app.models.scheduler import (
+    SchedulerEvent,
+    SchedulerSnapshot,
+    TaskScheduleRecord,
+    TaskScheduleState,
+)
 from app.models.task import TaskContract
 from app.models.tools import (
     ToolCall,
@@ -47,11 +53,15 @@ __all__ = [
     "ReviewOutcome",
     "ReviewSeverity",
     "RunEvent",
+    "SchedulerEvent",
+    "SchedulerSnapshot",
     "SingleTaskRunResult",
     "TaskContract",
     "TaskDAG",
     "TaskNode",
     "TaskRunState",
+    "TaskScheduleRecord",
+    "TaskScheduleState",
     "TokenUsage",
     "ToolCall",
     "ToolDefinition",
