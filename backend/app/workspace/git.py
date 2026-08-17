@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
-from typing import Sequence
 
 
 class WorkspaceGitError(RuntimeError):
@@ -71,6 +71,10 @@ class LocalGitWorkspace:
         result = self._git(["rev-parse", "--is-inside-work-tree"], check=False)
         if result.strip() != "true":
             raise WorkspaceGitError("workspace root is not inside a Git working tree")
+
+        top_level = self._git(["rev-parse", "--show-toplevel"], check=False).strip()
+        if not top_level or Path(top_level).resolve() != self._root:
+            raise WorkspaceGitError("workspace root must be the Git repository top level")
 
     def _assert_head(self) -> None:
         result = self._git(["rev-parse", "--verify", "HEAD"], check=False)
