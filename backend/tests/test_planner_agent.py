@@ -3,7 +3,8 @@ import json
 
 import pytest
 
-from app.agents import InvalidPlannerOutputError, PlannerAgent
+from app.agents.errors import InvalidPlannerOutputError
+from app.agents.planner import PlannerAgent
 from app.models.agent import AgentRequest, AgentResponse, AgentRole, MessageRole
 from app.models.failure import FailureSource, FailureType
 
