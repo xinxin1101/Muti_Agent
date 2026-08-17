@@ -15,6 +15,7 @@ from app.models.review import (
     ReviewOutcome,
     ReviewSeverity,
 )
+from app.models.run import AgentUsageSummary, RunEvent, SingleTaskRunResult, TaskRunState
 from app.models.task import TaskContract
 from app.models.tools import (
     ToolCall,
@@ -29,6 +30,7 @@ __all__ = [
     "AgentRequest",
     "AgentResponse",
     "AgentRole",
+    "AgentUsageSummary",
     "CheckResult",
     "CheckType",
     "DeveloperRunResult",
@@ -43,7 +45,10 @@ __all__ = [
     "ReviewIssue",
     "ReviewOutcome",
     "ReviewSeverity",
+    "RunEvent",
+    "SingleTaskRunResult",
     "TaskContract",
+    "TaskRunState",
     "TokenUsage",
     "ToolCall",
     "ToolDefinition",
