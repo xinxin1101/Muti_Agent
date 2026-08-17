@@ -5,8 +5,8 @@ This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The developmen
 ## Current position
 
 - Current phase: **Phase 2 — V0.2 True Multi-Agent Runtime**
-- Completed item: **Step 2.4 — Parallel Worker Execution**
-- Next item: **Step 2.5 — Topological Merge Queue**
+- Completed item: **Step 2.5 — Topological Merge Queue**
+- Next item: **Step 2.6 — Merge Conflict Classification**
 - Phase 2 status: **IN PROGRESS**
 - V0.1 status: **ACCEPTED / COMPLETE**
 
@@ -187,40 +187,88 @@ Parallel execution acceptance evidence:
 - All accepted V0.1 and Phase 2 Step 2.1–2.3 tests remained green.
 - No topological merge queue, dependency integration implementation, merge-conflict classification, Redis/Dramatiq, or Docker behavior was introduced prematurely.
 
-## Gate before Step 2.5 — Topological Merge Queue
+## Step 2.5 — Topological Merge Queue — ACCEPTED
 
-Step 2.5 may now integrate committed successful task branches in deterministic DAG/topological order and produce trusted descendant integration commits for later dependent worker waves.
+Merged through PR #15: `Phase 2 Step 2.5: add topological merge queue`.
+
+Delivered:
+
+- Added `TopologicalMergeQueue` with one explicit `refs/devflow/integration/<integration_id>` head rooted at the frozen run base.
+- Successful `WorkerTaskResult` evidence is validated at queue admission and revalidated immediately before each individual integration, closing the branch-movement TOCTOU window.
+- Validation covers scheduler `SUCCEEDED`, manager-owned worktree identity, exact task branch, exact current branch head, full task/base commit ids, and exact single-parent task history.
+- Caller result order is ignored for integration order; candidates are sorted by the validated DAG's deterministic topological order.
+- A globally earlier topological task must already be integrated or become `FAILED/BLOCKED` before a later successful task may advance the integration head.
+- Declared dependencies must already be integrated before a dependent task is eligible.
+- Integration is object-level: `git merge-tree --write-tree` computes the merged tree, `git commit-tree` creates an auditable two-parent integration commit, and compare-and-swap `git update-ref <ref> <new> <old>` advances only the expected integration head.
+- The base repository working tree and index are never used as a merge workspace and remain clean.
+- Each integration commit preserves the previous integration head as first parent and the exact worker task commit as second parent, with structured DevFlow task/branch/base/commit metadata.
+- Existing integration history can be recovered from Git evidence. Recovery replays first-parent history, revalidates ordering/dependencies/parents/task bases, recomputes `merge-tree`, and requires each stored integration commit tree to equal the deterministic merged tree.
+- Forged history with plausible parents/metadata but the wrong tree therefore fails closed.
+- `base_commit_for(task_id)` exposes the trusted current integration head only for a scheduler-`READY` dependent task whose dependencies are already integrated, satisfying the downstream-base handoff introduced in Step 2.4.
+- A real merge conflict does not advance the integration ref. It creates a separate `refs/devflow/integration-conflicts/<integration_id>` conflict marker rooted at the last successful integration head and records coarse `MERGE_CONFLICT` evidence.
+- Conflict state is recoverable after queue reconstruction: marker parent/tree/metadata/task history are validated and `merge-tree` is rerun; only a reproducible conflict restores terminal `stopped=True`.
+- External movement of either the integration ref or a worker task branch fails closed rather than being overwritten.
+- Added immutable `MergeQueueAttempt` and `MergeQueueSnapshot` evidence models.
+
+Topological integration acceptance evidence:
+
+- Reverse worker-result input integrates in deterministic DAG order.
+- Higher-topological successful tasks cannot jump ahead of an earlier unresolved or successful-but-unintegrated task.
+- A dependency chain can integrate its parent, hand the resulting integration commit to the downstream worker as trusted base, and later integrate the downstream task result.
+- Existing successful integration history recovers and rejects duplicate integration.
+- A forged two-parent integration commit with correct-looking metadata but an incorrect tree is rejected on recovery.
+- Task branch movement is detected before integration-ref advancement.
+- A dedicated TOCTOU test moves TASK-B's branch after batch prevalidation but before TASK-B integration; immediate evidence revalidation rejects it while preserving only TASK-A's completed integration.
+- A real same-line conflict integrates TASK-A, refuses TASK-B, preserves the last successful integration head, emits `MERGE_CONFLICT`, creates a conflict marker, and keeps the base working tree clean.
+- Reconstructing the queue from those Git refs restores TASK-A as integrated plus TASK-B as terminal conflict and still refuses further integration.
+- External integration-ref movement is detected.
+- Object-level integration does not invoke normal `post-commit` hooks.
+- Invalid integration ids fail before unsafe refs are created.
+- Initial CI candidate was stopped by Ruff before pytest; only static formatting was changed.
+- First behavior-complete candidate: `ruff check .` **PASS**, `pytest` **174 passed**.
+- Recovery hardening then added deterministic tree recomputation and durable conflict markers; a single Ruff line was fixed before behavior tests could run.
+- Hardened recovery candidate: **175 passed**.
+- Final TOCTOU revalidation regression increased the suite to **176 tests**.
+- Final `ruff check .`: **PASS**.
+- Final `pytest`: **176 passed in 11.12s**.
+- GitHub Actions `Backend Quality`: **SUCCESS**.
+- Tests use real Git linked worktrees, refs, `merge-tree`, `commit-tree`, and `update-ref`; merge behavior is not mocked.
+- All accepted V0.1 and Phase 2 Step 2.1–2.4 tests remained green.
+- No LLM conflict resolution, rich conflict diagnosis/repair, Integration/Human Gate policy, Redis/Dramatiq, or Docker behavior was introduced prematurely.
+
+## Gate before Step 2.6 — Merge Conflict Classification
+
+Step 2.6 may now turn the coarse, recoverable `MERGE_CONFLICT` evidence produced by Step 2.5 into structured conflict diagnostics without weakening the fail-closed integration boundary.
 
 Required direction:
 
 ```text
-successful WorkerTaskResult(s)
-      ↓
-committed task branches
-      ↓
 Topological Merge Queue
       ↓
-current integration commit
+git merge-tree exit 1
       ↓
-validate task branch / expected task commit
+recoverable conflict marker
       ↓
-integrate eligible task branch
+Merge Conflict Classifier
       ↓
-new integration commit
+structured conflict evidence
+      ├── conflicting paths
+      ├── conflict stages/types
+      ├── integration head
+      ├── task commit
+      └── bounded raw Git evidence
       ↓
-task_base_resolver for newly READY dependents
+explicit conflict outcome
 ```
 
-Step 2.5 should establish:
+Step 2.6 should establish:
 
-- one explicit integration head/base owned by the merge queue rather than advancing worker task branches or trusting the base working tree implicitly;
-- deterministic merge eligibility/order derived from the validated DAG and successful worker evidence;
-- only scheduler-`SUCCEEDED` tasks with an exact expected finalized task-branch commit may enter the queue;
-- task branch identity and commit ancestry must be revalidated immediately before integration;
-- an already-integrated task must not be merged twice;
-- integration must preserve committed task-branch evidence rather than deleting or rewriting worker history;
-- each successful integration must produce an inspectable descendant commit that can be passed to Step 2.4 as the base for newly READY dependent tasks;
-- the base repository working tree must remain clean and integration state must be deterministic/recoverable from Git evidence;
-- merge/integration failure must stop safely without pretending the task was integrated.
+- deterministic parsing/classification of real Git conflict evidence rather than asking an LLM whether a merge conflicted;
+- structured conflict paths and machine-readable conflict categories where Git evidence supports them;
+- preservation of the exact integration head, task commit, conflict marker, and bounded raw evidence needed for later handling;
+- malformed, incomplete, or contradictory conflict evidence must fail closed rather than silently classifying as resolved;
+- conflict classification must not advance the integration ref or mutate the base working tree;
+- recovered conflicts must classify consistently with the original conflict evidence;
+- the output must be suitable for a later repair/human decision layer without itself authorizing code modification or conflict resolution.
 
-Step 2.5 must **not** add rich merge-conflict diagnosis/repair policy; detailed `MERGE_CONFLICT` classification belongs to Step 2.6. It must also not add Redis/Dramatiq persistence, Docker sandboxing, or the final Integration/Human Gate strategy.
+Step 2.6 must **not** automatically resolve conflicts, ask an LLM to write merge resolutions, delete conflict markers, or implement the final Integration/Human Gate policy. Those decisions remain explicitly gated for Step 2.7 or a later repair policy.
