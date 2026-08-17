@@ -45,7 +45,7 @@ class _RegisteredWorktree:
 
 
 class TaskWorktreeManager:
-    """Create and safely remove one isolated Git linked worktree per task."""
+    """Create, finalize, and safely remove one isolated Git linked worktree per task."""
 
     def __init__(
         self,
@@ -173,6 +173,76 @@ class TaskWorktreeManager:
             record.path,
             git_timeout_seconds=self._git_timeout_seconds,
         )
+
+    def commit_task_changes(self, task_id: str) -> str:
+        """Commit one successful task without invoking repository-controlled Git hooks."""
+
+        record = self.record_for(task_id)
+        entry = self._find_registered_path(record.path, self._registered_worktrees())
+        if entry is None:
+            raise TaskWorktreeError(f"task worktree is not registered: {record.task_id}")
+        self._assert_owned_registration(record, entry)
+        if not record.path.exists() or entry.prunable_reason is not None:
+            raise StaleTaskWorktreeError(
+                f"cannot finalize stale task worktree registration: {record.task_id}"
+            )
+
+        workspace = LocalGitWorkspace(
+            record.path,
+            git_timeout_seconds=self._git_timeout_seconds,
+        )
+        changed = workspace.changed_files()
+        if not changed:
+            raise TaskWorktreeError("successful task worktree has no changes to commit")
+
+        current_branch = self._git_at(
+            record.path,
+            ["symbolic-ref", "--quiet", "--short", "HEAD"],
+        ).stdout.strip()
+        if current_branch != record.branch_name:
+            raise TaskWorktreeCollisionError(
+                "task worktree changed branches before successful finalization"
+            )
+
+        parent = self._git_at(
+            record.path,
+            ["rev-parse", "--verify", "HEAD^{commit}"],
+        ).stdout.strip()
+        self._git_at(record.path, ["add", "--all"])
+        tree = self._git_at(record.path, ["write-tree"]).stdout.strip()
+        commit = self._git_at(
+            record.path,
+            [
+                "commit-tree",
+                tree,
+                "-p",
+                parent,
+                "-m",
+                f"DevFlow task {record.task_id}",
+            ],
+        ).stdout.strip()
+        if _COMMIT_PATTERN.fullmatch(commit) is None:
+            raise TaskWorktreeError("Git did not return a full task commit id")
+
+        self._git_at(
+            record.path,
+            [
+                "update-ref",
+                f"refs/heads/{record.branch_name}",
+                commit,
+                parent,
+            ],
+        )
+        if workspace.changed_files():
+            raise TaskWorktreeError("task worktree must be clean after successful finalization")
+
+        branch_head = self._git_at(
+            record.path,
+            ["rev-parse", "--verify", f"refs/heads/{record.branch_name}^{{commit}}"],
+        ).stdout.strip()
+        if branch_head != commit:
+            raise TaskWorktreeError("task branch does not point at the finalized task commit")
+        return commit
 
     def remove(self, task_id: str, *, force: bool = False) -> bool:
         """Remove one manager-owned linked worktree while deliberately preserving its branch."""
