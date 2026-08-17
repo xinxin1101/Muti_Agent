@@ -288,7 +288,10 @@ class SingleTaskOrchestrator:
                 workspace=workspace,
             )
         except RepairBudgetExhaustedError as exc:
-            machine.transition(TaskRunState.FAILED, detail="Repair Agent rejected exhausted budget.")
+            machine.transition(
+                TaskRunState.FAILED,
+                detail="Repair Agent rejected exhausted budget.",
+            )
             return self._result(
                 task=task,
                 machine=machine,
