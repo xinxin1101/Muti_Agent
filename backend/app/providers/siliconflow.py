@@ -82,7 +82,9 @@ class SiliconFlowDriver:
         choice = choices[0]
         message = getattr(choice, "message", None)
         if message is None:
-            raise self._malformed_response("Provider response did not contain a completion message.")
+            raise self._malformed_response(
+                "Provider response did not contain a completion message."
+            )
 
         content = getattr(message, "content", None) or ""
         tool_calls = self._normalize_tool_calls(getattr(message, "tool_calls", None))
