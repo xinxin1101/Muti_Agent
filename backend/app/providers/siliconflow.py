@@ -5,7 +5,8 @@ from openai import AsyncOpenAI
 from pydantic import SecretStr
 
 from app.core.settings import Settings
-from app.models.agent import AgentRequest, AgentResponse, TokenUsage
+from app.models.agent import AgentMessage, AgentRequest, AgentResponse, MessageRole, TokenUsage
+from app.models.tools import ToolCall, ToolDefinition
 from app.providers.errors import AgentProviderError, ProviderErrorCode, normalize_provider_error
 
 
@@ -59,43 +60,106 @@ class SiliconFlowDriver:
 
     async def complete(self, request: AgentRequest) -> AgentResponse:
         started_at = perf_counter()
+        payload: dict[str, Any] = {
+            "model": request.model,
+            "messages": [self._serialize_message(message) for message in request.messages],
+            "temperature": request.temperature,
+            "stream": False,
+        }
+        if request.tools:
+            payload["tools"] = [self._serialize_tool(tool) for tool in request.tools]
 
         try:
-            completion = await self._client.chat.completions.create(
-                model=request.model,
-                messages=[
-                    {"role": message.role.value, "content": message.content}
-                    for message in request.messages
-                ],
-                temperature=request.temperature,
-                stream=False,
-            )
+            completion = await self._client.chat.completions.create(**payload)
         except Exception as exc:
             raise normalize_provider_error(exc, provider=self.provider_name) from exc
 
         latency_ms = max(0, int((perf_counter() - started_at) * 1000))
         choices = getattr(completion, "choices", None)
         if not choices:
-            raise AgentProviderError(
-                provider=self.provider_name,
-                code=ProviderErrorCode.UNKNOWN,
-                message="Provider response did not contain a completion choice.",
-                retryable=False,
-            )
+            raise self._malformed_response("Provider response did not contain a completion choice.")
 
         choice = choices[0]
         message = getattr(choice, "message", None)
-        content = getattr(message, "content", None) if message is not None else None
+        if message is None:
+            raise self._malformed_response(
+                "Provider response did not contain a completion message."
+            )
+
+        content = getattr(message, "content", None) or ""
+        tool_calls = self._normalize_tool_calls(getattr(message, "tool_calls", None))
+        if not content and not tool_calls:
+            raise self._malformed_response(
+                "Provider response contained neither assistant content nor tool calls."
+            )
 
         usage = self._normalize_usage(getattr(completion, "usage", None))
         response_model = getattr(completion, "model", None) or request.model
 
         return AgentResponse(
             model=str(response_model),
-            content=content or "",
+            content=content,
+            tool_calls=tool_calls,
             usage=usage,
             latency_ms=latency_ms,
             finish_reason=getattr(choice, "finish_reason", None),
+        )
+
+    @staticmethod
+    def _serialize_message(message: AgentMessage) -> dict[str, Any]:
+        payload: dict[str, Any] = {"role": message.role.value, "content": message.content}
+
+        if message.role is MessageRole.ASSISTANT and message.tool_calls:
+            payload["content"] = message.content or None
+            payload["tool_calls"] = [
+                {
+                    "id": call.id,
+                    "type": "function",
+                    "function": {"name": call.name, "arguments": call.arguments},
+                }
+                for call in message.tool_calls
+            ]
+        elif message.role is MessageRole.TOOL:
+            payload["tool_call_id"] = message.tool_call_id
+
+        return payload
+
+    @staticmethod
+    def _serialize_tool(tool: ToolDefinition) -> dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.parameters,
+            },
+        }
+
+    @classmethod
+    def _normalize_tool_calls(cls, raw_calls: Any | None) -> list[ToolCall]:
+        if not raw_calls:
+            return []
+
+        normalized: list[ToolCall] = []
+        for raw_call in raw_calls:
+            function = getattr(raw_call, "function", None)
+            call_id = getattr(raw_call, "id", None)
+            name = getattr(function, "name", None) if function is not None else None
+            arguments = getattr(function, "arguments", None) if function is not None else None
+            if not call_id or not name or arguments is None:
+                raise cls._malformed_response("Provider returned a malformed function tool call.")
+            normalized.append(
+                ToolCall(id=str(call_id), name=str(name), arguments=str(arguments))
+            )
+        return normalized
+
+    @staticmethod
+    def _malformed_response(message: str) -> AgentProviderError:
+        return AgentProviderError(
+            provider=SiliconFlowDriver.provider_name,
+            code=ProviderErrorCode.UNKNOWN,
+            message=message,
+            retryable=False,
         )
 
     @staticmethod
