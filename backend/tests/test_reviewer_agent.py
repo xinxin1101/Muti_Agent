@@ -192,7 +192,9 @@ def test_reviewer_can_reject_semantic_bug_after_hard_checks_pass(tmp_path: Path)
                         "issues": [
                             {
                                 "severity": "high",
-                                "message": "verify_token always returns true, accepting invalid tokens.",
+                                "message": (
+                                    "verify_token always returns true, accepting invalid tokens."
+                                ),
                                 "file": "auth.py",
                                 "line": 2,
                             }
