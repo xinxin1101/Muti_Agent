@@ -35,6 +35,7 @@ class ParallelWorkerCoordinator:
         worktrees: TaskWorktreeManager,
         runner_factory: Callable[[TaskContract], SingleTaskRunner],
         max_concurrency: int = 2,
+        task_base_resolver: Callable[[str], str | None] | None = None,
     ) -> None:
         if max_concurrency < 1:
             raise ValueError("max_concurrency must be at least one")
@@ -42,6 +43,8 @@ class ParallelWorkerCoordinator:
         self._worktrees = worktrees
         self._runner_factory = runner_factory
         self._max_concurrency = max_concurrency
+        self._task_base_resolver = task_base_resolver
+        self._wave_active = False
 
     async def run_ready_wave(self) -> ParallelWorkerWaveResult:
         """Run only the READY snapshot present when this wave begins.
@@ -51,6 +54,15 @@ class ParallelWorkerCoordinator:
         receives a dependency-aware base commit.
         """
 
+        if self._wave_active:
+            raise RuntimeError("parallel worker coordinator already has an active READY wave")
+        self._wave_active = True
+        try:
+            return await self._run_ready_wave_once()
+        finally:
+            self._wave_active = False
+
+    async def _run_ready_wave_once(self) -> ParallelWorkerWaveResult:
         scheduled = self._scheduler.ready_task_ids()
         if not scheduled:
             return ParallelWorkerWaveResult(
@@ -62,6 +74,7 @@ class ParallelWorkerCoordinator:
                 peak_concurrency=0,
             )
 
+        task_bases = self._resolve_task_bases(scheduled)
         semaphore = asyncio.Semaphore(self._max_concurrency)
         git_lock = asyncio.Lock()
         active_workers = 0
@@ -80,7 +93,11 @@ class ParallelWorkerCoordinator:
                     task = self._scheduler.dag.node(task_id).task
 
                     async with git_lock:
-                        record = await asyncio.to_thread(self._worktrees.create, task_id)
+                        record = await asyncio.to_thread(
+                            self._worktrees.create,
+                            task_id,
+                            base_commit=task_bases[task_id],
+                        )
                         workspace = await asyncio.to_thread(
                             self._worktrees.open_workspace,
                             task_id,
@@ -161,6 +178,19 @@ class ParallelWorkerCoordinator:
             max_concurrency=self._max_concurrency,
             peak_concurrency=peak_concurrency,
         )
+
+    def _resolve_task_bases(self, task_ids: tuple[str, ...]) -> dict[str, str | None]:
+        resolved: dict[str, str | None] = {}
+        for task_id in task_ids:
+            node = self._scheduler.dag.node(task_id)
+            requested = self._task_base_resolver(task_id) if self._task_base_resolver else None
+            if node.depends_on and requested is None:
+                raise RuntimeError(
+                    "dependent READY task requires an integrated descendant base commit before "
+                    f"worker execution: {task_id}"
+                )
+            resolved[task_id] = requested
+        return resolved
 
     def _result(
         self,
