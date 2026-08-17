@@ -5,229 +5,188 @@ This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The developmen
 ## Current position
 
 - Phase: **Phase 1 — V0.1 Single Task Evidence Loop**
-- Completed step: **Step 1.8 — Independent reviewer**
-- Next step: **Step 1.9 — Targeted repair loop**
-- Step 1.9 status: **NOT STARTED**
+- Completed step: **Step 1.9 — Targeted repair loop**
+- Next step: **Step 1.10 — Orchestrator + CLI/API demo**
+- Step 1.10 status: **NOT STARTED**
 
 ## Step 1.1 — ACCEPTED
 
 Merged through PR #1: `Phase 1 Step 1.1: initialize backend quality baseline`.
 
 Delivered:
-
-- Python 3.11+ backend package skeleton.
-- `backend/pyproject.toml` with package metadata and quality-tool configuration.
-- `.gitignore` and secret-safe `.env.example`.
-- Typed Pydantic Settings baseline.
-- Settings unit tests.
-- Ruff lint baseline.
-- GitHub Actions backend quality workflow.
+- Python 3.11+ backend package skeleton and `pyproject.toml`.
+- Secret-safe `.gitignore` / `.env.example` and typed Settings baseline.
+- pytest, Ruff, and GitHub Actions `Backend Quality` baseline.
 
 Acceptance evidence:
-
-- Dependency installation: **PASS**
-- `ruff check .`: **PASS**
-- `pytest`: **PASS**
-- GitHub Actions `Backend Quality`: **SUCCESS**
-- No SiliconFlow call, Agent implementation, orchestration, or frontend was introduced early.
+- Dependency installation: **PASS**.
+- `ruff check .`: **PASS**.
+- `pytest`: **PASS**.
+- GitHub Actions `Backend Quality`: **SUCCESS**.
 
 ## Step 1.2 — ACCEPTED
 
 Merged through PR #2: `Phase 1 Step 1.2: add core runtime schemas`.
 
 Delivered:
-
-- `TaskContract` with validated repository-relative readable/writable/read-only scopes.
-- Rejection of empty, duplicate, absolute, Windows-style, and `..` traversal scope patterns.
-- Explicit writable/read-only exact-overlap rejection.
-- Provider-neutral `AgentRequest` and `AgentResponse` schemas plus messages, roles, and token usage.
-- `ReviewDecision` with consistent `PASS` / `CHANGES_REQUESTED` semantics.
-- `VerificationResult` and `CheckResult` with deterministic aggregate-result consistency.
-- `FailureReport` and the planned failure taxonomy.
-- Core-schema unit tests.
+- `TaskContract`, `AgentRequest`, `AgentResponse`, `ReviewDecision`, `VerificationResult`, and `FailureReport`.
+- Scope/path validation and consistent review/verification state validation.
 
 Acceptance evidence:
-
-- `ruff check .`: **PASS**
-- `pytest`: **21 passed**
-- GitHub Actions `Backend Quality`: **SUCCESS**
-- Invalid scope and inconsistent review/verification payloads are rejected by Pydantic validation.
-- No SiliconFlow API call, Planner behavior, workspace implementation, or execution loop was introduced early.
+- `ruff check .`: **PASS**.
+- `pytest`: **21 passed**.
+- GitHub Actions `Backend Quality`: **SUCCESS**.
 
 ## Step 1.3 — ACCEPTED
 
 Merged through PR #3: `Phase 1 Step 1.3: add SiliconFlow provider boundary`.
 
 Delivered:
-
-- Provider-neutral `AgentDriver` protocol.
-- `SiliconFlowDriver` backed by the OpenAI-compatible async client.
-- Configurable SiliconFlow base URL, timeout, SDK retry count, and API key loading.
-- Role-to-model configuration for Planner, Developer, Reviewer, and Repair roles.
-- Runtime-stable provider error codes for timeout, rate limit, authentication, permission, bad request, connection, service unavailable, and unknown failures.
-- Mapping from provider failures into the existing `FailureReport` taxonomy.
-- Normalized response content, model, finish reason, token usage, and latency metadata.
-- Fake-client tests covering success, missing usage, empty choices, timeout, 429, 401, and 503 behavior.
-- `.env.example` documentation for provider/model settings without committing a real key.
+- Provider-neutral `AgentDriver` and `SiliconFlowDriver`.
+- Configurable role-to-model mapping, timeout, error normalization, token usage, and latency capture.
+- Fake-client coverage; CI requires no paid API call.
 
 Acceptance evidence:
-
-- OpenAI-compatible SDK installation: **PASS** (`openai 2.54.0` in CI).
-- `ruff check .`: **PASS** after correcting the single `SIM108` lint finding.
+- OpenAI-compatible SDK installation: **PASS** (`openai 2.54.0` in CI at acceptance time).
+- `ruff check .`: **PASS**.
 - `pytest`: **31 passed**.
 - GitHub Actions `Backend Quality`: **SUCCESS**.
-- CI made **no real SiliconFlow API call** and required no paid API key.
-- No Planner behavior, workspace/Git tooling, or Agent execution loop was introduced early.
 
 ## Step 1.4 — ACCEPTED
 
 Merged through PR #4: `Phase 1 Step 1.4: add Planner structured output gate`.
 
 Delivered:
-
-- `PlannerAgent` implementing the first real Agent behavior in DevFlow.
-- Natural-language development requirement to one V0.1 `TaskContract` conversion through the provider-neutral `AgentDriver`.
-- Planner system prompt generated against the current Pydantic `TaskContract` JSON Schema.
-- Strict JSON-only machine output; Markdown fences, prose, missing fields, invalid scopes, and extra keys cannot bypass Pydantic validation.
-- Optional caller-supplied repository context without repository or Git access inside the Planner.
-- Bounded schema-repair retry with a configurable 0–3 attempt budget and default of one repair attempt.
-- Schema repair receives the previous invalid output plus Pydantic validation evidence and runs at temperature `0.0`.
-- `InvalidPlannerOutputError` carrying a normalized `FailureReport(INVALID_AGENT_OUTPUT)` when the schema-repair budget is exhausted.
-- Defensive clipping of invalid-output and validation-error evidence before it is placed into repair prompts/failure evidence.
-- Explicit Ruff first-party package configuration for the flat `backend/app` layout.
-- Unit tests covering first-pass success, successful repair, exhausted repair budget, zero repair budget, empty requirement rejection, caller-supplied repository context, provider-error propagation, and bounded Planner configuration.
+- `PlannerAgent` converting one natural-language requirement into a validated V0.1 `TaskContract`.
+- JSON-schema/Pydantic validation and bounded schema-repair retry.
+- Invalid output becomes terminal `INVALID_AGENT_OUTPUT` rather than entering execution.
 
 Acceptance evidence:
-
-- Strict `ruff check .`: **PASS**.
-- `pytest`: **43 passed in 0.84s**.
+- `ruff check .`: **PASS**.
+- `pytest`: **43 passed**.
 - GitHub Actions `Backend Quality`: **SUCCESS**.
-- Invalid Planner output cannot escape as a `TaskContract`; it is either repaired within the configured budget or converted to terminal `INVALID_AGENT_OUTPUT` evidence.
-- Provider failures propagate separately from schema-validation failures.
-- CI made **no real SiliconFlow API call** and required no paid API key.
-- No repository clone/read/write, Git tooling, Developer loop, target-repository verification, Reviewer behavior, or orchestration was introduced early.
+- No real SiliconFlow API call in CI.
 
 ## Step 1.5 — ACCEPTED
 
 Merged through PR #5: `Phase 1 Step 1.5: add workspace and Git scope enforcement`.
 
 Delivered:
-
-- `LocalGitWorkspace` as the managed local repository boundary and Git-state source of truth.
-- Workspace roots must be existing Git top-level directories with a valid `HEAD` commit.
-- Safe repository-relative POSIX path resolution with rejection of empty paths, absolute paths, backslashes, Windows drive prefixes, `..` traversal, and existing symlink escapes.
-- Changed-file collection from tracked unstaged changes, staged changes, and untracked non-ignored files relative to `HEAD`.
-- Git rename detection is disabled for scope evidence so moving a protected file is represented as deletion of the protected source plus addition of the destination.
-- Slash-aware V0.1 glob matching for `*`, `?`, `**`, and `**/` patterns.
-- Read-only scope takes precedence over writable scope, including cases where a broad writable glob would otherwise include a protected test path.
-- Structured `ScopeCheckResult`, `ScopeViolation`, and `ScopeViolationKind` evidence.
-- Scope failures normalize to terminal `FailureReport(SCOPE_VIOLATION)` and cannot silently proceed to later verification.
-- Integration-style tests create real temporary Git repositories and exercise tracked, staged, untracked, rename, scope, and path-boundary behavior.
+- `LocalGitWorkspace` as the local Git source of truth.
+- Safe repository-relative path resolution and `.git`/symlink/path-traversal boundaries.
+- Actual changed-file collection and deny-first `ScopeEnforcer` with read-only/golden-test protection.
+- Rename-resistant scope evidence.
 
 Acceptance evidence:
-
-- Strict `ruff check .`: **PASS**.
-- `pytest`: **55 passed in 1.08s**.
+- `ruff check .`: **PASS**.
+- `pytest`: **55 passed**.
 - GitHub Actions `Backend Quality`: **SUCCESS**.
-- Allowed nested source modification passes the scope gate.
-- Protected test modification produces `READ_ONLY` scope evidence and `SCOPE_VIOLATION`.
-- Out-of-scope file modification produces `OUT_OF_SCOPE` evidence and `SCOPE_VIOLATION`.
-- Broad writable scopes cannot override read-only / golden-test protection.
-- Renaming a protected test cannot bypass the gate because the protected source deletion remains visible in Git evidence.
-- Repository-path traversal, absolute paths, backslash paths, Windows drive prefixes, and symlink escapes are rejected at the workspace boundary.
-- No Developer Agent tool loop, model-controlled file mutation, target-project verification command execution, Reviewer/Repair behavior, worktree scheduling, Redis, Docker, or frontend was introduced early.
+- Allowed source edits pass; read-only or out-of-scope edits become `SCOPE_VIOLATION`.
 
 ## Step 1.6 — ACCEPTED
 
 Merged through PR #6: `Phase 1 Step 1.6: add bounded Developer tool loop`.
 
 Delivered:
-
-- Provider-neutral Function Calling schemas: `ToolDefinition`, `ToolCall`, `ToolExecutionResult`, and stable tool error codes.
-- `AgentRequest`, `AgentResponse`, and message history support assistant tool calls and `role=tool` observations without coupling Agent logic to SiliconFlow.
-- `SiliconFlowDriver` adapts OpenAI-compatible `tools` requests and provider `tool_calls` responses into the provider-neutral runtime protocol while preserving ordinary text-completion compatibility.
-- Controlled repository tools: `list_files`, `read_file`, `search_code`, `write_file`, and exact-context `apply_patch`; no unrestricted shell is exposed.
-- Read operations reveal only task-visible scopes; mutations are checked against writable/read-only scope before filesystem changes.
-- `.git` internals are permanently denied, including path aliases such as `./.git/config`, even under a broad `**` writable contract.
-- Symbolic-link traversal is denied at the workspace path boundary so a writable alias cannot redirect a mutation into protected files.
-- `apply_patch` requires `old_text` to occur exactly once, preventing ambiguous multi-location replacement.
-- `DeveloperAgent` implements a bounded model/tool/observation loop with maximum iterations, wall-clock duration, and per-turn tool-call fan-out.
-- `DeveloperRunResult` records stop reason, tool calls, actual Git changed files, usage, latency, and final model message but intentionally contains no task-success verdict.
-- Integration tests use real temporary Git repositories and fake model/provider responses; CI never needs a real SiliconFlow API key.
+- Provider-neutral Function Calling schemas and SiliconFlow tool-call adaptation.
+- Controlled repository tools: `list_files`, `read_file`, `search_code`, `write_file`, and exact-context `apply_patch`.
+- Bounded `DeveloperAgent` loop with iteration/time/tool-fan-out limits.
+- `DeveloperRunResult` records evidence but deliberately has no success verdict.
 
 Acceptance evidence:
-
-- Strict `ruff check .`: **PASS**.
-- `pytest`: **67 passed in 1.46s**.
+- `ruff check .`: **PASS**.
+- `pytest`: **67 passed**.
 - GitHub Actions `Backend Quality`: **SUCCESS**.
-- Native Function Calling request/response serialization is covered with a fake SiliconFlow/OpenAI-compatible client.
-- A bounded Developer loop can read a real repository file, apply a controlled patch, return an observation to the model, and leave the actual change visible through Git evidence.
-- Protected test writes and out-of-scope writes are rejected before disk mutation.
-- `.git` direct access and `./.git/...` alias access are rejected; internal symbolic-link write aliases cannot mutate protected tests.
-- Excess per-turn tool fan-out is stopped before any of those tool calls execute.
-- Iteration and time budgets terminate the loop deterministically.
-- A model final message only stops Developer execution; it does **not** mark the task as passed or successful.
-- No target-repository verification command was executed, no real SiliconFlow API call was made, and no Reviewer, Repair, orchestrator, DAG/worktree, Redis, Docker, or frontend behavior was introduced early.
+- Protected/out-of-scope writes, `.git` aliases, and symlink write aliases are blocked.
+- No real SiliconFlow API call in CI.
 
 ## Step 1.7 — ACCEPTED
 
 Merged through PR #7: `Phase 1 Step 1.7: add deterministic verifier hard gate`.
 
 Delivered:
-
-- `DeterministicVerifier` with actual Git scope integrity as the mandatory first verification gate.
-- Scope violations fail closed before any target-project process is started.
-- Bounded verification-command execution with per-command timeout, maximum-command budget, stdout/stderr capture, exit codes, duration, and output clipping.
-- Explicit pytest and Ruff adapters/classification: failed tests become `TEST_FAILURE`; failed lint checks become `LINT_FAILURE`.
-- Failed deterministic checks convert into structured `FailureReport` evidence for later targeted repair; test/lint failures are retryable while scope and unsafe-command failures are not.
-- V0.1 process execution is deliberately restricted to pytest and `ruff check`, including their `python -m` forms. Arbitrary custom commands remain deferred until sandbox execution is available.
-- Verification always uses `shell=False` and normalizes allowed tools to the current runtime interpreter via `sys.executable -m ...`, avoiding reliance on a same-name executable found through `PATH`.
-- Verification arguments are workspace-bound: absolute paths, Windows drive paths, and `..` traversal are rejected, including path-like option values such as `--rootdir=/tmp`.
-- Integration-style tests run against real temporary Git repositories and launch real pytest/Ruff subprocesses.
-- Developer Agent self-reports are never used as verification evidence; only repository state and deterministic process results determine this hard gate.
+- Scope-first `DeterministicVerifier`.
+- Bounded pytest/Ruff execution with `shell=False`, timeout, output, exit-code, and duration evidence.
+- Explicit `TEST_FAILURE`, `LINT_FAILURE`, `SCOPE_VIOLATION`, and tool/runtime failure classification.
+- Workspace-bound command arguments and no arbitrary V0.1 shell execution.
 
 Acceptance evidence:
-
-- Strict `ruff check .`: **PASS**.
-- `pytest`: **76 passed in 2.86s**.
+- `ruff check .`: **PASS**.
+- `pytest`: **76 passed**.
 - GitHub Actions `Backend Quality`: **SUCCESS**.
-- A passing toy repository returns hard-gate `VerificationResult(passed=True)` after scope, pytest, and Ruff checks pass.
-- A failing pytest run is distinguishable as `TEST_FAILURE` and preserves useful process output/exit-code evidence.
-- A Ruff violation is distinguishable as `LINT_FAILURE` even when pytest passes.
-- Protected/out-of-scope Git changes stop verification before subprocess execution.
-- Unsupported commands such as `python -c ...` are rejected without executing their payload.
-- Verification timeout is bounded and becomes structured `TOOL_FAILURE` evidence.
-- `pytest ../outside_test.py` cannot execute an outside-workspace test, and absolute option paths such as `--rootdir=/tmp` are rejected before process start.
-- No Reviewer, Repair, full Orchestrator, multi-task DAG/worktree scheduler, Redis, Docker sandbox, or frontend behavior was introduced early.
+- Hard verification is based on repository/process evidence, never Developer self-report.
 
 ## Step 1.8 — ACCEPTED
 
 Merged through PR #8: `Phase 1 Step 1.8: add independent semantic reviewer`.
 
 Delivered:
-
-- `ReviewerAgent` as a read-only semantic gate that can run only after deterministic verification has passed.
-- Reviewer input is deliberately restricted to the validated `TaskContract`, a passing `VerificationResult`, and the actual HEAD-to-workspace Git diff; Developer conversation history is not supplied.
-- Reviewer requests contain no tool definitions, so the Reviewer cannot mutate files, run shell commands, or operate Git through the Agent interface.
-- `ReviewDecision` is Pydantic/schema validated: `PASS` requires zero issues and `CHANGES_REQUESTED` requires at least one concrete issue.
-- Invalid Reviewer output uses bounded schema repair; exhaustion becomes terminal `FailureReport(INVALID_AGENT_OUTPUT)` with `FailureSource.REVIEW`.
-- Repository content and Git diff are explicitly treated as untrusted data to reduce prompt-injection risk from code/comments embedded in the patch.
-- `LocalGitWorkspace.unified_diff()` provides actual tracked changes plus reviewable patches for untracked text files, so newly created files cannot silently escape semantic review before `git add`.
-- Empty diffs are rejected before a Reviewer model call.
-- Reviewer tests use real temporary Git repositories and a fake model driver; CI does not require a SiliconFlow API key or consume model quota.
+- Read-only `ReviewerAgent` that runs only after a passing hard gate.
+- Input packet restricted to validated `TaskContract` + actual Git diff + `VerificationResult`.
+- Reviewer receives no write/shell/Git tools.
+- Schema-validated `PASS` / `CHANGES_REQUESTED` with bounded structured-output repair.
+- Actual unified diff includes untracked text files and is treated as untrusted repository data.
 
 Acceptance evidence:
-
-- Strict `ruff check .`: **PASS**.
-- `pytest`: **84 passed in 4.15s**.
+- `ruff check .`: **PASS**.
+- `pytest`: **84 passed**.
 - GitHub Actions `Backend Quality`: **SUCCESS**.
-- A failed `VerificationResult` prevents the Reviewer model from being called at all.
-- Reviewer requests contain `tools=[]` and the repository diff remains unchanged before and after review.
-- The Reviewer can return schema-valid `CHANGES_REQUESTED` for a semantic security bug (`verify_token` always returning true) even when supplied hard verification evidence is passing.
-- Schema-invalid Reviewer output is either repaired within the configured budget or rejected as `INVALID_AGENT_OUTPUT`; it never enters task control flow as a valid decision.
-- Untracked text files are included in semantic-review diff evidence.
-- No Repair Agent, full Orchestrator, DAG/worktree scheduler, Redis, Docker sandbox, frontend, or real SiliconFlow API call was introduced early.
+- Reviewer can reject a semantic bug even when deterministic checks are represented as passing.
+- No real SiliconFlow API call in CI.
 
-## Gate before Step 1.9
+## Step 1.9 — ACCEPTED
 
-Step 1.9 may implement only the targeted Repair behavior required by the V0.1 single-task loop. Repair must consume the original validated `TaskContract` plus targeted failure evidence from deterministic verification (`FailureReport`) or semantic review (`ReviewDecision` issues), and must reuse the same controlled repository tools and writable/read-only boundaries as the Developer Agent. Repair attempts must be bounded by an explicit retry budget and must focus on the observed failure rather than blindly regenerating the whole implementation. Tests must demonstrate at least one first-attempt failure receiving targeted evidence and a later repair that can satisfy the relevant gate in isolation. Step 1.9 must not introduce the full end-to-end Orchestrator (Step 1.10), multi-task DAG/worktree scheduling, Redis, Docker sandboxing, or frontend features prematurely.
+Merged through PR #9: `Phase 1 Step 1.9: add failure-aware targeted repair loop`.
+
+Delivered:
+- `FailureClassifier` converts deterministic verification failures and semantic review rejection into structured repair evidence.
+- Repairable evidence is intentionally limited to retryable `TEST_FAILURE`, `LINT_FAILURE`, and `REVIEW_REJECTED`.
+- Repair selection is **fail-closed and all-or-nothing**: if a failure batch also contains a non-retryable/safety failure such as `SCOPE_VIOLATION`, no failure in that batch is sent to the Repair model.
+- `RepairAgent` uses `AgentRole.REPAIR` and the same controlled `RepositoryToolbox` / writable/read-only boundaries as the Developer Agent.
+- Repair prompts contain the original validated `TaskContract` plus targeted `FailureReport` evidence instead of replaying the original Developer conversation or blindly regenerating the task.
+- Repair execution is bounded by iteration, wall-clock, tool-fan-out, and `TaskContract.max_retries` budgets.
+- Retry exhaustion is checked **before model execution**, preserves the original root failure type, sets `retryable=False`, and appends `repair_attempts_exhausted` evidence.
+- `RepairRunResult` records attempt number, failure types, tool activity, changed files, token usage, and latency, but intentionally has no task-success verdict.
+- Failure evidence is clipped, and repository text embedded in stderr/review messages is treated as untrusted data rather than instructions.
+
+Verification side-effect hardening discovered during Step 1.9:
+- The first integration run exposed that pytest could create `tests/__pycache__/*.pyc`, polluting Git evidence and potentially causing a false read-only scope violation on the next gate.
+- Verification now disables Python bytecode writes and pytest cacheprovider output.
+- Mutating Ruff verification modes such as `ruff check --fix` / `--fix-only` are rejected before execution.
+- A post-verification Git scope gate detects out-of-scope files created by verification commands themselves.
+
+Acceptance evidence:
+- Integration test performs a **real** first-pass pytest failure, converts it to `TEST_FAILURE`, feeds targeted evidence to Repair, applies one controlled patch, reruns the same deterministic verifier, and reaches PASS.
+- Non-retryable safety failures cannot invoke Repair.
+- Mixed retryable + safety failures fail closed instead of silently dropping the safety failure.
+- Repair budget exhaustion occurs before an extra LLM call and keeps the original failure taxonomy.
+- Pytest verification leaves no `.pytest_cache` / test `__pycache__` Git pollution in the covered V0.1 path.
+- `ruff check --fix` cannot be used as a mutating verification command.
+- Post-verification scope violations are detected.
+- Strict `ruff check .`: **PASS**.
+- `pytest`: **97 passed in 4.33s**.
+- GitHub Actions `Backend Quality`: **SUCCESS**.
+- CI made **no real SiliconFlow API call**.
+- No full single-task Orchestrator, CLI/API run entrypoint, DAG/worktree scheduler, Redis, Docker sandbox, or frontend behavior was introduced prematurely.
+
+## Gate before Step 1.10
+
+Step 1.10 may now compose the already accepted V0.1 components into one explicit single-task runtime:
+
+```text
+TaskContract
+    ↓
+DeveloperAgent
+    ↓
+DeterministicVerifier
+    ├── hard failure + repairable evidence → RepairAgent → verify again
+    └── PASS
+          ↓
+ReviewerAgent
+    ├── CHANGES_REQUESTED → FailureClassifier → RepairAgent → verify again → review again
+    └── PASS → SUCCEEDED
+```
+
+Step 1.10 must provide a bounded task state machine and auditable final run result. Retry attempts must use the Step 1.9 budget semantics and must terminate deterministically. The first runnable surface should be a CLI; minimal FastAPI endpoints may be added only where they materially help demonstrate the V0.1 loop. Final output must expose changed files, verification evidence, reviewer decision, repair attempts, model/usage metadata, and terminal failure evidence when unsuccessful.
+
+Step 1.10 must **not** prematurely add V0.2/V0.3/V1.0 concerns: no multi-task DAG scheduling, parallel Git worktrees, merge queue, Redis/Dramatiq, Docker sandbox, Context Packet Builder, or React frontend yet.
