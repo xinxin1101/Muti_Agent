@@ -58,6 +58,7 @@ class TopologicalMergeQueue:
         self._git_timeout_seconds = git_timeout_seconds
         self._run_base = worktrees.base_commit
         self._integration_ref = f"refs/devflow/integration/{integration_id}"
+        self._conflict_ref = f"refs/devflow/integration-conflicts/{integration_id}"
         self._order = tuple(scheduler.dag.topological_order())
         self._order_index = {task_id: index for index, task_id in enumerate(self._order)}
         self._attempts: list[MergeQueueAttempt] = []
@@ -66,7 +67,9 @@ class TopologicalMergeQueue:
 
         self._assert_commit_exists(self._run_base, label="frozen run base")
         self._validate_ref_name(self._integration_ref)
+        self._validate_ref_name(self._conflict_ref)
         self._head = self._initialize_or_recover_ref()
+        self._recover_conflict_marker()
 
     @property
     def integration_ref(self) -> str:
@@ -89,6 +92,8 @@ class TopologicalMergeQueue:
         if self._scheduler.state(task_id) is not TaskScheduleState.READY:
             return None
         if not set(node.depends_on).issubset(self._integrated):
+            return None
+        if self._stopped:
             return None
         self._assert_ref_head()
         return self._head
@@ -147,15 +152,19 @@ class TopologicalMergeQueue:
     def _integrate_one(self, result: WorkerTaskResult) -> bool:
         self._assert_ref_head()
         previous_head = self._head
+        task_commit = result.commit_sha or ""
         merge = self._git(
-            ["merge-tree", "--write-tree", previous_head, result.commit_sha or ""],
+            ["merge-tree", "--write-tree", previous_head, task_commit],
             check=False,
         )
         if merge.returncode == 1:
+            marker_commit = self._persist_conflict_marker(result, previous_head)
             failure = self._merge_conflict_failure(
                 task_id=result.task_id,
                 integration_head=previous_head,
-                task_commit=result.commit_sha or "",
+                task_commit=task_commit,
+                conflict_ref=self._conflict_ref,
+                marker_commit=marker_commit,
                 stdout=merge.stdout,
                 stderr=merge.stderr,
             )
@@ -165,7 +174,7 @@ class TopologicalMergeQueue:
                     task_id=result.task_id,
                     task_branch=result.branch_name or "",
                     task_base_commit=result.base_commit or "",
-                    task_commit=result.commit_sha or "",
+                    task_commit=task_commit,
                     previous_integration_commit=previous_head,
                     outcome=MergeAttemptOutcome.CONFLICT,
                     failure=failure,
@@ -190,7 +199,7 @@ class TopologicalMergeQueue:
                 "-p",
                 previous_head,
                 "-p",
-                result.commit_sha or "",
+                task_commit,
                 "-m",
                 commit_message,
             ],
@@ -220,7 +229,7 @@ class TopologicalMergeQueue:
         self._verify_integration_commit(
             commit=commit,
             previous_head=previous_head,
-            task_commit=result.commit_sha or "",
+            task_commit=task_commit,
         )
 
         self._head = commit
@@ -231,7 +240,7 @@ class TopologicalMergeQueue:
                 task_id=result.task_id,
                 task_branch=result.branch_name or "",
                 task_base_commit=result.base_commit or "",
-                task_commit=result.commit_sha or "",
+                task_commit=task_commit,
                 previous_integration_commit=previous_head,
                 outcome=MergeAttemptOutcome.INTEGRATED,
                 integration_commit=commit,
@@ -377,6 +386,11 @@ class TopologicalMergeQueue:
             node = self._scheduler.dag.node(task_id)
             if not set(node.depends_on).issubset(recovered):
                 raise MergeQueueError("existing integration history violates task dependencies")
+            self._verify_integration_commit(
+                commit=commit,
+                previous_head=expected_previous,
+                task_commit=task_commit,
+            )
 
             self._attempts.append(
                 MergeQueueAttempt(
@@ -398,27 +412,158 @@ class TopologicalMergeQueue:
         if expected_previous != head:
             raise MergeQueueError("existing integration history could not recover its final head")
 
+    def _recover_conflict_marker(self) -> None:
+        existing = self._git(
+            ["show-ref", "--verify", "--quiet", self._conflict_ref],
+            check=False,
+        )
+        if existing.returncode == 1:
+            return
+        if existing.returncode != 0:
+            raise MergeQueueError("Git could not determine integration-conflict ref existence")
+
+        marker_commit = self._resolve_commit(
+            self._conflict_ref,
+            label="integration conflict marker",
+        )
+        if self._commit_parents(marker_commit) != (self._head,):
+            raise MergeQueueError("integration conflict marker has an unexpected parent")
+        if self._resolve_tree(marker_commit) != self._resolve_tree(self._head):
+            raise MergeQueueError("integration conflict marker unexpectedly changes repository tree")
+
+        metadata = self._parse_conflict_message(marker_commit)
+        task_id = metadata["task"]
+        task_branch = metadata["branch"]
+        task_base = metadata["base"]
+        task_commit = metadata["commit"]
+        if metadata["integration_head"] != self._head:
+            raise MergeQueueError("integration conflict marker references an unexpected head")
+        if task_id not in self._order_index or task_id in self._integrated:
+            raise MergeQueueError("integration conflict marker references an invalid task")
+
+        record = self._worktrees.record_for(task_id, base_commit=task_base)
+        if task_branch != record.branch_name:
+            raise MergeQueueError("integration conflict marker records an unexpected task branch")
+        if self._commit_parents(task_commit) != (task_base,):
+            raise MergeQueueError("conflicted task commit does not match its recorded task base")
+        node = self._scheduler.dag.node(task_id)
+        if not set(node.depends_on).issubset(self._integrated):
+            raise MergeQueueError("integration conflict marker violates task dependencies")
+        self._assert_global_topological_gate(task_id, set(self._integrated))
+
+        merge = self._git(
+            ["merge-tree", "--write-tree", self._head, task_commit],
+            check=False,
+        )
+        if merge.returncode != 1:
+            raise MergeQueueError("integration conflict marker cannot reproduce a Git conflict")
+        failure = self._merge_conflict_failure(
+            task_id=task_id,
+            integration_head=self._head,
+            task_commit=task_commit,
+            conflict_ref=self._conflict_ref,
+            marker_commit=marker_commit,
+            stdout=merge.stdout,
+            stderr=merge.stderr,
+        )
+        self._attempts.append(
+            MergeQueueAttempt(
+                sequence=len(self._attempts),
+                task_id=task_id,
+                task_branch=task_branch,
+                task_base_commit=task_base,
+                task_commit=task_commit,
+                previous_integration_commit=self._head,
+                outcome=MergeAttemptOutcome.CONFLICT,
+                failure=failure,
+            )
+        )
+        self._stopped = True
+
+    def _persist_conflict_marker(
+        self,
+        result: WorkerTaskResult,
+        integration_head: str,
+    ) -> str:
+        existing = self._git(
+            ["show-ref", "--verify", "--quiet", self._conflict_ref],
+            check=False,
+        )
+        if existing.returncode == 0:
+            raise MergeQueueError("integration conflict marker already exists")
+        if existing.returncode != 1:
+            raise MergeQueueError("Git could not validate conflict-marker availability")
+
+        marker = self._git(
+            [
+                "commit-tree",
+                self._resolve_tree(integration_head),
+                "-p",
+                integration_head,
+                "-m",
+                self._conflict_message(result, integration_head),
+            ],
+            env=self._commit_environment(),
+        ).stdout.strip()
+        self._require_full_oid(marker, label="integration conflict marker")
+        zero_oid = "0" * len(marker)
+        update = self._git(
+            ["update-ref", self._conflict_ref, marker, zero_oid],
+            check=False,
+        )
+        if update.returncode != 0:
+            raise MergeQueueError("integration conflict marker could not be created atomically")
+        if self._resolve_commit(self._conflict_ref, label="conflict marker ref") != marker:
+            raise MergeQueueError("integration conflict marker ref does not match its commit")
+        return marker
+
     def _parse_integration_message(self, commit: str) -> dict[str, str]:
+        return self._parse_metadata(
+            commit,
+            {
+                "DevFlow-Task: ": "task",
+                "DevFlow-Task-Branch: ": "branch",
+                "DevFlow-Task-Base: ": "base",
+                "DevFlow-Task-Commit: ": "commit",
+            },
+            label="integration commit",
+        )
+
+    def _parse_conflict_message(self, commit: str) -> dict[str, str]:
+        metadata = self._parse_metadata(
+            commit,
+            {
+                "DevFlow-Conflict-Task: ": "task",
+                "DevFlow-Conflict-Branch: ": "branch",
+                "DevFlow-Conflict-Base: ": "base",
+                "DevFlow-Conflict-Commit: ": "commit",
+                "DevFlow-Conflict-Integration-Head: ": "integration_head",
+            },
+            label="integration conflict marker",
+        )
+        self._require_full_oid(metadata["integration_head"], label="recorded integration head")
+        return metadata
+
+    def _parse_metadata(
+        self,
+        commit: str,
+        prefixes: dict[str, str],
+        *,
+        label: str,
+    ) -> dict[str, str]:
         message = self._git(["show", "-s", "--format=%B", commit]).stdout
-        prefixes = {
-            "DevFlow-Task: ": "task",
-            "DevFlow-Task-Branch: ": "branch",
-            "DevFlow-Task-Base: ": "base",
-            "DevFlow-Task-Commit: ": "commit",
-        }
         metadata: dict[str, str] = {}
         for line in message.splitlines():
             for prefix, key in prefixes.items():
-                if line.startswith(prefix):
-                    if key in metadata:
-                        raise MergeQueueError(
-                            "integration commit contains duplicate DevFlow metadata"
-                        )
-                    metadata[key] = line[len(prefix) :].strip()
+                if not line.startswith(prefix):
+                    continue
+                if key in metadata:
+                    raise MergeQueueError(f"{label} contains duplicate DevFlow metadata")
+                metadata[key] = line[len(prefix) :].strip()
         if set(metadata) != set(prefixes.values()):
-            raise MergeQueueError("integration commit is missing required DevFlow metadata")
-        self._require_full_oid(metadata["base"], label="recovered task base")
-        self._require_full_oid(metadata["commit"], label="recovered task commit")
+            raise MergeQueueError(f"{label} is missing required DevFlow metadata")
+        self._require_full_oid(metadata["base"], label="recorded task base")
+        self._require_full_oid(metadata["commit"], label="recorded task commit")
         return metadata
 
     def _integration_message(self, result: WorkerTaskResult) -> str:
@@ -428,6 +573,17 @@ class TopologicalMergeQueue:
             f"DevFlow-Task-Branch: {result.branch_name}\n"
             f"DevFlow-Task-Base: {result.base_commit}\n"
             f"DevFlow-Task-Commit: {result.commit_sha}"
+        )
+
+    @staticmethod
+    def _conflict_message(result: WorkerTaskResult, integration_head: str) -> str:
+        return (
+            f"DevFlow integration conflict for {result.task_id}\n\n"
+            f"DevFlow-Conflict-Task: {result.task_id}\n"
+            f"DevFlow-Conflict-Branch: {result.branch_name}\n"
+            f"DevFlow-Conflict-Base: {result.base_commit}\n"
+            f"DevFlow-Conflict-Commit: {result.commit_sha}\n"
+            f"DevFlow-Conflict-Integration-Head: {integration_head}"
         )
 
     def _verify_integration_commit(
@@ -441,6 +597,15 @@ class TopologicalMergeQueue:
             raise MergeQueueError(
                 "integration commit does not preserve the expected two-parent history"
             )
+        merge = self._git(
+            ["merge-tree", "--write-tree", previous_head, task_commit],
+            check=False,
+        )
+        if merge.returncode != 0:
+            raise MergeQueueError("integration commit cannot reproduce a clean deterministic merge")
+        expected_tree = self._first_oid_line(merge.stdout, label="recomputed merged tree")
+        if self._resolve_tree(commit) != expected_tree:
+            raise MergeQueueError("integration commit tree does not match deterministic Git merge")
 
     def _assert_ref_head(self) -> None:
         current = self._resolve_commit(self._integration_ref, label="integration ref")
@@ -464,6 +629,13 @@ class TopologicalMergeQueue:
         resolved = result.stdout.strip()
         if result.returncode != 0 or _COMMIT_PATTERN.fullmatch(resolved) is None:
             raise MergeQueueError(f"{label} does not resolve to a full commit id")
+        return resolved
+
+    def _resolve_tree(self, ref: str) -> str:
+        result = self._git(["rev-parse", "--verify", f"{ref}^{{tree}}"], check=False)
+        resolved = result.stdout.strip()
+        if result.returncode != 0 or _COMMIT_PATTERN.fullmatch(resolved) is None:
+            raise MergeQueueError("Git reference does not resolve to a full tree id")
         return resolved
 
     def _commit_parents(self, commit: str) -> tuple[str, ...]:
@@ -499,6 +671,8 @@ class TopologicalMergeQueue:
         task_id: str,
         integration_head: str,
         task_commit: str,
+        conflict_ref: str,
+        marker_commit: str,
         stdout: str,
         stderr: str,
     ) -> FailureReport:
@@ -509,6 +683,8 @@ class TopologicalMergeQueue:
             f"task_id={task_id}",
             f"integration_head={integration_head}",
             f"task_commit={task_commit}",
+            f"conflict_ref={conflict_ref}",
+            f"conflict_marker={marker_commit}",
             "git_merge_tree_exit_code=1",
         ]
         if raw:
