@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 from collections.abc import Sequence
+from difflib import unified_diff
 from pathlib import Path, PurePosixPath
 
 
@@ -79,6 +80,50 @@ class LocalGitWorkspace:
             self._git(["ls-files", "--others", "--exclude-standard", "-z", "--"])
         )
         return sorted(set(tracked) | set(untracked))
+
+    def unified_diff(self) -> str:
+        """Return reviewable HEAD-to-workspace evidence, including untracked text files."""
+
+        tracked_diff = self._git(
+            [
+                "diff",
+                "--no-ext-diff",
+                "--no-renames",
+                "--unified=3",
+                "HEAD",
+                "--",
+            ]
+        )
+        untracked = self._split_nul(
+            self._git(["ls-files", "--others", "--exclude-standard", "-z", "--"])
+        )
+
+        sections = [tracked_diff] if tracked_diff else []
+        for repository_path in sorted(untracked):
+            path = self.resolve_path(repository_path)
+            if not path.is_file():
+                continue
+            try:
+                content = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                sections.append(f"Binary untracked file omitted: {repository_path}\n")
+                continue
+
+            patch = "".join(
+                unified_diff(
+                    [],
+                    content.splitlines(keepends=True),
+                    fromfile="/dev/null",
+                    tofile=f"b/{repository_path}",
+                    lineterm="\n",
+                )
+            )
+            if patch:
+                sections.append(patch)
+
+        return "\n".join(section.rstrip("\n") for section in sections if section) + (
+            "\n" if sections else ""
+        )
 
     def _assert_repository(self) -> None:
         result = self._git(["rev-parse", "--is-inside-work-tree"], check=False)
