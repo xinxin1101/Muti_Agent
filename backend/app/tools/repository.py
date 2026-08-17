@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
@@ -230,10 +230,16 @@ class RepositoryToolbox:
     def _write_file(self, arguments: dict) -> str:
         args = WriteFileArgs.model_validate(arguments)
         relative, path = self._resolve_for_write(args.path)
+        encoded_size = len(args.content.encode("utf-8"))
+        if encoded_size > _MAX_FILE_BYTES:
+            raise RepositoryToolError(
+                ToolErrorCode.IO_ERROR,
+                "file content exceeds the V0.1 text-file size limit",
+            )
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(args.content, encoding="utf-8")
         return json.dumps(
-            {"path": relative, "bytes": len(args.content.encode("utf-8"))},
+            {"path": relative, "bytes": encoded_size},
             ensure_ascii=False,
         )
 
