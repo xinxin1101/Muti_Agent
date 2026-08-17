@@ -5,16 +5,14 @@ This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The developmen
 ## Current position
 
 - Current phase: **Phase 2 — V0.2 True Multi-Agent Runtime**
-- Completed item: **Step 2.1 — Task DAG representation**
-- Next item: **Step 2.2 — DAG Scheduler**
+- Completed item: **Step 2.2 — DAG Scheduler**
+- Next item: **Step 2.3 — Git Worktree per task**
 - Phase 2 status: **IN PROGRESS**
 - V0.1 status: **ACCEPTED / COMPLETE**
 
 ## Phase 1 — V0.1 Single Task Evidence Loop — ACCEPTED
 
 Phase 1 was completed through PR #1–#10. Detailed implementation and acceptance evidence remain preserved in those PR descriptions and Git history.
-
-Accepted milestones:
 
 | Step | Capability | Acceptance snapshot |
 | --- | --- | --- |
@@ -31,15 +29,13 @@ Accepted milestones:
 
 V0.1 exit criterion is satisfied: one validated `TaskContract` can run through Developer → Git scope → deterministic verification → independent semantic review → targeted repair → terminal `SUCCEEDED` / `FAILED` evidence without trusting an LLM self-report as the success signal.
 
-The production CLI can use `SiliconFlowDriver` when configured with an API key, while normal CI uses Fake model drivers together with real Git/pytest/Ruff execution so acceptance remains deterministic and free of paid external calls.
-
 ---
 
 # Phase 2 — V0.2 True Multi-Agent Runtime
 
 Goal: safely support dependent and eventually parallel tasks while preserving every V0.1 evidence, scope, verification, review, and repair boundary.
 
-Planned implementation order from `docs/DEVELOPMENT_PLAN.md`:
+Planned order:
 
 1. Task DAG representation.
 2. `READY/RUNNING/SUCCEEDED/FAILED/BLOCKED` scheduler.
@@ -55,76 +51,83 @@ Merged through PR #11: `Phase 2 Step 2.1: add validated task DAG representation`
 
 Delivered:
 
-- Added `TaskNode` as a V0.2 wrapper around the already accepted V0.1 `TaskContract`.
-- Dependency edges live in `TaskNode.depends_on`; the existing single-task `TaskContract` was not mutated.
-- Added `TaskDAG` as the schema-validated graph fact model for the future scheduler.
-- Rejects duplicate task ids.
-- Rejects unknown dependency ids.
-- Rejects duplicate dependencies on one node.
-- Rejects self-dependencies.
-- Rejects dependency cycles before a graph can enter runtime scheduling.
-- Uses a deterministic lexicographically stable topological order so identical DAG input produces reproducible ordering.
-- `ready_task_ids(...)` derives runnable tasks from completed/failed graph facts; readiness is not decided by an Agent.
-- `blocked_task_ids(...)` propagates failures transitively through downstream dependencies.
-- Runtime state queries reject unknown task ids, completed/failed overlap, and logically inconsistent completed descendants of failed tasks.
-- DAG nodes and dependency collections are stored as immutable tuples. This closes the Pydantic `frozen=True` shallow-freeze gap where mutable lists could otherwise be appended after validation and silently invalidate graph invariants.
-- DAG JSON round-trip re-enters the same Pydantic validation boundary.
-
-Example accepted dependency shape:
-
-```text
-TASK-001
-    ↓
-TASK-002
-   ├─────────┐
-   ↓         ↓
-TASK-003   TASK-004
-   └────┬────┘
-        ↓
-     TASK-005
-```
-
-For this graph:
-
-```text
-initial ready:                    TASK-001
-TASK-001 completed:              TASK-002 ready
-TASK-001 + TASK-002 completed:   TASK-003, TASK-004 ready
-TASK-003 failed:                 TASK-005 blocked; TASK-004 may still run
-TASK-002 failed:                 TASK-003, TASK-004, TASK-005 blocked
-```
+- `TaskNode` wraps the accepted V0.1 `TaskContract` with immutable dependency edges.
+- `TaskDAG` rejects duplicate task ids, unknown dependencies, duplicate dependencies, self-dependencies, and cycles.
+- Deterministic topological ordering.
+- Deterministic ready-task derivation.
+- Transitive blocked-task derivation from failed dependencies.
+- Runtime graph queries fail closed on contradictory completed/failed state.
+- DAG task/dependency collections are immutable tuples, closing the Pydantic shallow-freeze mutation gap.
 
 Acceptance evidence:
 
-- First candidate: `ruff check .` **PASS**, `pytest` **118 passed**.
-- Pre-merge model-integrity review found the shallow-freeze risk in mutable DAG lists.
-- DAG structure was changed to immutable tuples and regression tests were added.
-- Final `ruff check .`: **PASS**.
-- Final `pytest`: **120 passed in 6.67s**.
+- `ruff check .`: **PASS**.
+- `pytest`: **120 passed in 6.67s**.
 - GitHub Actions `Backend Quality`: **SUCCESS**.
-- All 104 accepted V0.1 tests remained green inside the expanded suite.
-- No Scheduler, Worktree creation, parallel worker execution, merge queue, or merge-conflict logic was introduced prematurely.
+- All accepted V0.1 tests remained green.
+- No Scheduler, Worktree, worker pool, merge queue, or conflict handling was introduced early.
 
-## Gate before Step 2.2 — DAG Scheduler
+## Step 2.2 — DAG Scheduler — ACCEPTED
 
-Step 2.2 may implement only the deterministic task scheduler required to consume the accepted `TaskDAG` facts.
+Merged through PR #12: `Phase 2 Step 2.2: add deterministic DAG scheduler`.
 
-The scheduler should introduce explicit per-task lifecycle states:
+Delivered:
+
+- Added scheduler lifecycle states: `PENDING`, `READY`, `RUNNING`, `SUCCEEDED`, `FAILED`, `BLOCKED`.
+- `DAGScheduler` is the single owner of mutable scheduling state for one immutable validated `TaskDAG`.
+- Zero-dependency tasks become `READY` deterministically at initialization.
+- Only `READY` tasks may become `RUNNING`.
+- Only `RUNNING` tasks may become `SUCCEEDED` or `FAILED`.
+- Successful tasks trigger deterministic readiness recomputation; a dependent becomes `READY` only when every dependency is `SUCCEEDED`.
+- Failed tasks propagate `BLOCKED` transitively to downstream pending tasks.
+- Independent runnable branches remain unaffected by another branch failure.
+- Multi-parent tasks stay blocked once any required dependency fails, even if another parent later succeeds.
+- Centralized allowed-transition rules reject illegal lifecycle moves before mutation, including `PENDING -> RUNNING`, `READY -> BLOCKED`, terminal restarts, and `BLOCKED -> READY`.
+- Failure propagation pre-validates the full blocked descendant set before changing the failed task, preventing partial state updates if an invariant is violated.
+- Added immutable `TaskScheduleRecord`, `SchedulerEvent`, and `SchedulerSnapshot` evidence models.
+- Scheduler snapshots/events are deterministic and do not expose the internal mutable state mapping.
+- Multiple independent tasks may be represented as `RUNNING` for future parallelism, but Step 2.2 launches no Agent or Worker.
+
+Acceptance evidence:
+
+- First CI candidate exposed one Ruff line-length error; pytest did not run until the static gate was fixed.
+- Second candidate: `ruff check .` **PASS**, `pytest` **135 passed**.
+- Pre-merge invariant review tightened the centralized transition table and disallowed revoking an already-`READY` task into `BLOCKED`.
+- Final `ruff check .`: **PASS**.
+- Final `pytest`: **135 passed in 6.36s**.
+- GitHub Actions `Backend Quality`: **SUCCESS**.
+- All V0.1 and Step 2.1 tests remained green.
+- No Git Worktree, Agent launch, async/thread/process worker execution, merge queue, Redis/Dramatiq, or merge-conflict behavior was introduced prematurely.
+
+## Gate before Step 2.3 — Git Worktree per task
+
+Step 2.3 may now isolate task execution at the Git workspace layer while preserving the accepted Scheduler semantics.
+
+Required direction:
 
 ```text
-PENDING / READY / RUNNING / SUCCEEDED / FAILED / BLOCKED
+Base Repository
+      ↓
+Validated TaskDAG
+      ↓
+DAGScheduler marks TASK-X READY
+      ↓
+Task Worktree Manager
+      ↓
+.devflow/worktrees/TASK-X/
+      ↓
+LocalGitWorkspace bound to exactly that worktree
 ```
 
-Required behavior for Step 2.2:
+Step 2.3 should establish:
 
-- Initial zero-dependency tasks become `READY` deterministically.
-- Dependency tasks remain non-runnable until every dependency is `SUCCEEDED`.
-- A `READY` task can transition to `RUNNING` only through an explicit scheduler operation.
-- A successful running task becomes `SUCCEEDED`, after which newly satisfied dependents become `READY`.
-- A failed running task becomes `FAILED`, and downstream dependents become `BLOCKED` transitively.
-- A blocked task can never become `READY` merely because another sibling later succeeds.
-- Illegal transitions fail closed.
-- Scheduler snapshots must be internally consistent with the immutable `TaskDAG` rather than storing contradictory duplicate graph truth.
-- Scheduling order among simultaneously ready tasks must remain deterministic at this stage.
+- one isolated Git Worktree per task;
+- deterministic task branch/worktree naming;
+- every worktree created from an explicit base commit/ref;
+- task workspace containment and `.git`/symlink protections continue to hold;
+- one task cannot observe another task's uncommitted filesystem changes;
+- cleanup is explicit and safe;
+- creation collisions/stale worktrees fail closed rather than reusing unknown state;
+- worktree metadata is inspectable for later worker and merge-queue stages.
 
-Step 2.2 must **not** create Git Worktrees, run Agents concurrently, implement a worker pool, merge branches, or handle merge conflicts. Those remain later Phase 2 milestones.
+Step 2.3 must **not** start parallel workers, run multiple Agents concurrently, merge task branches, implement merge-conflict classification, or add Redis/Dramatiq. Those remain later Phase 2 milestones.
