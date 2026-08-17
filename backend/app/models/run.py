@@ -33,7 +33,7 @@ class RunEvent(BaseModel):
 
 
 class AgentUsageSummary(BaseModel):
-    """Model identity and accumulated usage visible in the final run evidence."""
+    """Measured usage for an Agent execution path that exposes runtime accounting."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -59,6 +59,7 @@ class SingleTaskRunResult(BaseModel):
     failures: list[FailureReport] = Field(default_factory=list)
     changed_files: list[str] = Field(default_factory=list)
     repair_attempts: int = Field(default=0, ge=0)
+    agent_models: dict[AgentRole, str] = Field(default_factory=dict)
     agent_usage: list[AgentUsageSummary] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -73,4 +74,6 @@ class SingleTaskRunResult(BaseModel):
             raise ValueError("failed runs require at least one terminal failure")
         if self.repair_attempts != len(self.repairs):
             raise ValueError("repair_attempts must equal the number of repair run records")
+        if any(not model.strip() for model in self.agent_models.values()):
+            raise ValueError("agent model identifiers must not be empty")
         return self
