@@ -37,6 +37,8 @@ class LocalGitWorkspace:
             raise ValueError("repository path must not be empty")
         if "\\" in normalized:
             raise ValueError("repository path must use POSIX-style '/' separators")
+        if len(normalized) >= 2 and normalized[1] == ":":
+            raise ValueError("repository path must not contain a Windows drive prefix")
 
         pure_path = PurePosixPath(normalized)
         if pure_path.is_absolute():
