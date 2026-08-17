@@ -5,6 +5,13 @@ from app.workspace.scope import (
     ScopeViolation,
     ScopeViolationKind,
 )
+from app.workspace.worktree import (
+    StaleTaskWorktreeError,
+    TaskWorktreeCollisionError,
+    TaskWorktreeError,
+    TaskWorktreeManager,
+    TaskWorktreeRecord,
+)
 
 __all__ = [
     "LocalGitWorkspace",
@@ -12,5 +19,10 @@ __all__ = [
     "ScopeEnforcer",
     "ScopeViolation",
     "ScopeViolationKind",
+    "StaleTaskWorktreeError",
+    "TaskWorktreeCollisionError",
+    "TaskWorktreeError",
+    "TaskWorktreeManager",
+    "TaskWorktreeRecord",
     "WorkspaceGitError",
 ]
