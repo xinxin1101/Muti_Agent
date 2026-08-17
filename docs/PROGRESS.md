@@ -5,8 +5,8 @@ This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The developmen
 ## Current position
 
 - Current phase: **Phase 2 — V0.2 True Multi-Agent Runtime**
-- Completed item: **Step 2.3 — Git Worktree per task**
-- Next item: **Step 2.4 — Parallel Worker Execution**
+- Completed item: **Step 2.4 — Parallel Worker Execution**
+- Next item: **Step 2.5 — Topological Merge Queue**
 - Phase 2 status: **IN PROGRESS**
 - V0.1 status: **ACCEPTED / COMPLETE**
 
@@ -140,37 +140,87 @@ Isolation and lifecycle acceptance evidence:
 - All accepted V0.1, Step 2.1, and Step 2.2 tests remained green.
 - No Worker pool, concurrent Agent execution, merge queue, dependency integration, merge-conflict classification, Redis/Dramatiq, or Docker behavior was introduced prematurely.
 
-## Gate before Step 2.4 — Parallel Worker Execution
+## Step 2.4 — Parallel Worker Execution — ACCEPTED
 
-Step 2.4 may now connect accepted scheduler readiness to isolated task worktrees and execute multiple independent READY tasks concurrently.
+Merged through PR #14: `Phase 2 Step 2.4: add bounded parallel worker execution`.
+
+Delivered:
+
+- Added `ParallelWorkerCoordinator` as the bounded executor for one deterministic snapshot of scheduler-`READY` tasks.
+- `asyncio.Semaphore` enforces `max_concurrency`; a READY task is not moved to `RUNNING` until it has actually acquired a worker slot.
+- The Coordinator rejects overlapping/re-entrant `run_ready_wave()` calls so separate callers cannot bypass the configured concurrency bound on the same runtime object.
+- Each worker creates exactly one manager-owned linked worktree and runs a task-specific V0.1 runner inside that isolated `LocalGitWorkspace`.
+- The accepted `SingleTaskOrchestrator` remains the execution path inside each worker, preserving Developer → deterministic verification → independent Reviewer → targeted Repair semantics.
+- Blocking deterministic verification is offloaded through `asyncio.to_thread()`, allowing pytest/Ruff verification from independent task worktrees to overlap without serially blocking the shared asyncio event loop.
+- V0.1 terminal evidence maps deterministically back into scheduler `SUCCEEDED` / `FAILED` state.
+- Worker exceptions and task-level cancellation produce explicit non-retryable runtime failure evidence and cannot leave scheduler tasks falsely stuck in `RUNNING`.
+- Failure in one independent worker does not cancel unrelated runnable branches; existing DAG dependency propagation remains the only mechanism that blocks descendants.
+- Added immutable `WorkerTaskResult` and `ParallelWorkerWaveResult` evidence models, including worktree path, task branch, task base commit, finalized task commit, peak concurrency, and final scheduler snapshot.
+- Successful task output is committed only to the worker's task branch; no task worker merges into the base repository.
+- `TaskWorktreeManager.commit_task_changes()` finalizes successful output with `git add --all`, `write-tree`, `commit-tree`, and atomic `update-ref`, avoiding repository-controlled normal commit hooks while preserving a concrete task-branch commit for the future merge queue.
+- Base repository HEAD and files remain unchanged while successful task branches advance independently.
+- Newly-ready downstream tasks are returned as `next_ready_task_ids` but are not automatically executed in the same worker wave.
+- A dependent READY task cannot be executed from the stale frozen run base. A later wave requires an externally resolved full descendant integration commit through `task_base_resolver`.
+- The supplied downstream base is still revalidated by `TaskWorktreeManager` for commit existence and run-base ancestry before a task worktree is created.
+- Step 2.4 deliberately does not create integration commits; the resolver is only the safe handoff boundary that Step 2.5 may satisfy.
+
+Parallel execution acceptance evidence:
+
+- A three-root-task test with `max_concurrency=2` proves two tasks are simultaneously `RUNNING` while the third remains `READY` until a slot is available.
+- Real linked-worktree tests prove overlapping workers cannot see one another's uncommitted changes and do not mutate the base repository.
+- A same-Coordinator re-entry regression test rejects two overlapping READY waves.
+- Newly-unlocked dependent tasks remain READY after the current wave rather than being executed from the wrong base commit.
+- A follow-up wave without a dependency integration base fails before scheduler mutation or worktree creation.
+- A synthetic descendant integration commit demonstrates that the future Step 2.5 handoff can safely enable a later dependent worker wave.
+- One failed independent branch blocks only its DAG descendants while another branch can still succeed and unlock its own dependent.
+- Runner exception and cancellation tests prove task state is terminalized with structured evidence instead of remaining `RUNNING`.
+- Successful-worker tests prove the task branch receives a real commit while base HEAD is unchanged and the finalized worktree is clean.
+- Two real V0.1 `SingleTaskOrchestrator` instances execute concurrently with real Developer tool calls, real Git linked worktrees, real pytest/Ruff verification, independent semantic review, and independent task-branch commits.
+- A thread-barrier verifier regression proves synchronous deterministic verification is truly offloaded and can overlap across workers.
+- First complete candidate: `ruff check .` **PASS**, `pytest` **162 passed**.
+- Architecture hardening added non-reentrant waves and the dependent-task integration-base gate; next candidate: **164 passed**.
+- Final handoff regression added descendant-base execution coverage.
+- Final `ruff check .`: **PASS**.
+- Final `pytest`: **165 passed in 8.61s**.
+- GitHub Actions `Backend Quality`: **SUCCESS**.
+- No real SiliconFlow API call was required by CI.
+- All accepted V0.1 and Phase 2 Step 2.1–2.3 tests remained green.
+- No topological merge queue, dependency integration implementation, merge-conflict classification, Redis/Dramatiq, or Docker behavior was introduced prematurely.
+
+## Gate before Step 2.5 — Topological Merge Queue
+
+Step 2.5 may now integrate committed successful task branches in deterministic DAG/topological order and produce trusted descendant integration commits for later dependent worker waves.
 
 Required direction:
 
 ```text
-Validated TaskDAG
+successful WorkerTaskResult(s)
       ↓
-DAGScheduler
+committed task branches
       ↓
-READY task set
+Topological Merge Queue
       ↓
-Bounded Worker Coordinator
-   ├── TASK-A → isolated TaskWorktree → V0.1 SingleTaskOrchestrator
-   └── TASK-B → isolated TaskWorktree → V0.1 SingleTaskOrchestrator
+current integration commit
       ↓
-per-task terminal evidence
+validate task branch / expected task commit
       ↓
-DAGScheduler.succeed()/fail()
+integrate eligible task branch
+      ↓
+new integration commit
+      ↓
+task_base_resolver for newly READY dependents
 ```
 
-Step 2.4 should establish:
+Step 2.5 should establish:
 
-- a bounded concurrency limit rather than unbounded task fan-out;
-- only scheduler-`READY` tasks may acquire a worker and become `RUNNING`;
-- each worker is bound to exactly one manager-owned task worktree;
-- every task continues to run the accepted V0.1 Developer → Verify → Reviewer → Repair evidence loop inside its own worktree;
-- worker completion maps terminal V0.1 evidence back to scheduler `SUCCEEDED` / `FAILED` deterministically;
-- one worker failure must not cancel unrelated independent runnable branches unless the DAG dependency rules require blocking;
-- task exceptions/cancellation must not leave scheduler state falsely `RUNNING` without explicit failure evidence;
-- concurrency tests must prove tasks overlap in time while their filesystem changes remain isolated.
+- one explicit integration head/base owned by the merge queue rather than advancing worker task branches or trusting the base working tree implicitly;
+- deterministic merge eligibility/order derived from the validated DAG and successful worker evidence;
+- only scheduler-`SUCCEEDED` tasks with an exact expected finalized task-branch commit may enter the queue;
+- task branch identity and commit ancestry must be revalidated immediately before integration;
+- an already-integrated task must not be merged twice;
+- integration must preserve committed task-branch evidence rather than deleting or rewriting worker history;
+- each successful integration must produce an inspectable descendant commit that can be passed to Step 2.4 as the base for newly READY dependent tasks;
+- the base repository working tree must remain clean and integration state must be deterministic/recoverable from Git evidence;
+- merge/integration failure must stop safely without pretending the task was integrated.
 
-Step 2.4 must **not** merge task branches, implement the topological merge queue, classify Git merge conflicts, add Redis/Dramatiq persistence, or introduce the later Integration/Human Gate. Those remain subsequent Phase 2 milestones.
+Step 2.5 must **not** add rich merge-conflict diagnosis/repair policy; detailed `MERGE_CONFLICT` classification belongs to Step 2.6. It must also not add Redis/Dramatiq persistence, Docker sandboxing, or the final Integration/Human Gate strategy.
