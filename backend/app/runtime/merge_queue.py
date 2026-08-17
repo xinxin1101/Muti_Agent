@@ -150,6 +150,7 @@ class TopologicalMergeQueue:
         )
 
     def _integrate_one(self, result: WorkerTaskResult) -> bool:
+        self._validate_worker_result(result)
         self._assert_ref_head()
         previous_head = self._head
         task_commit = result.commit_sha or ""
