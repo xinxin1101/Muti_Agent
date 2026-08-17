@@ -87,10 +87,16 @@ class TaskWorktreeManager:
     def root(self) -> Path:
         return self._root
 
-    def record_for(self, task_id: str) -> TaskWorktreeRecord:
+    def record_for(
+        self,
+        task_id: str,
+        *,
+        base_commit: str | None = None,
+    ) -> TaskWorktreeRecord:
         """Return the deterministic branch/path identity reserved for one task."""
 
         normalized = self._validate_task_id(task_id)
+        task_base = self._resolve_task_base(base_commit)
         digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
         slug = re.sub(r"[^A-Za-z0-9_-]+", "-", normalized).strip("-_").lower()
         slug = (slug or "task")[:48]
@@ -99,20 +105,25 @@ class TaskWorktreeManager:
         self._validate_branch_name(branch_name)
         return TaskWorktreeRecord(
             task_id=normalized,
-            base_commit=self._base_commit,
+            base_commit=task_base,
             branch_name=branch_name,
             path=path,
         )
 
-    def create(self, task_id: str) -> TaskWorktreeRecord:
-        """Create a locked linked worktree and a fresh task branch from the frozen base commit."""
+    def create(
+        self,
+        task_id: str,
+        *,
+        base_commit: str | None = None,
+    ) -> TaskWorktreeRecord:
+        """Create a locked linked worktree and a fresh task branch from an immutable commit."""
 
         if self._base_workspace.changed_files():
             raise TaskWorktreeError(
                 "base workspace became dirty after the worktree base was frozen"
             )
 
-        record = self.record_for(task_id)
+        record = self.record_for(task_id, base_commit=base_commit)
         registered = self._registered_worktrees()
         existing = self._find_registered_path(record.path, registered)
         if existing is not None:
@@ -243,7 +254,7 @@ class TaskWorktreeManager:
 
         head = self._git_at(record.path, ["rev-parse", "--verify", "HEAD^{commit}"]).stdout.strip()
         if head != record.base_commit:
-            raise TaskWorktreeError("new task worktree does not point at the frozen base commit")
+            raise TaskWorktreeError("new task worktree does not point at its requested base commit")
         branch = self._git_at(
             record.path,
             ["symbolic-ref", "--quiet", "--short", "HEAD"],
@@ -252,6 +263,32 @@ class TaskWorktreeManager:
             raise TaskWorktreeError(
                 "new task worktree is not checked out on its reserved task branch"
             )
+
+    def _resolve_task_base(self, requested: str | None) -> str:
+        if requested is None:
+            return self._base_commit
+        if _COMMIT_PATTERN.fullmatch(requested) is None:
+            raise ValueError("task base commit must be a full 40-64 character hexadecimal id")
+
+        resolved = self._git(
+            ["rev-parse", "--verify", f"{requested}^{{commit}}"],
+            check=False,
+        )
+        canonical = resolved.stdout.strip()
+        if resolved.returncode != 0 or _COMMIT_PATTERN.fullmatch(canonical) is None:
+            raise TaskWorktreeError("requested task base commit does not exist in the repository")
+
+        ancestry = self._git(
+            ["merge-base", "--is-ancestor", self._base_commit, canonical],
+            check=False,
+        )
+        if ancestry.returncode == 1:
+            raise TaskWorktreeError(
+                "requested task base commit must descend from the frozen run base"
+            )
+        if ancestry.returncode != 0:
+            raise TaskWorktreeError("Git could not validate the requested task base ancestry")
+        return canonical
 
     def _assert_owned_registration(
         self,
