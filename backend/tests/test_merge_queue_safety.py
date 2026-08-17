@@ -139,7 +139,7 @@ def test_task_branch_movement_is_rejected_before_ref_advances(tmp_path: Path) ->
     assert queue.snapshot().attempts == ()
 
 
-def test_real_merge_conflict_stops_at_last_successful_head(tmp_path: Path) -> None:
+def test_real_merge_conflict_stops_and_recovers_from_git_evidence(tmp_path: Path) -> None:
     base = _repository(tmp_path)
     task_a = _task("TASK-A")
     task_b = _task("TASK-B")
@@ -159,12 +159,76 @@ def test_real_merge_conflict_stops_at_last_successful_head(tmp_path: Path) -> No
     assert conflict.integration_commit is None
     assert conflict.failure is not None
     assert conflict.failure.failure_type is models.FailureType.MERGE_CONFLICT
+    assert any(
+        evidence.startswith("conflict_marker=") for evidence in conflict.failure.evidence
+    )
     assert snapshot.head_commit == snapshot.attempts[0].integration_commit
     assert _git(base.root, "rev-parse", queue.integration_ref) == snapshot.head_commit
+    conflict_ref = "refs/devflow/integration-conflicts/run-001"
+    assert _git_code(base.root, "show-ref", "--verify", "--quiet", conflict_ref) == 0
     assert base.changed_files() == []
 
+    recovered = _queue(scheduler, manager, base)
+    recovered_snapshot = recovered.snapshot()
+    assert recovered_snapshot.stopped is True
+    assert recovered_snapshot.integrated_task_ids == ("TASK-A",)
+    assert [attempt.outcome for attempt in recovered_snapshot.attempts] == [
+        models.MergeAttemptOutcome.INTEGRATED,
+        models.MergeAttemptOutcome.CONFLICT,
+    ]
+    assert recovered_snapshot.attempts[-1].task_id == "TASK-B"
+    assert recovered_snapshot.head_commit == snapshot.head_commit
+
     with pytest.raises(MergeQueueError, match="stopped after an unresolved integration conflict"):
-        queue.integrate([])
+        recovered.integrate([])
+
+
+def test_forged_integration_commit_with_wrong_tree_is_rejected_on_recovery(
+    tmp_path: Path,
+) -> None:
+    base = _repository(tmp_path)
+    task = _task("TASK-A")
+    scheduler = DAGScheduler(_dag(task))
+    manager = workspace.TaskWorktreeManager(base, tmp_path / "worktrees")
+    result = _finish_worker(manager, scheduler, task, "VALUE=task-a\n")
+    queue = _queue(scheduler, manager, base)
+    snapshot = queue.integrate([result])
+    attempt = snapshot.attempts[0]
+    previous_head = attempt.previous_integration_commit
+    wrong_tree = _git(base.root, "rev-parse", f"{previous_head}^{{tree}}")
+    message = (
+        f"DevFlow integrate {result.task_id}\n\n"
+        f"DevFlow-Task: {result.task_id}\n"
+        f"DevFlow-Task-Branch: {result.branch_name}\n"
+        f"DevFlow-Task-Base: {result.base_commit}\n"
+        f"DevFlow-Task-Commit: {result.commit_sha}"
+    )
+    forged = _git(
+        base.root,
+        "commit-tree",
+        wrong_tree,
+        "-p",
+        previous_head,
+        "-p",
+        result.commit_sha or "",
+        "-m",
+        message,
+    )
+    _git(
+        base.root,
+        "update-ref",
+        queue.integration_ref,
+        forged,
+        snapshot.head_commit,
+    )
+
+    with pytest.raises(
+        MergeQueueError,
+        match="integration commit tree does not match deterministic Git merge",
+    ):
+        _queue(scheduler, manager, base)
+
+    assert base.changed_files() == []
 
 
 def test_external_integration_ref_movement_is_detected(tmp_path: Path) -> None:
