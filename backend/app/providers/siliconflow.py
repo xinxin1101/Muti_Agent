@@ -102,10 +102,7 @@ class SiliconFlowDriver:
     def _secret_value(api_key: str | SecretStr | None) -> str | None:
         if api_key is None:
             return None
-        if isinstance(api_key, SecretStr):
-            value = api_key.get_secret_value()
-        else:
-            value = api_key
+        value = api_key.get_secret_value() if isinstance(api_key, SecretStr) else api_key
         normalized = value.strip()
         return normalized or None
 
@@ -118,9 +115,7 @@ class SiliconFlowDriver:
         completion_tokens = int(getattr(raw_usage, "completion_tokens", 0) or 0)
         raw_total = getattr(raw_usage, "total_tokens", None)
         total_tokens = (
-            int(raw_total)
-            if raw_total is not None
-            else prompt_tokens + completion_tokens
+            int(raw_total) if raw_total is not None else prompt_tokens + completion_tokens
         )
 
         return TokenUsage(
