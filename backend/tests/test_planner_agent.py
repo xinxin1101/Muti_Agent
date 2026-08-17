@@ -3,10 +3,8 @@ import json
 
 import pytest
 
-from app.agents.errors import InvalidPlannerOutputError
-from app.agents.planner import PlannerAgent
-from app.models.agent import AgentRequest, AgentResponse, AgentRole, MessageRole
-from app.models.failure import FailureSource, FailureType
+from app.agents import InvalidPlannerOutputError, PlannerAgent
+from app.models import AgentRequest, AgentResponse, AgentRole, FailureSource, FailureType
 
 
 VALID_TASK = {
@@ -60,7 +58,7 @@ def test_planner_returns_valid_task_contract_without_repair() -> None:
     assert len(driver.requests) == 1
     assert driver.requests[0].role is AgentRole.PLANNER
     assert driver.requests[0].model == "test/planner"
-    assert driver.requests[0].messages[0].role is MessageRole.SYSTEM
+    assert driver.requests[0].messages[0].role.value == "system"
     assert "TaskContract JSON Schema" in driver.requests[0].messages[0].content
 
 
