@@ -31,6 +31,7 @@ from app.models.tools import (
     ToolExecutionResult,
 )
 from app.models.verification import CheckResult, CheckType, VerificationResult
+from app.models.worker import ParallelWorkerWaveResult, WorkerTaskResult
 
 __all__ = [
     "AgentMessage",
@@ -46,6 +47,7 @@ __all__ = [
     "FailureSource",
     "FailureType",
     "MessageRole",
+    "ParallelWorkerWaveResult",
     "RepairRunResult",
     "RepairStopReason",
     "ReviewDecision",
@@ -68,4 +70,5 @@ __all__ = [
     "ToolErrorCode",
     "ToolExecutionResult",
     "VerificationResult",
+    "WorkerTaskResult",
 ]
