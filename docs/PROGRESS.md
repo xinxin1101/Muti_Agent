@@ -5,9 +5,11 @@ This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The developmen
 ## Current position
 
 - Phase: **Phase 1 — V0.1 Single Task Evidence Loop**
-- Completed step: **Step 1.9 — Targeted repair loop**
-- Next step: **Step 1.10 — Orchestrator + CLI/API demo**
-- Step 1.10 status: **NOT STARTED**
+- Completed step: **Step 1.10 — Orchestrator + CLI demo**
+- V0.1 status: **ACCEPTED / COMPLETE**
+- Next phase: **Phase 2 — V0.2 True Multi-Agent Runtime**
+- Next implementation item: **Task DAG representation**
+- Phase 2 status: **NOT STARTED**
 
 ## Step 1.1 — ACCEPTED
 
@@ -169,24 +171,61 @@ Acceptance evidence:
 - CI made **no real SiliconFlow API call**.
 - No full single-task Orchestrator, CLI/API run entrypoint, DAG/worktree scheduler, Redis, Docker sandbox, or frontend behavior was introduced prematurely.
 
-## Gate before Step 1.10
+## Step 1.10 — ACCEPTED
 
-Step 1.10 may now compose the already accepted V0.1 components into one explicit single-task runtime:
+Merged through PR #10: `Phase 1 Step 1.10: orchestrate the V0.1 single-task loop`.
+
+Delivered:
+- Explicit `TaskStateMachine` with validated V0.1 transitions across `PENDING`, `RUNNING`, `VERIFYING`, `REVIEWING`, `REPAIRING`, `SUCCEEDED`, and `FAILED`.
+- `SingleTaskOrchestrator` composes Developer, deterministic verification, semantic review, failure classification, and targeted Repair into one bounded execution loop.
+- Developer performs the initial implementation once. Later retries are targeted Repair attempts; the original task is not blindly regenerated.
+- A hard-verification failure is classified before Repair. Non-repairable or mixed safety failures terminate fail-closed.
+- A passing hard gate is mandatory before Reviewer execution. `CHANGES_REQUESTED` becomes `REVIEW_REJECTED` evidence, then Repair is followed by mandatory re-verification and re-review.
+- `TaskContract.max_retries` is the single Repair-loop budget. Budget exhaustion becomes terminal evidence before an additional Repair model call and preserves the root failure taxonomy.
+- Provider failures, invalid Reviewer structure, abnormal Developer/Repair stop reasons, missing Git changes, and Reviewer evidence-gate failures are converted into explicit terminal `FAILED` results.
+- `SingleTaskRunResult` provides terminal state, complete transition history, actual Git changed files, Developer evidence, all verification results, all review decisions, repair history, terminal failures, configured Agent model identities, and measured Developer/Repair usage/latency.
+- CLI entrypoint: `python -m app.cli run --workspace <repo> --task <task.json>`.
+- Installed console-script equivalent: `devflow run --workspace <repo> --task <task.json>`.
+- CLI validates the TaskContract JSON, prints a terminal JSON evidence bundle, returns exit code `0` for `SUCCEEDED`, `1` for a terminal task failure, and `2` for input/configuration errors.
+- Planner remains a separate natural-language → validated TaskContract boundary; it is intentionally not hidden inside the execution state machine.
+
+End-to-end acceptance evidence:
+- **Verification-repair path:** real temporary Git repository → Developer Agent intentionally writes the wrong value → real pytest fails → `TEST_FAILURE` reaches Repair → controlled `apply_patch` fixes the implementation → real pytest/Ruff pass → Reviewer PASS → `SUCCEEDED`.
+- **Semantic-review repair path:** Developer output passes real pytest/Ruff → Reviewer returns `CHANGES_REQUESTED` → `REVIEW_REJECTED` reaches Repair → controlled repair → real pytest/Ruff rerun → Reviewer PASS → `SUCCEEDED`.
+- Retry-budget exhaustion produces terminal `FAILED`, preserves `TEST_FAILURE`, sets it non-retryable, records `repair_attempts_exhausted`, and never calls Reviewer after the hard gate remains failed.
+- Illegal state-machine transitions are rejected rather than silently skipped.
+- CLI TaskContract loading, terminal JSON output, and exit-code behavior are covered.
+- Strict `ruff check .`: **PASS**.
+- `pytest`: **104 passed in 6.86s**.
+- GitHub Actions `Backend Quality`: **SUCCESS**.
+- CI uses real Git/pytest/Ruff execution and real DevFlow Agent classes with Fake model drivers; it makes **no real SiliconFlow API call** and consumes no paid model quota.
+- No V0.2/V0.3/V1.0 features were introduced prematurely: no Task DAG, parallel workers, Git worktrees, merge queue, Redis/Dramatiq, Docker sandbox, Context Packet Builder, or React frontend.
+
+## V0.1 exit criterion — ACCEPTED
+
+The Phase 1 exit criterion is satisfied: DevFlow now has a reproducible single-task evidence loop whose terminal result can be inspected independently of an LLM self-report.
 
 ```text
-TaskContract
-    ↓
+Validated TaskContract
+      ↓
 DeveloperAgent
-    ↓
+      ↓
+Git repository state
+      ↓
 DeterministicVerifier
-    ├── hard failure + repairable evidence → RepairAgent → verify again
-    └── PASS
-          ↓
+      ├── repairable FAIL → FailureClassifier → RepairAgent → verify again
+      ├── safety/non-repairable FAIL → FAILED
+      └── PASS
+            ↓
 ReviewerAgent
-    ├── CHANGES_REQUESTED → FailureClassifier → RepairAgent → verify again → review again
-    └── PASS → SUCCEEDED
+      ├── CHANGES_REQUESTED → FailureClassifier → RepairAgent → verify again → review again
+      └── PASS → SUCCEEDED
 ```
 
-Step 1.10 must provide a bounded task state machine and auditable final run result. Retry attempts must use the Step 1.9 budget semantics and must terminate deterministically. The first runnable surface should be a CLI; minimal FastAPI endpoints may be added only where they materially help demonstrate the V0.1 loop. Final output must expose changed files, verification evidence, reviewer decision, repair attempts, model/usage metadata, and terminal failure evidence when unsuccessful.
+The production CLI is wired to `SiliconFlowDriver` when a valid API key and target-project environment are supplied. The acceptance suite intentionally uses Fake model drivers so CI is reproducible and does not require paid external calls.
 
-Step 1.10 must **not** prematurely add V0.2/V0.3/V1.0 concerns: no multi-task DAG scheduling, parallel Git worktrees, merge queue, Redis/Dramatiq, Docker sandbox, Context Packet Builder, or React frontend yet.
+## Gate before Phase 2
+
+Phase 2 is **not started**. The next item from `docs/DEVELOPMENT_PLAN.md` is **Task DAG representation**, followed in order by the scheduler, per-task Git Worktrees, parallel workers, topological merge queue, merge-conflict classification, and Integration/Human Gate strategy.
+
+Phase 2 must preserve every V0.1 evidence and permission boundary. Adding multiple tasks must not allow dependency-blocked work to start early, one task to modify another task's workspace, or parallel execution to bypass deterministic verification and independent review.
