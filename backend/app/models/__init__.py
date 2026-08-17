@@ -8,6 +8,7 @@ from app.models.agent import (
 )
 from app.models.developer import DeveloperRunResult, DeveloperStopReason
 from app.models.failure import FailureReport, FailureSource, FailureType
+from app.models.repair import RepairRunResult, RepairStopReason
 from app.models.review import (
     ReviewDecision,
     ReviewIssue,
@@ -36,6 +37,8 @@ __all__ = [
     "FailureSource",
     "FailureType",
     "MessageRole",
+    "RepairRunResult",
+    "RepairStopReason",
     "ReviewDecision",
     "ReviewIssue",
     "ReviewOutcome",

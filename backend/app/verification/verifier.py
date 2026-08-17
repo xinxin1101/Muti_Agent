@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shlex
 import subprocess
 import sys
@@ -55,15 +56,7 @@ class DeterministicVerifier:
         checks: list[CheckResult] = []
         changed_files = workspace.changed_files()
         scope_result = self._scope_enforcer.check(task, changed_files)
-        checks.append(
-            CheckResult(
-                check_type=CheckType.SCOPE,
-                name="git_scope",
-                passed=scope_result.passed,
-                failure_type=None if scope_result.passed else FailureType.SCOPE_VIOLATION,
-                stderr=self._scope_error(scope_result),
-            )
-        )
+        checks.append(self._scope_check("git_scope", scope_result))
 
         if not scope_result.passed:
             return VerificationResult(passed=False, checks=checks)
@@ -100,6 +93,10 @@ class DeterministicVerifier:
                 continue
 
             checks.append(self._run_command(command, spec, workspace=workspace))
+
+        post_scope = self._scope_enforcer.check(task, workspace.changed_files())
+        if not post_scope.passed:
+            checks.append(self._scope_check("git_scope_post_verification", post_scope))
 
         return VerificationResult(
             passed=all(check.passed for check in checks),
@@ -143,6 +140,8 @@ class DeterministicVerifier:
         workspace: LocalGitWorkspace,
     ) -> CheckResult:
         started_at = perf_counter()
+        environment = os.environ.copy()
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
         try:
             completed = subprocess.run(
                 spec.argv,
@@ -153,6 +152,7 @@ class DeterministicVerifier:
                 timeout=self._command_timeout_seconds,
                 check=False,
                 shell=False,
+                env=environment,
             )
         except subprocess.TimeoutExpired as exc:
             duration_ms = max(0, int((perf_counter() - started_at) * 1000))
@@ -214,7 +214,14 @@ class DeterministicVerifier:
             arguments = argv[1:]
             DeterministicVerifier._assert_workspace_bound_arguments(arguments)
             return _CommandSpec(
-                argv=[sys.executable, "-m", "pytest", *arguments],
+                argv=[
+                    sys.executable,
+                    "-m",
+                    "pytest",
+                    "-p",
+                    "no:cacheprovider",
+                    *arguments,
+                ],
                 check_type=CheckType.TEST,
                 failure_type=FailureType.TEST_FAILURE,
                 name="pytest",
@@ -223,6 +230,7 @@ class DeterministicVerifier:
         if executable == "ruff" and len(argv) >= 2 and argv[1] == "check":
             arguments = argv[1:]
             DeterministicVerifier._assert_workspace_bound_arguments(arguments)
+            DeterministicVerifier._assert_non_mutating_ruff(arguments)
             return _CommandSpec(
                 argv=[sys.executable, "-m", "ruff", *arguments],
                 check_type=CheckType.LINT,
@@ -236,7 +244,14 @@ class DeterministicVerifier:
                 arguments = argv[3:]
                 DeterministicVerifier._assert_workspace_bound_arguments(arguments)
                 return _CommandSpec(
-                    argv=[sys.executable, "-m", "pytest", *arguments],
+                    argv=[
+                        sys.executable,
+                        "-m",
+                        "pytest",
+                        "-p",
+                        "no:cacheprovider",
+                        *arguments,
+                    ],
                     check_type=CheckType.TEST,
                     failure_type=FailureType.TEST_FAILURE,
                     name="pytest",
@@ -244,6 +259,7 @@ class DeterministicVerifier:
             if module == "ruff" and len(argv) >= 4 and argv[3] == "check":
                 arguments = argv[3:]
                 DeterministicVerifier._assert_workspace_bound_arguments(arguments)
+                DeterministicVerifier._assert_non_mutating_ruff(arguments)
                 return _CommandSpec(
                     argv=[sys.executable, "-m", "ruff", *arguments],
                     check_type=CheckType.LINT,
@@ -275,6 +291,24 @@ class DeterministicVerifier:
                     raise ValueError("Verification command arguments must not traverse workspace.")
 
     @staticmethod
+    def _assert_non_mutating_ruff(arguments: list[str]) -> None:
+        for argument in arguments:
+            if argument in {"--fix", "--fix-only"}:
+                raise ValueError("Verification Ruff commands must not mutate the workspace.")
+            if argument.startswith(("--fix=", "--fix-only=")):
+                raise ValueError("Verification Ruff commands must not mutate the workspace.")
+
+    @staticmethod
+    def _scope_check(name: str, scope_result: ScopeCheckResult) -> CheckResult:
+        return CheckResult(
+            check_type=CheckType.SCOPE,
+            name=name,
+            passed=scope_result.passed,
+            failure_type=None if scope_result.passed else FailureType.SCOPE_VIOLATION,
+            stderr=DeterministicVerifier._scope_error(scope_result),
+        )
+
+    @staticmethod
     def _scope_error(scope_result: ScopeCheckResult) -> str:
         if scope_result.passed:
             return ""
@@ -291,6 +325,8 @@ class DeterministicVerifier:
     @staticmethod
     def _failure_message(check: CheckResult) -> str:
         if check.failure_type is FailureType.SCOPE_VIOLATION:
+            if check.name == "git_scope_post_verification":
+                return "Verification commands produced out-of-scope repository changes."
             return "Git scope integrity check failed before deterministic verification."
         if check.failure_type is FailureType.TEST_FAILURE:
             return "Deterministic pytest verification failed."

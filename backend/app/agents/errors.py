@@ -15,3 +15,11 @@ class InvalidReviewerOutputError(Exception):
     def __init__(self, failure: FailureReport) -> None:
         self.failure = failure
         super().__init__(failure.message)
+
+
+class RepairBudgetExhaustedError(Exception):
+    """Raised before model execution when no repair attempts remain."""
+
+    def __init__(self, failures: list[FailureReport]) -> None:
+        self.failures = failures
+        super().__init__("repair retry budget was exhausted")
