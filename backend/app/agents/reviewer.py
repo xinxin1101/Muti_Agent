@@ -199,8 +199,8 @@ class ReviewerAgent:
             "file mutations. Return one JSON object only, with no Markdown fences or prose outside "
             "the JSON. The object must validate against the ReviewDecision JSON Schema below. PASS "
             "requires zero issues. CHANGES_REQUESTED requires at least one concrete issue. Prefer "
-            "precise issues tied to changed files when possible. Do not invent failures unsupported "
-            "by the supplied task, diff, or verification evidence.\n\n"
+            "precise issues tied to changed files when possible. Do not invent failures "
+            "unsupported by the supplied task, diff, or verification evidence.\n\n"
             f"ReviewDecision JSON Schema:\n{self._schema_json}"
         )
 
