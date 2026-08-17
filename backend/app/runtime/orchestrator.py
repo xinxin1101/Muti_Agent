@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 
 from app.agents import DeveloperAgent, RepairAgent, ReviewerAgent
@@ -117,7 +118,11 @@ class SingleTaskOrchestrator:
         machine.transition(TaskRunState.VERIFYING, detail="Deterministic hard gate started.")
 
         while True:
-            verification = self._verifier.verify(task, workspace=workspace)
+            verification = await asyncio.to_thread(
+                self._verifier.verify,
+                task,
+                workspace=workspace,
+            )
             verifications.append(verification)
 
             if not verification.passed:
