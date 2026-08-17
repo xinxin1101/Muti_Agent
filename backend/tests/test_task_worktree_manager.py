@@ -89,6 +89,42 @@ def test_new_worktrees_keep_using_frozen_base_after_main_head_advances(tmp_path:
     assert (record.path / "shared.txt").read_text(encoding="utf-8") == "base\n"
 
 
+def test_explicit_descendant_commit_can_be_used_as_a_future_task_base(tmp_path: Path) -> None:
+    base = _repository(tmp_path)
+    manager = workspace.TaskWorktreeManager(base, tmp_path / "worktrees")
+
+    (base.root / "dependency.txt").write_text("integrated-upstream\n", encoding="utf-8")
+    _git(base.root, "add", "dependency.txt")
+    _git(base.root, "commit", "-m", "integrate upstream task")
+    descendant = _git(base.root, "rev-parse", "HEAD")
+
+    record = manager.create("TASK-DOWNSTREAM", base_commit=descendant)
+
+    assert record.base_commit == descendant
+    assert _git(record.path, "rev-parse", "HEAD") == descendant
+    assert (record.path / "dependency.txt").read_text(encoding="utf-8") == (
+        "integrated-upstream\n"
+    )
+
+
+def test_task_base_must_be_a_descendant_of_the_frozen_run_base(tmp_path: Path) -> None:
+    base = _repository(tmp_path)
+    manager = workspace.TaskWorktreeManager(base, tmp_path / "worktrees")
+    tree = _git(base.root, "rev-parse", "HEAD^{tree}")
+    unrelated = _git(base.root, "commit-tree", tree, "-m", "unrelated root")
+
+    with pytest.raises(workspace.TaskWorktreeError, match="must descend"):
+        manager.create("TASK-UNRELATED", base_commit=unrelated)
+
+
+def test_task_base_requires_a_full_immutable_commit_id(tmp_path: Path) -> None:
+    base = _repository(tmp_path)
+    manager = workspace.TaskWorktreeManager(base, tmp_path / "worktrees")
+
+    with pytest.raises(ValueError, match="full 40-64 character hexadecimal"):
+        manager.create("TASK-SHORT-SHA", base_commit=manager.base_commit[:12])
+
+
 def test_duplicate_task_creation_fails_closed_without_reusing_branch_or_path(
     tmp_path: Path,
 ) -> None:
@@ -146,11 +182,15 @@ def test_create_rejects_base_that_became_dirty_after_manager_initialization(
         manager.create("TASK-001")
 
 
-def test_worktree_root_must_not_live_inside_base_repository(tmp_path: Path) -> None:
+def test_worktree_root_must_not_live_inside_or_pollute_base_repository(tmp_path: Path) -> None:
     base = _repository(tmp_path)
+    forbidden_root = base.root / ".devflow" / "worktrees"
 
     with pytest.raises(ValueError, match="outside the base repository"):
-        workspace.TaskWorktreeManager(base, base.root / ".devflow" / "worktrees")
+        workspace.TaskWorktreeManager(base, forbidden_root)
+
+    assert not (base.root / ".devflow").exists()
+    assert base.changed_files() == []
 
 
 def test_clean_remove_deletes_linked_worktree_but_preserves_task_branch(tmp_path: Path) -> None:
@@ -177,6 +217,21 @@ def test_clean_remove_deletes_linked_worktree_but_preserves_task_branch(tmp_path
     assert branch_check.returncode == 0
 
 
+def test_clean_remove_preserves_committed_task_output_on_branch(tmp_path: Path) -> None:
+    base = _repository(tmp_path)
+    manager = workspace.TaskWorktreeManager(base, tmp_path / "worktrees")
+    record = manager.create("TASK-COMMITTED")
+    (record.path / "shared.txt").write_text("committed-task-output\n", encoding="utf-8")
+    _git(record.path, "add", "shared.txt")
+    _git(record.path, "commit", "-m", "task output")
+    task_head = _git(record.path, "rev-parse", "HEAD")
+
+    assert manager.remove("TASK-COMMITTED")
+
+    assert not record.path.exists()
+    assert _git(base.root, "rev-parse", record.branch_name) == task_head
+
+
 def test_dirty_remove_requires_explicit_force_and_still_preserves_branch(tmp_path: Path) -> None:
     base = _repository(tmp_path)
     manager = workspace.TaskWorktreeManager(base, tmp_path / "worktrees")
@@ -201,6 +256,14 @@ def test_task_id_is_not_used_as_a_raw_branch_name(tmp_path: Path) -> None:
     assert ".." not in record.branch_name
     assert not record.branch_name.endswith(".")
     assert _git(record.path, "symbolic-ref", "--short", "HEAD") == record.branch_name
+
+
+def test_manager_rejects_task_ids_that_do_not_match_task_contract_format(tmp_path: Path) -> None:
+    base = _repository(tmp_path)
+    manager = workspace.TaskWorktreeManager(base, tmp_path / "worktrees")
+
+    with pytest.raises(ValueError, match="TaskContract task_id format"):
+        manager.record_for(" TASK-001")
 
 
 def test_similar_task_ids_receive_distinct_paths_and_branches(tmp_path: Path) -> None:
