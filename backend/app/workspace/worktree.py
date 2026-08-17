@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import re
-import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -63,14 +62,15 @@ class TaskWorktreeManager:
         root = Path(worktree_root).expanduser()
         if root.exists() and root.is_symlink():
             raise ValueError("worktree root must not be a symbolic link")
-        root.mkdir(parents=True, exist_ok=True)
-        resolved_root = root.resolve()
+        resolved_root = root.resolve(strict=False)
         try:
             resolved_root.relative_to(base_workspace.root)
         except ValueError:
             pass
         else:
             raise ValueError("worktree root must be outside the base repository")
+        root.mkdir(parents=True, exist_ok=True)
+        resolved_root = root.resolve()
 
         self._base_workspace = base_workspace
         self._root = resolved_root
@@ -126,9 +126,7 @@ class TaskWorktreeManager:
                 f"task worktree path already exists but is not registered: {record.path}"
             )
         if self._branch_exists(record.branch_name):
-            raise TaskWorktreeCollisionError(
-                f"task branch already exists: {record.branch_name}"
-            )
+            raise TaskWorktreeCollisionError(f"task branch already exists: {record.branch_name}")
 
         self._git(
             [
@@ -311,14 +309,14 @@ class TaskWorktreeManager:
 
     @staticmethod
     def _validate_task_id(task_id: str) -> str:
-        normalized = task_id.strip()
         if (
-            not normalized
-            or len(normalized) > 128
-            or _TASK_ID_PATTERN.fullmatch(normalized) is None
+            not task_id
+            or task_id != task_id.strip()
+            or len(task_id) > 128
+            or _TASK_ID_PATTERN.fullmatch(task_id) is None
         ):
             raise ValueError("task_id must use the TaskContract task_id format")
-        return normalized
+        return task_id
 
     def _git(
         self,
@@ -353,16 +351,3 @@ class TaskWorktreeManager:
             stderr = completed.stderr.strip() or completed.stdout.strip() or "unknown git error"
             raise TaskWorktreeError(f"git worktree command failed: {stderr}")
         return completed
-
-
-def remove_unregistered_empty_directory(path: str | Path) -> None:
-    """Remove only an empty, non-symlink directory; useful after failed external setup."""
-
-    candidate = Path(path)
-    if candidate.is_symlink():
-        raise ValueError("refusing to remove a symbolic-link directory")
-    if not candidate.exists():
-        return
-    if not candidate.is_dir() or any(candidate.iterdir()):
-        raise ValueError("refusing to remove a non-empty or non-directory path")
-    shutil.rmtree(candidate)
