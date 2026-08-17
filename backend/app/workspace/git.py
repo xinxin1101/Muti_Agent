@@ -46,7 +46,13 @@ class LocalGitWorkspace:
         if normalized == "." or any(part == ".." for part in pure_path.parts):
             raise ValueError("repository path must remain inside the workspace")
 
-        candidate = (self._root / Path(*pure_path.parts)).resolve(strict=False)
+        current = self._root
+        for part in pure_path.parts:
+            current = current / part
+            if current.is_symlink():
+                raise ValueError("repository path must not traverse symbolic links")
+
+        candidate = current.resolve(strict=False)
         try:
             candidate.relative_to(self._root)
         except ValueError as exc:
