@@ -111,6 +111,21 @@ def _review_pass() -> str:
     ).model_dump_json()
 
 
+def _review_changes_requested() -> str:
+    return models.ReviewDecision(
+        decision=models.ReviewOutcome.CHANGES_REQUESTED,
+        summary="One semantic change is still required.",
+        issues=[
+            models.ReviewIssue(
+                severity=models.ReviewSeverity.MEDIUM,
+                message="Add the required reviewed marker without changing protected tests.",
+                file="module.py",
+                line=1,
+            )
+        ],
+    ).model_dump_json()
+
+
 def _orchestrator(
     *,
     developer_driver: FakeDriver,
@@ -179,6 +194,62 @@ def test_complete_loop_repairs_first_test_failure_then_succeeds(tmp_path: Path) 
     assert len(developer_driver.requests) == 2
     assert len(repair_driver.requests) == 2
     assert len(reviewer_driver.requests) == 1
+
+
+def test_semantic_review_rejection_repairs_then_reverifies_and_passes(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    workspace = LocalGitWorkspace(root)
+    developer_driver = FakeDriver(
+        [
+            _response(tool_calls=[_patch("dev-1", "VALUE = 1", "VALUE = 2")]),
+            _response(content="Initial implementation completed."),
+        ]
+    )
+    repair_driver = FakeDriver(
+        [
+            _response(
+                tool_calls=[_patch("repair-1", "VALUE = 2", "VALUE = 2  # reviewed")]
+            ),
+            _response(content="Applied the semantic review fix."),
+        ]
+    )
+    reviewer_driver = FakeDriver(
+        [
+            _response(content=_review_changes_requested()),
+            _response(content=_review_pass()),
+        ]
+    )
+
+    result = asyncio.run(
+        _orchestrator(
+            developer_driver=developer_driver,
+            repair_driver=repair_driver,
+            reviewer_driver=reviewer_driver,
+        ).run(_task(), workspace=workspace)
+    )
+
+    assert result.status is TaskRunState.SUCCEEDED
+    assert len(result.verifications) == 2
+    assert all(verification.passed for verification in result.verifications)
+    assert [review.decision for review in result.reviews] == [
+        models.ReviewOutcome.CHANGES_REQUESTED,
+        models.ReviewOutcome.PASS,
+    ]
+    assert result.repairs[0].failure_types == [models.FailureType.REVIEW_REJECTED]
+    assert [event.state for event in result.events] == [
+        TaskRunState.PENDING,
+        TaskRunState.RUNNING,
+        TaskRunState.VERIFYING,
+        TaskRunState.REVIEWING,
+        TaskRunState.REPAIRING,
+        TaskRunState.VERIFYING,
+        TaskRunState.REVIEWING,
+        TaskRunState.SUCCEEDED,
+    ]
+    assert any(
+        "REVIEW_REJECTED" in message.content
+        for message in repair_driver.requests[0].messages
+    )
 
 
 def test_retry_budget_exhaustion_preserves_test_failure(tmp_path: Path) -> None:
