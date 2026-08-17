@@ -5,9 +5,9 @@ This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The developmen
 ## Current position
 
 - Phase: **Phase 1 — V0.1 Single Task Evidence Loop**
-- Completed step: **Step 1.5 — Workspace and Git scope enforcement**
-- Next step: **Step 1.6 — Developer tool loop**
-- Step 1.6 status: **NOT STARTED**
+- Completed step: **Step 1.6 — Developer tool loop**
+- Next step: **Step 1.7 — Deterministic verifier**
+- Step 1.7 status: **NOT STARTED**
 
 ## Step 1.1 — ACCEPTED
 
@@ -137,6 +137,38 @@ Acceptance evidence:
 - Repository-path traversal, absolute paths, backslash paths, Windows drive prefixes, and symlink escapes are rejected at the workspace boundary.
 - No Developer Agent tool loop, model-controlled file mutation, target-project verification command execution, Reviewer/Repair behavior, worktree scheduling, Redis, Docker, or frontend was introduced early.
 
-## Gate before Step 1.6
+## Step 1.6 — ACCEPTED
 
-Step 1.6 may introduce only the bounded Developer Agent tool loop and controlled repository tools required for one task: listing files, reading files, searching code, and write/apply-patch operations. Every read/write path must pass through the Step 1.5 workspace boundary, and every mutating operation must respect `TaskContract.writable_files` and `readonly_files` before touching disk. The Developer loop must have an explicit maximum iteration/time budget and must never decide task success itself. Step 1.6 must not execute the task's verification commands (Step 1.7), add Reviewer/Repair behavior, or introduce multi-task worktrees/DAG scheduling prematurely.
+Merged through PR #6: `Phase 1 Step 1.6: add bounded Developer tool loop`.
+
+Delivered:
+
+- Provider-neutral Function Calling schemas: `ToolDefinition`, `ToolCall`, `ToolExecutionResult`, and stable tool error codes.
+- `AgentRequest`, `AgentResponse`, and message history support assistant tool calls and `role=tool` observations without coupling Agent logic to SiliconFlow.
+- `SiliconFlowDriver` adapts OpenAI-compatible `tools` requests and provider `tool_calls` responses into the provider-neutral runtime protocol while preserving ordinary text-completion compatibility.
+- Controlled repository tools: `list_files`, `read_file`, `search_code`, `write_file`, and exact-context `apply_patch`; no unrestricted shell is exposed.
+- Read operations reveal only task-visible scopes; mutations are checked against writable/read-only scope before filesystem changes.
+- `.git` internals are permanently denied, including path aliases such as `./.git/config`, even under a broad `**` writable contract.
+- Symbolic-link traversal is denied at the workspace path boundary so a writable alias cannot redirect a mutation into protected files.
+- `apply_patch` requires `old_text` to occur exactly once, preventing ambiguous multi-location replacement.
+- `DeveloperAgent` implements a bounded model/tool/observation loop with maximum iterations, wall-clock duration, and per-turn tool-call fan-out.
+- `DeveloperRunResult` records stop reason, tool calls, actual Git changed files, usage, latency, and final model message but intentionally contains no task-success verdict.
+- Integration tests use real temporary Git repositories and fake model/provider responses; CI never needs a real SiliconFlow API key.
+
+Acceptance evidence:
+
+- Strict `ruff check .`: **PASS**.
+- `pytest`: **67 passed in 1.46s**.
+- GitHub Actions `Backend Quality`: **SUCCESS**.
+- Native Function Calling request/response serialization is covered with a fake SiliconFlow/OpenAI-compatible client.
+- A bounded Developer loop can read a real repository file, apply a controlled patch, return an observation to the model, and leave the actual change visible through Git evidence.
+- Protected test writes and out-of-scope writes are rejected before disk mutation.
+- `.git` direct access and `./.git/...` alias access are rejected; internal symbolic-link write aliases cannot mutate protected tests.
+- Excess per-turn tool fan-out is stopped before any of those tool calls execute.
+- Iteration and time budgets terminate the loop deterministically.
+- A model final message only stops Developer execution; it does **not** mark the task as passed or successful.
+- No target-repository verification command was executed, no real SiliconFlow API call was made, and no Reviewer, Repair, orchestrator, DAG/worktree, Redis, Docker, or frontend behavior was introduced early.
+
+## Gate before Step 1.7
+
+Step 1.7 may implement only deterministic verification after the Step 1.5 Git scope gate has passed: a bounded verification-command runner, explicit pytest and Ruff classification/adapters, stdout/stderr/exit-code/duration evidence, timeout handling, and mapping failures to the existing `TEST_FAILURE`, `LINT_FAILURE`, or tool/runtime failure taxonomy. Verification must use repository state as evidence and must not accept a Developer Agent's final message as proof of success. Step 1.7 must not introduce Reviewer/Repair behavior (Steps 1.8–1.9), the full orchestrator (Step 1.10), multi-task DAG/worktree scheduling, Redis/Docker, or frontend features prematurely.
