@@ -108,7 +108,9 @@ class TaskWorktreeManager:
         """Create a locked linked worktree and a fresh task branch from the frozen base commit."""
 
         if self._base_workspace.changed_files():
-            raise TaskWorktreeError("base workspace became dirty after the worktree base was frozen")
+            raise TaskWorktreeError(
+                "base workspace became dirty after the worktree base was frozen"
+            )
 
         record = self.record_for(task_id)
         registered = self._registered_worktrees()
@@ -215,9 +217,13 @@ class TaskWorktreeManager:
             raise
 
         if record.path.exists():
-            raise TaskWorktreeError("Git reported removal success but the worktree path still exists")
+            raise TaskWorktreeError(
+                "Git reported removal success but the worktree path still exists"
+            )
         if self._find_registered_path(record.path, self._registered_worktrees()) is not None:
-            raise TaskWorktreeError("Git reported removal success but worktree metadata still exists")
+            raise TaskWorktreeError(
+                "Git reported removal success but worktree metadata still exists"
+            )
         return True
 
     def _verify_created(self, record: TaskWorktreeRecord) -> None:
@@ -243,7 +249,9 @@ class TaskWorktreeManager:
             ["symbolic-ref", "--quiet", "--short", "HEAD"],
         ).stdout.strip()
         if branch != record.branch_name:
-            raise TaskWorktreeError("new task worktree is not checked out on its reserved task branch")
+            raise TaskWorktreeError(
+                "new task worktree is not checked out on its reserved task branch"
+            )
 
     def _assert_owned_registration(
         self,
