@@ -36,6 +36,14 @@ def _make_repository(
     return root
 
 
+def _file_content_test(expected: str) -> str:
+    return (
+        "from pathlib import Path\n\n\n"
+        "def test_value():\n"
+        f"    assert {expected!r} in Path('module.py').read_text(encoding='utf-8')\n"
+    )
+
+
 def _task(*commands: str) -> TaskContract:
     return TaskContract(
         task_id="VERIFY-001",
@@ -49,14 +57,7 @@ def _task(*commands: str) -> TaskContract:
 
 
 def test_passing_project_returns_hard_gate_pass(tmp_path: Path) -> None:
-    root = _make_repository(
-        tmp_path,
-        test_body=(
-            "from module import VALUE\n\n\n"
-            "def test_value():\n"
-            "    assert VALUE == 2\n"
-        ),
-    )
+    root = _make_repository(tmp_path, test_body=_file_content_test("VALUE = 2"))
     (root / "module.py").write_text("VALUE = 2\n", encoding="utf-8")
 
     result = DeterministicVerifier().verify(
@@ -72,14 +73,7 @@ def test_passing_project_returns_hard_gate_pass(tmp_path: Path) -> None:
 
 
 def test_failing_test_is_classified_as_test_failure(tmp_path: Path) -> None:
-    root = _make_repository(
-        tmp_path,
-        test_body=(
-            "from module import VALUE\n\n\n"
-            "def test_value():\n"
-            "    assert VALUE == 3\n"
-        ),
-    )
+    root = _make_repository(tmp_path, test_body=_file_content_test("VALUE = 3"))
     (root / "module.py").write_text("VALUE = 2\n", encoding="utf-8")
     verifier = DeterministicVerifier()
 
@@ -93,18 +87,11 @@ def test_failing_test_is_classified_as_test_failure(tmp_path: Path) -> None:
     assert pytest_check.exit_code != 0
     assert reports[0].failure_type is FailureType.TEST_FAILURE
     assert reports[0].retryable is True
-    assert any("VALUE == 3" in item or "assert 2 == 3" in item for item in reports[0].evidence)
+    assert any("VALUE = 3" in item for item in reports[0].evidence)
 
 
 def test_lint_failure_is_distinguishable_from_test_failure(tmp_path: Path) -> None:
-    root = _make_repository(
-        tmp_path,
-        test_body=(
-            "from module import VALUE\n\n\n"
-            "def test_value():\n"
-            "    assert VALUE == 2\n"
-        ),
-    )
+    root = _make_repository(tmp_path, test_body=_file_content_test("VALUE = 2"))
     (root / "module.py").write_text("import os\n\nVALUE = 2\n", encoding="utf-8")
 
     result = DeterministicVerifier().verify(
@@ -184,14 +171,7 @@ def test_verification_command_timeout_is_bounded(tmp_path: Path) -> None:
 
 
 def test_python_module_forms_are_supported(tmp_path: Path) -> None:
-    root = _make_repository(
-        tmp_path,
-        test_body=(
-            "from module import VALUE\n\n\n"
-            "def test_value():\n"
-            "    assert VALUE == 2\n"
-        ),
-    )
+    root = _make_repository(tmp_path, test_body=_file_content_test("VALUE = 2"))
     (root / "module.py").write_text("VALUE = 2\n", encoding="utf-8")
 
     result = DeterministicVerifier().verify(
