@@ -12,16 +12,16 @@ _TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 class TaskNode(BaseModel):
-    """One validated task plus its dependency edges in a V0.2 task graph."""
+    """One validated task plus its immutable dependency edges in a V0.2 task graph."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     task: TaskContract
-    depends_on: list[str] = Field(default_factory=list)
+    depends_on: tuple[str, ...] = Field(default_factory=tuple)
 
     @field_validator("depends_on")
     @classmethod
-    def validate_dependencies(cls, values: list[str]) -> list[str]:
+    def validate_dependencies(cls, values: tuple[str, ...]) -> tuple[str, ...]:
         normalized: list[str] = []
         for value in values:
             dependency = value.strip()
@@ -33,7 +33,7 @@ class TaskNode(BaseModel):
 
         if len(normalized) != len(set(normalized)):
             raise ValueError("depends_on must not contain duplicate task ids")
-        return normalized
+        return tuple(normalized)
 
     @model_validator(mode="after")
     def reject_self_dependency(self) -> TaskNode:
@@ -43,11 +43,11 @@ class TaskNode(BaseModel):
 
 
 class TaskDAG(BaseModel):
-    """Validated acyclic task dependency graph with deterministic graph queries."""
+    """Validated immutable acyclic task graph with deterministic graph queries."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    tasks: list[TaskNode] = Field(min_length=1)
+    tasks: tuple[TaskNode, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
     def validate_graph(self) -> TaskDAG:
