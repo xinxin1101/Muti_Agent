@@ -6,6 +6,7 @@ from app.models.agent import (
     MessageRole,
     TokenUsage,
 )
+from app.models.dag import TaskDAG, TaskNode
 from app.models.developer import DeveloperRunResult, DeveloperStopReason
 from app.models.failure import FailureReport, FailureSource, FailureType
 from app.models.repair import RepairRunResult, RepairStopReason
@@ -48,6 +49,8 @@ __all__ = [
     "RunEvent",
     "SingleTaskRunResult",
     "TaskContract",
+    "TaskDAG",
+    "TaskNode",
     "TaskRunState",
     "TokenUsage",
     "ToolCall",
