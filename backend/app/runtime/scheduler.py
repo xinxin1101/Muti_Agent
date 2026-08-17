@@ -14,6 +14,21 @@ _TERMINAL_STATES = {
     TaskScheduleState.BLOCKED,
 }
 
+_ALLOWED_TRANSITIONS: dict[TaskScheduleState, set[TaskScheduleState]] = {
+    TaskScheduleState.PENDING: {
+        TaskScheduleState.READY,
+        TaskScheduleState.BLOCKED,
+    },
+    TaskScheduleState.READY: {TaskScheduleState.RUNNING},
+    TaskScheduleState.RUNNING: {
+        TaskScheduleState.SUCCEEDED,
+        TaskScheduleState.FAILED,
+    },
+    TaskScheduleState.SUCCEEDED: set(),
+    TaskScheduleState.FAILED: set(),
+    TaskScheduleState.BLOCKED: set(),
+}
+
 
 class DAGScheduler:
     """Deterministic in-memory scheduler state machine for one validated TaskDAG."""
@@ -123,14 +138,13 @@ class DAGScheduler:
             state = self._states[task_id]
             if state not in {
                 TaskScheduleState.PENDING,
-                TaskScheduleState.READY,
                 TaskScheduleState.BLOCKED,
             }:
                 invalid.append(f"{task_id}={state.value}")
         if invalid:
             raise RuntimeError(
                 "scheduler invariant violation: failed dependency would block "
-                "active/terminal tasks: " + ", ".join(invalid)
+                "a ready/active/terminal task: " + ", ".join(invalid)
             )
 
     def _require_task(self, task_id: str) -> TaskScheduleState:
@@ -158,8 +172,11 @@ class DAGScheduler:
         detail: str,
     ) -> None:
         current = self._require_task(task_id)
-        if current is next_state:
-            raise ValueError(f"scheduler does not allow no-op transitions for {task_id}")
+        if next_state not in _ALLOWED_TRANSITIONS[current]:
+            raise ValueError(
+                f"invalid DAG scheduler transition: {current.value} -> {next_state.value} "
+                f"for {task_id}"
+            )
         self._states[task_id] = next_state
         self._events.append(
             SchedulerEvent(
