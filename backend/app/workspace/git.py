@@ -50,7 +50,10 @@ class LocalGitWorkspace:
         for part in pure_path.parts:
             current = current / part
             if current.is_symlink():
-                raise ValueError("repository path must not traverse symbolic links")
+                raise ValueError(
+                    "repository path resolves outside the trusted path boundary or traverses "
+                    "symbolic links"
+                )
 
         candidate = current.resolve(strict=False)
         try:
