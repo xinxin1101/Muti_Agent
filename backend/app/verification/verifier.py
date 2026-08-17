@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import shlex
 import subprocess
+import sys
 from dataclasses import dataclass
 from time import perf_counter
 
 from app.models.failure import FailureReport, FailureSource, FailureType
 from app.models.task import TaskContract
 from app.models.verification import CheckResult, CheckType, VerificationResult
-from app.workspace import LocalGitWorkspace, ScopeEnforcer
+from app.workspace import LocalGitWorkspace, ScopeCheckResult, ScopeEnforcer
 
 _MAX_OUTPUT_CHARS = 20_000
 
@@ -210,16 +211,20 @@ class DeterministicVerifier:
 
         executable = argv[0]
         if executable in {"pytest", "py.test"}:
+            arguments = argv[1:]
+            DeterministicVerifier._assert_workspace_bound_arguments(arguments)
             return _CommandSpec(
-                argv=argv,
+                argv=[sys.executable, "-m", "pytest", *arguments],
                 check_type=CheckType.TEST,
                 failure_type=FailureType.TEST_FAILURE,
                 name="pytest",
             )
 
         if executable == "ruff" and len(argv) >= 2 and argv[1] == "check":
+            arguments = argv[1:]
+            DeterministicVerifier._assert_workspace_bound_arguments(arguments)
             return _CommandSpec(
-                argv=argv,
+                argv=[sys.executable, "-m", "ruff", *arguments],
                 check_type=CheckType.LINT,
                 failure_type=FailureType.LINT_FAILURE,
                 name="ruff",
@@ -228,15 +233,19 @@ class DeterministicVerifier:
         if executable in {"python", "python3"} and len(argv) >= 3 and argv[1] == "-m":
             module = argv[2]
             if module == "pytest":
+                arguments = argv[3:]
+                DeterministicVerifier._assert_workspace_bound_arguments(arguments)
                 return _CommandSpec(
-                    argv=argv,
+                    argv=[sys.executable, "-m", "pytest", *arguments],
                     check_type=CheckType.TEST,
                     failure_type=FailureType.TEST_FAILURE,
                     name="pytest",
                 )
             if module == "ruff" and len(argv) >= 4 and argv[3] == "check":
+                arguments = argv[3:]
+                DeterministicVerifier._assert_workspace_bound_arguments(arguments)
                 return _CommandSpec(
-                    argv=argv,
+                    argv=[sys.executable, "-m", "ruff", *arguments],
                     check_type=CheckType.LINT,
                     failure_type=FailureType.LINT_FAILURE,
                     name="ruff",
@@ -248,7 +257,25 @@ class DeterministicVerifier:
         )
 
     @staticmethod
-    def _scope_error(scope_result) -> str:
+    def _assert_workspace_bound_arguments(arguments: list[str]) -> None:
+        for argument in arguments:
+            candidates = [argument]
+            if "=" in argument:
+                candidates.append(argument.split("=", 1)[1])
+
+            for candidate in candidates:
+                normalized = candidate.strip().replace("\\", "/")
+                if not normalized:
+                    continue
+                if normalized.startswith("/"):
+                    raise ValueError("Verification command arguments must remain inside workspace.")
+                if len(normalized) >= 2 and normalized[1] == ":":
+                    raise ValueError("Verification command arguments must not use drive paths.")
+                if any(part == ".." for part in normalized.split("/")):
+                    raise ValueError("Verification command arguments must not traverse workspace.")
+
+    @staticmethod
+    def _scope_error(scope_result: ScopeCheckResult) -> str:
         if scope_result.passed:
             return ""
         return "; ".join(
