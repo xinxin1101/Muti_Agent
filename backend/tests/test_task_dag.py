@@ -45,6 +45,26 @@ def test_valid_dag_has_deterministic_topological_order() -> None:
     ]
 
 
+def test_dag_structure_is_immutable_after_validation() -> None:
+    dag = _sample_dag()
+
+    assert isinstance(dag.tasks, tuple)
+    assert isinstance(dag.node("TASK-003").depends_on, tuple)
+    with pytest.raises(ValidationError, match="frozen"):
+        dag.tasks = ()
+    with pytest.raises(ValidationError, match="frozen"):
+        dag.node("TASK-003").depends_on = ()
+
+
+def test_dag_json_round_trip_preserves_validated_graph() -> None:
+    dag = _sample_dag()
+
+    restored = models.TaskDAG.model_validate_json(dag.model_dump_json())
+
+    assert restored == dag
+    assert restored.topological_order() == dag.topological_order()
+
+
 def test_task_node_rejects_duplicate_dependencies() -> None:
     with pytest.raises(ValidationError, match="duplicate task ids"):
         _node("TASK-002", "TASK-001", "TASK-001")
@@ -84,7 +104,7 @@ def test_dag_rejects_dependency_cycle() -> None:
 def test_node_lookup_returns_validated_node_and_rejects_unknown_id() -> None:
     dag = _sample_dag()
 
-    assert dag.node("TASK-003").depends_on == ["TASK-002"]
+    assert dag.node("TASK-003").depends_on == ("TASK-002",)
     with pytest.raises(KeyError, match="unknown task id: TASK-404"):
         dag.node("TASK-404")
 
