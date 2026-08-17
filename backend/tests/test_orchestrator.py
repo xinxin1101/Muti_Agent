@@ -212,7 +212,7 @@ def test_retry_budget_exhaustion_preserves_test_failure(tmp_path: Path) -> None:
     assert result.failures[0].failure_type is models.FailureType.TEST_FAILURE
     assert result.failures[0].retryable is False
     assert "Repair retry budget was exhausted" in result.failures[0].message
-    assert any("repair_attempts_exhausted=1" == item for item in result.failures[0].evidence)
+    assert any(item == "repair_attempts_exhausted=1" for item in result.failures[0].evidence)
     assert reviewer_driver.requests == []
 
 
