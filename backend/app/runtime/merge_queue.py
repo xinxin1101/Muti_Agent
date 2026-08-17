@@ -429,7 +429,9 @@ class TopologicalMergeQueue:
         if self._commit_parents(marker_commit) != (self._head,):
             raise MergeQueueError("integration conflict marker has an unexpected parent")
         if self._resolve_tree(marker_commit) != self._resolve_tree(self._head):
-            raise MergeQueueError("integration conflict marker unexpectedly changes repository tree")
+            raise MergeQueueError(
+                "integration conflict marker unexpectedly changes repository tree"
+            )
 
         metadata = self._parse_conflict_message(marker_commit)
         task_id = metadata["task"]
