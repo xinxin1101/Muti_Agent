@@ -5,9 +5,9 @@ This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The developmen
 ## Current position
 
 - Phase: **Phase 1 — V0.1 Single Task Evidence Loop**
-- Completed step: **Step 1.4 — Planner structured output**
-- Next step: **Step 1.5 — Workspace and Git scope enforcement**
-- Step 1.5 status: **NOT STARTED**
+- Completed step: **Step 1.5 — Workspace and Git scope enforcement**
+- Next step: **Step 1.6 — Developer tool loop**
+- Step 1.6 status: **NOT STARTED**
 
 ## Step 1.1 — ACCEPTED
 
@@ -107,6 +107,36 @@ Acceptance evidence:
 - CI made **no real SiliconFlow API call** and required no paid API key.
 - No repository clone/read/write, Git tooling, Developer loop, target-repository verification, Reviewer behavior, or orchestration was introduced early.
 
-## Gate before Step 1.5
+## Step 1.5 — ACCEPTED
 
-Step 1.5 may implement only the local repository/workspace safety boundary needed before a Developer Agent can edit code: workspace-path containment, repository-relative path resolution, changed-file collection from Git, glob-based writable/read-only scope matching, and golden-test/read-only tamper detection with unit/integration tests against temporary local Git repositories. It must not implement the Developer model/tool loop (Step 1.6), execute target-project verification commands (Step 1.7), add Reviewer/Repair behavior, introduce multi-task worktrees/DAG scheduling, or add Redis/Docker/frontend features prematurely.
+Merged through PR #5: `Phase 1 Step 1.5: add workspace and Git scope enforcement`.
+
+Delivered:
+
+- `LocalGitWorkspace` as the managed local repository boundary and Git-state source of truth.
+- Workspace roots must be existing Git top-level directories with a valid `HEAD` commit.
+- Safe repository-relative POSIX path resolution with rejection of empty paths, absolute paths, backslashes, Windows drive prefixes, `..` traversal, and existing symlink escapes.
+- Changed-file collection from tracked unstaged changes, staged changes, and untracked non-ignored files relative to `HEAD`.
+- Git rename detection is disabled for scope evidence so moving a protected file is represented as deletion of the protected source plus addition of the destination.
+- Slash-aware V0.1 glob matching for `*`, `?`, `**`, and `**/` patterns.
+- Read-only scope takes precedence over writable scope, including cases where a broad writable glob would otherwise include a protected test path.
+- Structured `ScopeCheckResult`, `ScopeViolation`, and `ScopeViolationKind` evidence.
+- Scope failures normalize to terminal `FailureReport(SCOPE_VIOLATION)` and cannot silently proceed to later verification.
+- Integration-style tests create real temporary Git repositories and exercise tracked, staged, untracked, rename, scope, and path-boundary behavior.
+
+Acceptance evidence:
+
+- Strict `ruff check .`: **PASS**.
+- `pytest`: **55 passed in 1.08s**.
+- GitHub Actions `Backend Quality`: **SUCCESS**.
+- Allowed nested source modification passes the scope gate.
+- Protected test modification produces `READ_ONLY` scope evidence and `SCOPE_VIOLATION`.
+- Out-of-scope file modification produces `OUT_OF_SCOPE` evidence and `SCOPE_VIOLATION`.
+- Broad writable scopes cannot override read-only / golden-test protection.
+- Renaming a protected test cannot bypass the gate because the protected source deletion remains visible in Git evidence.
+- Repository-path traversal, absolute paths, backslash paths, Windows drive prefixes, and symlink escapes are rejected at the workspace boundary.
+- No Developer Agent tool loop, model-controlled file mutation, target-project verification command execution, Reviewer/Repair behavior, worktree scheduling, Redis, Docker, or frontend was introduced early.
+
+## Gate before Step 1.6
+
+Step 1.6 may introduce only the bounded Developer Agent tool loop and controlled repository tools required for one task: listing files, reading files, searching code, and write/apply-patch operations. Every read/write path must pass through the Step 1.5 workspace boundary, and every mutating operation must respect `TaskContract.writable_files` and `readonly_files` before touching disk. The Developer loop must have an explicit maximum iteration/time budget and must never decide task success itself. Step 1.6 must not execute the task's verification commands (Step 1.7), add Reviewer/Repair behavior, or introduce multi-task worktrees/DAG scheduling prematurely.
