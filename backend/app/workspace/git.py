@@ -45,6 +45,8 @@ class LocalGitWorkspace:
             raise ValueError("repository path must be relative")
         if normalized == "." or any(part == ".." for part in pure_path.parts):
             raise ValueError("repository path must remain inside the workspace")
+        if pure_path.parts and pure_path.parts[0] == ".git":
+            raise ValueError("repository path must not access .git internals")
 
         current = self._root
         for part in pure_path.parts:
