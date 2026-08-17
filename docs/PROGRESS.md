@@ -5,9 +5,9 @@ This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The developmen
 ## Current position
 
 - Phase: **Phase 1 — V0.1 Single Task Evidence Loop**
-- Completed step: **Step 1.7 — Deterministic verifier**
-- Next step: **Step 1.8 — Independent reviewer**
-- Step 1.8 status: **NOT STARTED**
+- Completed step: **Step 1.8 — Independent reviewer**
+- Next step: **Step 1.9 — Targeted repair loop**
+- Step 1.9 status: **NOT STARTED**
 
 ## Step 1.1 — ACCEPTED
 
@@ -200,6 +200,34 @@ Acceptance evidence:
 - `pytest ../outside_test.py` cannot execute an outside-workspace test, and absolute option paths such as `--rootdir=/tmp` are rejected before process start.
 - No Reviewer, Repair, full Orchestrator, multi-task DAG/worktree scheduler, Redis, Docker sandbox, or frontend behavior was introduced early.
 
-## Gate before Step 1.8
+## Step 1.8 — ACCEPTED
 
-Step 1.8 may implement only the independent semantic Reviewer that consumes a validated `TaskContract`, the actual Git diff, and a **passing** `VerificationResult`. The Reviewer must run only after the deterministic hard gate has passed, must have no repository write tools, and must return a schema-validated `ReviewDecision` (`PASS` or `CHANGES_REQUESTED`). Invalid Reviewer output must not enter control flow and may use a bounded schema-repair pattern similar to the Planner. Reviewer judgment may reject a deterministically passing implementation for semantic or architectural reasons, but it must never override a deterministic hard-gate failure. Step 1.8 must not add Repair behavior (Step 1.9), the full Orchestrator (Step 1.10), multi-task DAG/worktree scheduling, Redis, Docker sandboxing, or frontend features prematurely.
+Merged through PR #8: `Phase 1 Step 1.8: add independent semantic reviewer`.
+
+Delivered:
+
+- `ReviewerAgent` as a read-only semantic gate that can run only after deterministic verification has passed.
+- Reviewer input is deliberately restricted to the validated `TaskContract`, a passing `VerificationResult`, and the actual HEAD-to-workspace Git diff; Developer conversation history is not supplied.
+- Reviewer requests contain no tool definitions, so the Reviewer cannot mutate files, run shell commands, or operate Git through the Agent interface.
+- `ReviewDecision` is Pydantic/schema validated: `PASS` requires zero issues and `CHANGES_REQUESTED` requires at least one concrete issue.
+- Invalid Reviewer output uses bounded schema repair; exhaustion becomes terminal `FailureReport(INVALID_AGENT_OUTPUT)` with `FailureSource.REVIEW`.
+- Repository content and Git diff are explicitly treated as untrusted data to reduce prompt-injection risk from code/comments embedded in the patch.
+- `LocalGitWorkspace.unified_diff()` provides actual tracked changes plus reviewable patches for untracked text files, so newly created files cannot silently escape semantic review before `git add`.
+- Empty diffs are rejected before a Reviewer model call.
+- Reviewer tests use real temporary Git repositories and a fake model driver; CI does not require a SiliconFlow API key or consume model quota.
+
+Acceptance evidence:
+
+- Strict `ruff check .`: **PASS**.
+- `pytest`: **84 passed in 4.15s**.
+- GitHub Actions `Backend Quality`: **SUCCESS**.
+- A failed `VerificationResult` prevents the Reviewer model from being called at all.
+- Reviewer requests contain `tools=[]` and the repository diff remains unchanged before and after review.
+- The Reviewer can return schema-valid `CHANGES_REQUESTED` for a semantic security bug (`verify_token` always returning true) even when supplied hard verification evidence is passing.
+- Schema-invalid Reviewer output is either repaired within the configured budget or rejected as `INVALID_AGENT_OUTPUT`; it never enters task control flow as a valid decision.
+- Untracked text files are included in semantic-review diff evidence.
+- No Repair Agent, full Orchestrator, DAG/worktree scheduler, Redis, Docker sandbox, frontend, or real SiliconFlow API call was introduced early.
+
+## Gate before Step 1.9
+
+Step 1.9 may implement only the targeted Repair behavior required by the V0.1 single-task loop. Repair must consume the original validated `TaskContract` plus targeted failure evidence from deterministic verification (`FailureReport`) or semantic review (`ReviewDecision` issues), and must reuse the same controlled repository tools and writable/read-only boundaries as the Developer Agent. Repair attempts must be bounded by an explicit retry budget and must focus on the observed failure rather than blindly regenerating the whole implementation. Tests must demonstrate at least one first-attempt failure receiving targeted evidence and a later repair that can satisfy the relevant gate in isolation. Step 1.9 must not introduce the full end-to-end Orchestrator (Step 1.10), multi-task DAG/worktree scheduling, Redis, Docker sandboxing, or frontend features prematurely.
