@@ -66,6 +66,13 @@ def test_workspace_requires_existing_git_repository_with_head(tmp_path: Path) ->
         LocalGitWorkspace(empty_repo)
 
 
+def test_workspace_root_must_be_git_top_level(tmp_path: Path) -> None:
+    root = _make_repository(tmp_path)
+
+    with pytest.raises(WorkspaceGitError, match="top level"):
+        LocalGitWorkspace(root / "app")
+
+
 def test_changed_files_collects_tracked_staged_and_untracked_changes(tmp_path: Path) -> None:
     root = _make_repository(tmp_path)
     workspace = LocalGitWorkspace(root)
@@ -98,7 +105,8 @@ def test_test_file_tampering_triggers_scope_violation(tmp_path: Path) -> None:
     workspace = LocalGitWorkspace(root)
     enforcer = ScopeEnforcer()
 
-    (root / "tests" / "test_main.py").write_text("def test_value(): assert True\n", encoding="utf-8")
+    protected_test = root / "tests" / "test_main.py"
+    protected_test.write_text("def test_value(): assert True\n", encoding="utf-8")
 
     result = enforcer.check(_task(), workspace.changed_files())
     failure = result.to_failure_report()
@@ -135,7 +143,8 @@ def test_readonly_scope_wins_over_broad_writable_scope(tmp_path: Path) -> None:
         readonly_files=["tests/**"],
     )
 
-    (root / "tests" / "test_main.py").write_text("def test_value(): assert False\n", encoding="utf-8")
+    protected_test = root / "tests" / "test_main.py"
+    protected_test.write_text("def test_value(): assert False\n", encoding="utf-8")
 
     result = enforcer.check(task, workspace.changed_files())
 
