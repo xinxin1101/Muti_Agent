@@ -323,7 +323,9 @@ class TopologicalMergeQueue:
             check=False,
         )
         if ancestry.returncode != 0:
-            raise MergeQueueError("existing integration ref does not descend from the frozen run base")
+            raise MergeQueueError(
+                "existing integration ref does not descend from the frozen run base"
+            )
         self._recover_successful_history(head)
         return head
 
@@ -353,15 +355,23 @@ class TopologicalMergeQueue:
             if task_id not in self._order_index:
                 raise MergeQueueError("existing integration history references an unknown DAG task")
             if task_id in recovered:
-                raise MergeQueueError("existing integration history integrates a task more than once")
+                raise MergeQueueError(
+                    "existing integration history integrates a task more than once"
+                )
             if self._order_index[task_id] <= last_index:
-                raise MergeQueueError("existing integration history violates deterministic DAG order")
+                raise MergeQueueError(
+                    "existing integration history violates deterministic DAG order"
+                )
             if parents[1] != task_commit:
-                raise MergeQueueError("existing integration history task parent does not match metadata")
+                raise MergeQueueError(
+                    "existing integration history task parent does not match metadata"
+                )
 
             record = self._worktrees.record_for(task_id, base_commit=task_base)
             if task_branch != record.branch_name:
-                raise MergeQueueError("existing integration history records an unexpected task branch")
+                raise MergeQueueError(
+                    "existing integration history records an unexpected task branch"
+                )
             if self._commit_parents(task_commit) != (task_base,):
                 raise MergeQueueError("recovered task commit does not match its recorded task base")
             node = self._scheduler.dag.node(task_id)
@@ -401,7 +411,9 @@ class TopologicalMergeQueue:
             for prefix, key in prefixes.items():
                 if line.startswith(prefix):
                     if key in metadata:
-                        raise MergeQueueError("integration commit contains duplicate DevFlow metadata")
+                        raise MergeQueueError(
+                            "integration commit contains duplicate DevFlow metadata"
+                        )
                     metadata[key] = line[len(prefix) :].strip()
         if set(metadata) != set(prefixes.values()):
             raise MergeQueueError("integration commit is missing required DevFlow metadata")
@@ -426,7 +438,9 @@ class TopologicalMergeQueue:
         task_commit: str,
     ) -> None:
         if self._commit_parents(commit) != (previous_head, task_commit):
-            raise MergeQueueError("integration commit does not preserve the expected two-parent history")
+            raise MergeQueueError(
+                "integration commit does not preserve the expected two-parent history"
+            )
 
     def _assert_ref_head(self) -> None:
         current = self._resolve_commit(self._integration_ref, label="integration ref")
@@ -527,7 +541,9 @@ class TopologicalMergeQueue:
         except FileNotFoundError as exc:
             raise MergeQueueError("git executable is not available") from exc
         except subprocess.TimeoutExpired as exc:
-            raise MergeQueueError("git integration command exceeded the configured timeout") from exc
+            raise MergeQueueError(
+                "git integration command exceeded the configured timeout"
+            ) from exc
 
         if check and completed.returncode != 0:
             raise MergeQueueError(
