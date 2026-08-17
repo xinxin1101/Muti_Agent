@@ -12,13 +12,14 @@ from app.runtime.scheduler import DAGScheduler
 from app.runtime.worker_coordinator import ParallelWorkerCoordinator
 
 
-def _git(root: Path, *arguments: str) -> None:
-    subprocess.run(
+def _git(root: Path, *arguments: str) -> str:
+    completed = subprocess.run(
         ["git", "-C", str(root), *arguments],
         check=True,
         capture_output=True,
         text=True,
     )
+    return completed.stdout.strip()
 
 
 def _repository(tmp_path: Path) -> workspace.LocalGitWorkspace:
@@ -146,5 +147,51 @@ def test_dependent_next_wave_requires_dependency_integrated_base_commit(tmp_path
 
         assert scheduler.state("TASK-B") is models.TaskScheduleState.READY
         assert not manager.record_for("TASK-B").path.exists()
+
+    asyncio.run(scenario())
+
+
+def test_external_descendant_base_can_enable_a_later_dependent_wave(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        base = _repository(tmp_path)
+        task_a = _task("TASK-A")
+        task_b = _task("TASK-B")
+        scheduler = DAGScheduler(
+            models.TaskDAG(
+                tasks=(
+                    models.TaskNode(task=task_a, depends_on=()),
+                    models.TaskNode(task=task_b, depends_on=("TASK-A",)),
+                )
+            )
+        )
+        manager = workspace.TaskWorktreeManager(base, tmp_path / "worktrees")
+        first = ParallelWorkerCoordinator(
+            scheduler=scheduler,
+            worktrees=manager,
+            runner_factory=lambda task: ImmediateRunner(),
+        )
+
+        first_wave = await first.run_ready_wave()
+        assert first_wave.next_ready_task_ids == ("TASK-B",)
+
+        (base.root / "shared.txt").write_text("integrated-task-a\n", encoding="utf-8")
+        _git(base.root, "add", "shared.txt")
+        _git(base.root, "commit", "-m", "synthetic dependency integration")
+        integrated_commit = _git(base.root, "rev-parse", "HEAD")
+
+        second = ParallelWorkerCoordinator(
+            scheduler=scheduler,
+            worktrees=manager,
+            runner_factory=lambda task: ImmediateRunner(),
+            task_base_resolver=lambda task_id: (
+                integrated_commit if task_id == "TASK-B" else None
+            ),
+        )
+        second_wave = await second.run_ready_wave()
+
+        assert second_wave.scheduled_task_ids == ("TASK-B",)
+        assert second_wave.task_results[0].base_commit == integrated_commit
+        assert second_wave.task_results[0].scheduler_state is models.TaskScheduleState.SUCCEEDED
+        assert scheduler.is_terminal
 
     asyncio.run(scenario())
