@@ -5,9 +5,9 @@ This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The developmen
 ## Current position
 
 - Phase: **Phase 1 — V0.1 Single Task Evidence Loop**
-- Completed step: **Step 1.6 — Developer tool loop**
-- Next step: **Step 1.7 — Deterministic verifier**
-- Step 1.7 status: **NOT STARTED**
+- Completed step: **Step 1.7 — Deterministic verifier**
+- Next step: **Step 1.8 — Independent reviewer**
+- Step 1.8 status: **NOT STARTED**
 
 ## Step 1.1 — ACCEPTED
 
@@ -169,6 +169,37 @@ Acceptance evidence:
 - A model final message only stops Developer execution; it does **not** mark the task as passed or successful.
 - No target-repository verification command was executed, no real SiliconFlow API call was made, and no Reviewer, Repair, orchestrator, DAG/worktree, Redis, Docker, or frontend behavior was introduced early.
 
-## Gate before Step 1.7
+## Step 1.7 — ACCEPTED
 
-Step 1.7 may implement only deterministic verification after the Step 1.5 Git scope gate has passed: a bounded verification-command runner, explicit pytest and Ruff classification/adapters, stdout/stderr/exit-code/duration evidence, timeout handling, and mapping failures to the existing `TEST_FAILURE`, `LINT_FAILURE`, or tool/runtime failure taxonomy. Verification must use repository state as evidence and must not accept a Developer Agent's final message as proof of success. Step 1.7 must not introduce Reviewer/Repair behavior (Steps 1.8–1.9), the full orchestrator (Step 1.10), multi-task DAG/worktree scheduling, Redis/Docker, or frontend features prematurely.
+Merged through PR #7: `Phase 1 Step 1.7: add deterministic verifier hard gate`.
+
+Delivered:
+
+- `DeterministicVerifier` with actual Git scope integrity as the mandatory first verification gate.
+- Scope violations fail closed before any target-project process is started.
+- Bounded verification-command execution with per-command timeout, maximum-command budget, stdout/stderr capture, exit codes, duration, and output clipping.
+- Explicit pytest and Ruff adapters/classification: failed tests become `TEST_FAILURE`; failed lint checks become `LINT_FAILURE`.
+- Failed deterministic checks convert into structured `FailureReport` evidence for later targeted repair; test/lint failures are retryable while scope and unsafe-command failures are not.
+- V0.1 process execution is deliberately restricted to pytest and `ruff check`, including their `python -m` forms. Arbitrary custom commands remain deferred until sandbox execution is available.
+- Verification always uses `shell=False` and normalizes allowed tools to the current runtime interpreter via `sys.executable -m ...`, avoiding reliance on a same-name executable found through `PATH`.
+- Verification arguments are workspace-bound: absolute paths, Windows drive paths, and `..` traversal are rejected, including path-like option values such as `--rootdir=/tmp`.
+- Integration-style tests run against real temporary Git repositories and launch real pytest/Ruff subprocesses.
+- Developer Agent self-reports are never used as verification evidence; only repository state and deterministic process results determine this hard gate.
+
+Acceptance evidence:
+
+- Strict `ruff check .`: **PASS**.
+- `pytest`: **76 passed in 2.86s**.
+- GitHub Actions `Backend Quality`: **SUCCESS**.
+- A passing toy repository returns hard-gate `VerificationResult(passed=True)` after scope, pytest, and Ruff checks pass.
+- A failing pytest run is distinguishable as `TEST_FAILURE` and preserves useful process output/exit-code evidence.
+- A Ruff violation is distinguishable as `LINT_FAILURE` even when pytest passes.
+- Protected/out-of-scope Git changes stop verification before subprocess execution.
+- Unsupported commands such as `python -c ...` are rejected without executing their payload.
+- Verification timeout is bounded and becomes structured `TOOL_FAILURE` evidence.
+- `pytest ../outside_test.py` cannot execute an outside-workspace test, and absolute option paths such as `--rootdir=/tmp` are rejected before process start.
+- No Reviewer, Repair, full Orchestrator, multi-task DAG/worktree scheduler, Redis, Docker sandbox, or frontend behavior was introduced early.
+
+## Gate before Step 1.8
+
+Step 1.8 may implement only the independent semantic Reviewer that consumes a validated `TaskContract`, the actual Git diff, and a **passing** `VerificationResult`. The Reviewer must run only after the deterministic hard gate has passed, must have no repository write tools, and must return a schema-validated `ReviewDecision` (`PASS` or `CHANGES_REQUESTED`). Invalid Reviewer output must not enter control flow and may use a bounded schema-repair pattern similar to the Planner. Reviewer judgment may reject a deterministically passing implementation for semantic or architectural reasons, but it must never override a deterministic hard-gate failure. Step 1.8 must not add Repair behavior (Step 1.9), the full Orchestrator (Step 1.10), multi-task DAG/worktree scheduling, Redis, Docker sandboxing, or frontend features prematurely.
