@@ -5,8 +5,8 @@ This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The developmen
 ## Current position
 
 - Current phase: **Phase 2 — V0.2 True Multi-Agent Runtime**
-- Completed item: **Step 2.2 — DAG Scheduler**
-- Next item: **Step 2.3 — Git Worktree per task**
+- Completed item: **Step 2.3 — Git Worktree per task**
+- Next item: **Step 2.4 — Parallel Worker Execution**
 - Phase 2 status: **IN PROGRESS**
 - V0.1 status: **ACCEPTED / COMPLETE**
 
@@ -99,35 +99,78 @@ Acceptance evidence:
 - All V0.1 and Step 2.1 tests remained green.
 - No Git Worktree, Agent launch, async/thread/process worker execution, merge queue, Redis/Dramatiq, or merge-conflict behavior was introduced prematurely.
 
-## Gate before Step 2.3 — Git Worktree per task
+## Step 2.3 — Git Worktree per task — ACCEPTED
 
-Step 2.3 may now isolate task execution at the Git workspace layer while preserving the accepted Scheduler semantics.
+Merged through PR #13: `Phase 2 Step 2.3: add isolated Git worktree per task`.
+
+Delivered:
+
+- Added `TaskWorktreeManager` as the owner of task-linked-worktree lifecycle for one clean base repository.
+- Manager freezes an immutable run base commit from the clean base repository before task worktrees are created.
+- Task branch and filesystem identities use a sanitized slug plus deterministic SHA-256 task-id suffix rather than trusting raw task ids as Git ref names.
+- Generated task branches are checked through Git ref-format validation before creation.
+- Task worktrees are created as locked linked worktrees on fresh task branches and are post-verified to be registered, locked, clean, on the expected branch, and at the exact requested commit.
+- Default task worktrees start from the frozen run base even if the base repository HEAD later advances.
+- An optional explicit full commit SHA can be used as a later task base only if it exists and is a descendant of the frozen run base. This provides a safe primitive for future dependency-resolved task creation without implementing dependency integration in Step 2.3.
+- `open_workspace()` returns the existing `LocalGitWorkspace`, preserving the already accepted path, `.git`, symlink, scope, tool, and verifier boundaries inside each linked worktree.
+- Existing registered worktrees, pre-existing task branches, unregistered filesystem collisions, missing worktree directories, and stale/prunable registrations fail closed instead of being silently reused or overwritten.
+- The worktree root must be outside the base repository and is validated before directory creation, so an invalid configuration does not itself dirty the target repository.
+- Removal is restricted to the exact manager-owned path/branch registration.
+- Dirty worktree removal is refused by default; destructive cleanup requires explicit `force=True`.
+- Removing a worktree deliberately preserves its task branch, including committed task output, so later merge-queue stages do not lose completed task evidence.
+
+Isolation and lifecycle acceptance evidence:
+
+- Real Git test creates two linked task worktrees from the same run base; an uncommitted edit in TASK-A is invisible to TASK-B and the base repository.
+- Real Git test confirms default later task worktrees remain pinned to the frozen run base after the base repository HEAD advances.
+- Real Git test confirms an explicit descendant commit can be selected as a task base, while an unrelated commit and abbreviated SHA are rejected.
+- Duplicate task creation cannot overwrite or reuse existing branch/path state.
+- Missing linked-worktree directories are surfaced as stale registrations rather than automatically pruned/recreated.
+- Dirty base repositories cannot initialize or continue worktree creation.
+- Invalid in-repository worktree roots fail without creating `.devflow` or other repository pollution.
+- Clean removal, explicit forced dirty removal, and branch-preserving cleanup are exercised with real Git.
+- A real commit made inside a task worktree remains reachable from the preserved task branch after the linked worktree directory is removed.
+- First CI candidate was stopped by four Ruff line-length errors before pytest; no behavior test was bypassed.
+- Second candidate: `ruff check .` **PASS**, `pytest` **148 passed**.
+- Pre-merge architecture review added validated descendant task-base support and branch-preservation/root-pollution regression tests for later DAG integration.
+- Final `ruff check .`: **PASS**.
+- Final `pytest`: **153 passed in 7.13s**.
+- GitHub Actions `Backend Quality`: **SUCCESS**.
+- Tests use real Git linked worktrees rather than mocked `git worktree` commands.
+- All accepted V0.1, Step 2.1, and Step 2.2 tests remained green.
+- No Worker pool, concurrent Agent execution, merge queue, dependency integration, merge-conflict classification, Redis/Dramatiq, or Docker behavior was introduced prematurely.
+
+## Gate before Step 2.4 — Parallel Worker Execution
+
+Step 2.4 may now connect accepted scheduler readiness to isolated task worktrees and execute multiple independent READY tasks concurrently.
 
 Required direction:
 
 ```text
-Base Repository
-      ↓
 Validated TaskDAG
       ↓
-DAGScheduler marks TASK-X READY
+DAGScheduler
       ↓
-Task Worktree Manager
+READY task set
       ↓
-.devflow/worktrees/TASK-X/
+Bounded Worker Coordinator
+   ├── TASK-A → isolated TaskWorktree → V0.1 SingleTaskOrchestrator
+   └── TASK-B → isolated TaskWorktree → V0.1 SingleTaskOrchestrator
       ↓
-LocalGitWorkspace bound to exactly that worktree
+per-task terminal evidence
+      ↓
+DAGScheduler.succeed()/fail()
 ```
 
-Step 2.3 should establish:
+Step 2.4 should establish:
 
-- one isolated Git Worktree per task;
-- deterministic task branch/worktree naming;
-- every worktree created from an explicit base commit/ref;
-- task workspace containment and `.git`/symlink protections continue to hold;
-- one task cannot observe another task's uncommitted filesystem changes;
-- cleanup is explicit and safe;
-- creation collisions/stale worktrees fail closed rather than reusing unknown state;
-- worktree metadata is inspectable for later worker and merge-queue stages.
+- a bounded concurrency limit rather than unbounded task fan-out;
+- only scheduler-`READY` tasks may acquire a worker and become `RUNNING`;
+- each worker is bound to exactly one manager-owned task worktree;
+- every task continues to run the accepted V0.1 Developer → Verify → Reviewer → Repair evidence loop inside its own worktree;
+- worker completion maps terminal V0.1 evidence back to scheduler `SUCCEEDED` / `FAILED` deterministically;
+- one worker failure must not cancel unrelated independent runnable branches unless the DAG dependency rules require blocking;
+- task exceptions/cancellation must not leave scheduler state falsely `RUNNING` without explicit failure evidence;
+- concurrency tests must prove tasks overlap in time while their filesystem changes remain isolated.
 
-Step 2.3 must **not** start parallel workers, run multiple Agents concurrently, merge task branches, implement merge-conflict classification, or add Redis/Dramatiq. Those remain later Phase 2 milestones.
+Step 2.4 must **not** merge task branches, implement the topological merge queue, classify Git merge conflicts, add Redis/Dramatiq persistence, or introduce the later Integration/Human Gate. Those remain subsequent Phase 2 milestones.
