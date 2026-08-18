@@ -675,6 +675,11 @@ class PostgresEvidenceStore:
             if kind is PersistenceEvidenceKind.MERGE_CONFLICT
             else RuntimeEventLevel.INFO
         )
+        generation = (
+            task.lease_generation
+            if task is not None and task.lease_generation
+            else None
+        )
         return RuntimeEventDraft(
             event_key=f"evidence:{row.id}",
             kind=RuntimeEventKind.EVIDENCE_RECORDED,
@@ -682,7 +687,7 @@ class PostgresEvidenceStore:
             level=level,
             task_id=row.task_id,
             dispatch_id=task.lease_dispatch_id if task is not None else None,
-            generation=(task.lease_generation if task is not None and task.lease_generation else None),
+            generation=generation,
             message=f"Accepted {kind.value} evidence.",
             attributes={
                 "evidence_id": row.id,
