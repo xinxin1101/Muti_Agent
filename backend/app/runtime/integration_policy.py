@@ -15,12 +15,12 @@ _DEFAULT_PROTECTED_PREFIXES = (
     ".devflow/",
     ".github/",
     ".gitlab/",
-    "backend/tests/",
-    "tests/",
 )
+_DEFAULT_PROTECTED_DIRECTORY_NAMES = frozenset({".devflow", ".github", ".gitlab", "tests"})
 _DEFAULT_PROTECTED_BASENAMES = frozenset(
     {
         ".env",
+        "conftest.py",
         "package-lock.json",
         "package.json",
         "pnpm-lock.yaml",
@@ -107,61 +107,79 @@ class IntegrationConflictPolicy:
         blob_is_safe_text: Callable[[str], bool] | None = None,
     ) -> IntegrationPolicyDecision:
         fingerprint = conflict_evidence_fingerprint(evidence)
-        blockers: list[str] = []
-
-        if not self._automatic_repair_enabled:
-            blockers.append("automatic merge-conflict repair policy is disabled")
+        hard_blockers: list[str] = []
+        automatic_blockers: list[str] = []
 
         scope = self._scope.check(task, list(evidence.conflicting_paths))
         if not scope.passed:
             blocked_paths = ", ".join(
                 f"{violation.kind.value}:{violation.path}" for violation in scope.violations
             )
-            blockers.append(f"conflict path is outside the task repair scope: {blocked_paths}")
+            hard_blockers.append(
+                f"conflict path is outside the task repair scope: {blocked_paths}"
+            )
 
+        if blob_is_safe_text is None:
+            hard_blockers.append("repair authorization requires bounded Git blob text inspection")
+
+        for conflict_file in evidence.files:
+            if any(stage.mode != "100644" for stage in conflict_file.stages):
+                hard_blockers.append(
+                    f"{conflict_file.path}: repair requires regular non-executable file stages"
+                )
+            if self._is_protected_path(conflict_file.path):
+                hard_blockers.append(
+                    f"{conflict_file.path}: protected path cannot be delegated to Agent Repair"
+                )
+            if blob_is_safe_text is not None and any(
+                not blob_is_safe_text(stage.object_id) for stage in conflict_file.stages
+            ):
+                hard_blockers.append(
+                    f"{conflict_file.path}: conflicted Git blobs are not safe bounded UTF-8 text"
+                )
+
+        if not self._automatic_repair_enabled:
+            automatic_blockers.append("automatic merge-conflict repair policy is disabled")
         if len(evidence.files) != 1:
-            blockers.append("automatic repair is limited to exactly one conflicted path")
+            automatic_blockers.append(
+                "automatic repair is limited to exactly one conflicted path"
+            )
         else:
             conflict_file = evidence.files[0]
             if conflict_file.stage_shape is not MergeConflictStageShape.THREE_WAY:
-                blockers.append(
+                automatic_blockers.append(
                     "automatic repair requires a THREE_WAY stage shape; "
                     f"observed {conflict_file.stage_shape.value}"
                 )
-            if any(stage.mode != "100644" for stage in conflict_file.stages):
-                blockers.append("automatic repair requires regular non-executable file stages")
             if not self._is_supported_text_path(conflict_file.path):
-                blockers.append("conflicted path is not in the narrow text-file allowlist")
-            if self._is_protected_path(conflict_file.path):
-                blockers.append("conflicted path is protected from automatic integration repair")
-            if self._automatic_repair_enabled:
-                if blob_is_safe_text is None:
-                    blockers.append("automatic repair requires bounded Git blob text inspection")
-                elif any(not blob_is_safe_text(stage.object_id) for stage in conflict_file.stages):
-                    blockers.append(
-                        "one or more conflicted Git blobs are not safe bounded UTF-8 text"
-                    )
+                automatic_blockers.append(
+                    "conflicted path is not in the narrow automatic text-file allowlist"
+                )
 
         if evidence.conflict_types != ("CONFLICT (contents)",):
             observed = ", ".join(evidence.conflict_types) or "<none>"
-            blockers.append(
+            automatic_blockers.append(
                 "automatic repair requires only native CONFLICT (contents); "
                 f"observed {observed}"
             )
 
+        human_repair_authorizable = not hard_blockers
+        blockers = (*hard_blockers, *automatic_blockers)
         if blockers:
             return IntegrationPolicyDecision(
                 route=IntegrationPolicyRoute.HUMAN_REQUIRED,
                 evidence_fingerprint=fingerprint,
                 automatic_repair_enabled=self._automatic_repair_enabled,
+                human_repair_authorizable=human_repair_authorizable,
                 conflicting_paths=evidence.conflicting_paths,
-                reasons=tuple(blockers),
+                reasons=blockers,
             )
 
         return IntegrationPolicyDecision(
             route=IntegrationPolicyRoute.AUTO_REPAIR_CANDIDATE,
             evidence_fingerprint=fingerprint,
             automatic_repair_enabled=True,
+            human_repair_authorizable=True,
             conflicting_paths=evidence.conflicting_paths,
             reasons=(
                 "policy permits only a later bounded repair attempt; integration remains stopped",
@@ -173,6 +191,12 @@ class IntegrationConflictPolicy:
 
     def _is_protected_path(self, path: str) -> bool:
         normalized = path[2:] if path.startswith("./") else path
+        parsed = PurePosixPath(normalized)
         if any(normalized.startswith(prefix) for prefix in self._protected_prefixes):
             return True
-        return PurePosixPath(normalized).name in self._protected_basenames
+        if any(part in _DEFAULT_PROTECTED_DIRECTORY_NAMES for part in parsed.parts[:-1]):
+            return True
+        name = parsed.name
+        if name in self._protected_basenames:
+            return True
+        return name.startswith("test_") or name.endswith("_test.py")
