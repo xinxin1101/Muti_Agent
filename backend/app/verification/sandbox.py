@@ -115,7 +115,7 @@ class DockerSandboxRunner:
     """Run untrusted verification commands in a bounded, read-only Docker container."""
 
     _CONTAINER_WORKSPACE = "/workspace"
-    _CLEANUP_TIMEOUT_SECONDS = 5.0
+    _CONTROL_TIMEOUT_SECONDS = 5.0
 
     def __init__(
         self,
@@ -143,18 +143,30 @@ class DockerSandboxRunner:
         workspace: Path,
         timeout_seconds: float,
     ) -> VerificationExecution:
+        started_at = perf_counter()
         if not argv:
-            return self._tool_failure("Sandbox command must not be empty.")
+            return self._tool_failure("Sandbox command must not be empty.", started_at=started_at)
         if timeout_seconds <= 0:
-            return self._tool_failure("Sandbox timeout must be greater than zero.")
+            return self._tool_failure(
+                "Sandbox timeout must be greater than zero.",
+                started_at=started_at,
+            )
 
         root = workspace.resolve()
         if not root.is_dir():
-            return self._tool_failure("Sandbox workspace must be an existing directory.")
+            return self._tool_failure(
+                "Sandbox workspace must be an existing directory.",
+                started_at=started_at,
+            )
         if "," in str(root):
             return self._tool_failure(
-                "Sandbox workspace path cannot contain a comma when using Docker --mount."
+                "Sandbox workspace path cannot contain a comma when using Docker --mount.",
+                started_at=started_at,
             )
+
+        preflight_error = self._preflight(timeout_seconds)
+        if preflight_error:
+            return self._tool_failure(preflight_error, started_at=started_at)
 
         container_name = f"devflow-verify-{uuid4().hex}"
         command = self._docker_run_command(
@@ -162,7 +174,6 @@ class DockerSandboxRunner:
             workspace=root,
             container_name=container_name,
         )
-        started_at = perf_counter()
         try:
             completed = subprocess.run(
                 command,
@@ -224,6 +235,73 @@ class DockerSandboxRunner:
             failure_type=failure_type,
         )
 
+    def _preflight(self, requested_timeout_seconds: float) -> str:
+        timeout = min(self._CONTROL_TIMEOUT_SECONDS, requested_timeout_seconds)
+        info = self._control_command(
+            [
+                "info",
+                "--format",
+                "{{json .SecurityOptions}}|{{.CgroupDriver}}",
+            ],
+            timeout_seconds=timeout,
+        )
+        if isinstance(info, str):
+            return info
+        raw_info = info.stdout.strip()
+        if "|" not in raw_info:
+            return "Docker daemon returned malformed sandbox capability evidence."
+        security_options, cgroup_driver = raw_info.rsplit("|", 1)
+        if "rootless" in security_options.lower():
+            return (
+                "Rootless Docker is refused for Step 3.1 verification because cgroup resource "
+                "controllers may be partially delegated or silently ignored."
+            )
+        if not cgroup_driver.strip() or cgroup_driver.strip().lower() == "none":
+            return (
+                "Docker reports no usable cgroup driver; CPU, memory, and PID limits cannot be "
+                "treated as enforceable verification evidence."
+            )
+
+        image = self._control_command(
+            ["image", "inspect", "--format", "{{.Id}}", self._policy.image],
+            timeout_seconds=timeout,
+        )
+        if isinstance(image, str):
+            return (
+                "Configured verification image is unavailable locally and DevFlow never pulls "
+                f"verification images implicitly: {self._policy.image}. {image}"
+            )
+        if not image.stdout.strip().startswith("sha256:"):
+            return "Docker image inspection returned an invalid image identity."
+        return ""
+
+    def _control_command(
+        self,
+        arguments: list[str],
+        *,
+        timeout_seconds: float,
+    ) -> subprocess.CompletedProcess[str] | str:
+        try:
+            completed = subprocess.run(
+                [self._docker_executable, *arguments],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                check=False,
+                shell=False,
+            )
+        except FileNotFoundError as exc:
+            return f"Docker executable is unavailable: {exc}"
+        except subprocess.TimeoutExpired:
+            return "Docker daemon capability check timed out."
+        except OSError as exc:
+            return f"Docker daemon capability check could not start: {exc}"
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout).strip()
+            return detail or f"Docker control command exited with {completed.returncode}."
+        return completed
+
     def _docker_run_command(
         self,
         *,
@@ -249,7 +327,7 @@ class DockerSandboxRunner:
             "--security-opt",
             "no-new-privileges=true",
             "--user",
-            policy.container_user,
+            self._resolved_container_user(),
             "--cpus",
             f"{policy.cpus:g}",
             "--memory",
@@ -285,6 +363,16 @@ class DockerSandboxRunner:
             *argv,
         ]
 
+    def _resolved_container_user(self) -> str:
+        getuid = getattr(os, "getuid", None)
+        getgid = getattr(os, "getgid", None)
+        if callable(getuid) and callable(getgid):
+            uid = getuid()
+            gid = getgid()
+            if uid > 0:
+                return f"{uid}:{gid}"
+        return self._policy.container_user
+
     def _execution_details(self, container_name: str) -> tuple[str, ...]:
         policy = self._policy
         return (
@@ -299,7 +387,7 @@ class DockerSandboxRunner:
             f"tmpfs_mb={policy.tmpfs_mb}",
             "capabilities=none",
             "no_new_privileges=true",
-            f"user={policy.container_user}",
+            f"user={self._resolved_container_user()}",
         )
 
     def _force_remove(self, container_name: str) -> str:
@@ -309,7 +397,7 @@ class DockerSandboxRunner:
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
-                timeout=self._CLEANUP_TIMEOUT_SECONDS,
+                timeout=self._CONTROL_TIMEOUT_SECONDS,
                 check=False,
                 shell=False,
             )
@@ -321,12 +409,17 @@ class DockerSandboxRunner:
             f"docker rm -f exited with {completed.returncode}"
         )
 
-    def _tool_failure(self, message: str) -> VerificationExecution:
+    def _tool_failure(
+        self,
+        message: str,
+        *,
+        started_at: float,
+    ) -> VerificationExecution:
         return VerificationExecution(
             exit_code=None,
             stdout="",
             stderr=message,
-            duration_ms=0,
+            duration_ms=_duration_ms(started_at),
             backend=VerificationBackend.DOCKER,
             details=(f"image={self._policy.image}", "sandboxed=true"),
             failure_type=FailureType.TOOL_FAILURE,
