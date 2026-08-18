@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from pathlib import PurePosixPath
 
 from app.models.conflict import MergeConflictEvidence, MergeConflictStageShape
@@ -102,6 +103,8 @@ class IntegrationConflictPolicy:
         self,
         evidence: MergeConflictEvidence,
         task: TaskContract,
+        *,
+        blob_is_safe_text: Callable[[str], bool] | None = None,
     ) -> IntegrationPolicyDecision:
         fingerprint = conflict_evidence_fingerprint(evidence)
         blockers: list[str] = []
@@ -131,6 +134,11 @@ class IntegrationConflictPolicy:
                 blockers.append("conflicted path is not in the narrow text-file allowlist")
             if self._is_protected_path(conflict_file.path):
                 blockers.append("conflicted path is protected from automatic integration repair")
+            if self._automatic_repair_enabled:
+                if blob_is_safe_text is None:
+                    blockers.append("automatic repair requires bounded Git blob text inspection")
+                elif any(not blob_is_safe_text(stage.object_id) for stage in conflict_file.stages):
+                    blockers.append("one or more conflicted Git blobs are not safe bounded UTF-8 text")
 
         if evidence.conflict_types != ("CONFLICT (contents)",):
             observed = ", ".join(evidence.conflict_types) or "<none>"
