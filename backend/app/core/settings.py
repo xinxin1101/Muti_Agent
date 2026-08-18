@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     workspace_root: Path = Path(".devflow/workspaces")
 
+    database_url: SecretStr | None = None
+    database_echo: bool = False
+
     siliconflow_api_key: SecretStr | None = Field(
         default=None,
         validation_alias="SILICONFLOW_API_KEY",
