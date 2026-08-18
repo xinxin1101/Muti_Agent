@@ -4,14 +4,21 @@ from app.workers.executor import (
     ManagedProjectWorkspaceResolver,
     QueuedTaskWorker,
 )
-from app.workers.runtime import build_single_task_runner, execute_task_from_settings
+from app.workers.lease import LeasedQueuedTaskWorker
+from app.workers.runtime import (
+    build_single_task_runner,
+    execute_task_from_settings,
+    resolve_worker_id,
+)
 
 __all__ = [
     "ACTOR_NAME",
+    "LeasedQueuedTaskWorker",
     "LocalQueuedTaskExecutionBackend",
     "ManagedProjectWorkspaceResolver",
     "QueuedTaskWorker",
     "build_single_task_runner",
     "create_task_actor",
     "execute_task_from_settings",
+    "resolve_worker_id",
 ]
