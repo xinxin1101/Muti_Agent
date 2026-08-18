@@ -2,7 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     redis_url: SecretStr = SecretStr("redis://localhost:6379/0")
     dramatiq_namespace: str = Field(default="devflow", min_length=1, max_length=64)
     dramatiq_queue_name: str = Field(default="devflow_tasks", min_length=1, max_length=128)
+    worker_id: str | None = Field(default=None, min_length=1, max_length=255)
+    worker_lease_seconds: float = Field(default=60.0, gt=0.0, le=86_400.0)
+    worker_heartbeat_interval_seconds: float = Field(default=15.0, gt=0.0, le=3_600.0)
 
     siliconflow_api_key: SecretStr | None = Field(
         default=None,
@@ -49,6 +52,12 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra="ignore",
     )
+
+    @model_validator(mode="after")
+    def validate_worker_lease_cadence(self) -> Settings:
+        if self.worker_heartbeat_interval_seconds >= self.worker_lease_seconds:
+            raise ValueError("worker heartbeat interval must be shorter than the lease duration")
+        return self
 
 
 @lru_cache
