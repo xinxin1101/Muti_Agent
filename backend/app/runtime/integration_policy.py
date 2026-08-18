@@ -162,7 +162,7 @@ class IntegrationConflictPolicy:
         return PurePosixPath(path).suffix.lower() in self._auto_repair_suffixes
 
     def _is_protected_path(self, path: str) -> bool:
-        normalized = path.lstrip("./")
+        normalized = path[2:] if path.startswith("./") else path
         if any(normalized.startswith(prefix) for prefix in self._protected_prefixes):
             return True
         return PurePosixPath(normalized).name in self._protected_basenames
