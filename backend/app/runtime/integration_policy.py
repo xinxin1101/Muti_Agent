@@ -138,7 +138,9 @@ class IntegrationConflictPolicy:
                 if blob_is_safe_text is None:
                     blockers.append("automatic repair requires bounded Git blob text inspection")
                 elif any(not blob_is_safe_text(stage.object_id) for stage in conflict_file.stages):
-                    blockers.append("one or more conflicted Git blobs are not safe bounded UTF-8 text")
+                    blockers.append(
+                        "one or more conflicted Git blobs are not safe bounded UTF-8 text"
+                    )
 
         if evidence.conflict_types != ("CONFLICT (contents)",):
             observed = ", ".join(evidence.conflict_types) or "<none>"
