@@ -15,7 +15,8 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -35,7 +36,10 @@ class ProjectRow(PersistenceBase):
         server_default=func.now(),
     )
 
-    runs: Mapped[list[RunRow]] = relationship(back_populates="project", cascade="all, delete-orphan")
+    runs: Mapped[list[RunRow]] = relationship(
+        back_populates="project",
+        cascade="all, delete-orphan",
+    )
 
 
 class RunRow(PersistenceBase):
