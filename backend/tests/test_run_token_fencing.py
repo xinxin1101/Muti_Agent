@@ -8,7 +8,13 @@ from uuid import uuid4
 
 import pytest
 
-from app.models import RunEvent, SingleTaskRunResult, TaskContract, TaskRunState, WorkerExecutionStatus
+from app.models import (
+    RunEvent,
+    SingleTaskRunResult,
+    TaskContract,
+    TaskRunState,
+    WorkerExecutionStatus,
+)
 from app.persistence import PostgresEvidenceStore, PostgresTaskLeaseStore
 from app.workers.executor import LocalQueuedTaskExecutionBackend
 from app.workspace import LocalGitWorkspace
