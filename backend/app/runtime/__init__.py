@@ -7,6 +7,7 @@ from app.runtime.integration_gate import IntegrationHumanGate, IntegrationHumanG
 from app.runtime.integration_policy import (
     IntegrationConflictPolicy,
     conflict_evidence_fingerprint,
+    integration_policy_fingerprint,
 )
 from app.runtime.merge_queue import MergeQueueError, TopologicalMergeQueue
 from app.runtime.scheduler import DAGScheduler
@@ -24,4 +25,5 @@ __all__ = [
     "TaskStateMachine",
     "TopologicalMergeQueue",
     "conflict_evidence_fingerprint",
+    "integration_policy_fingerprint",
 ]
