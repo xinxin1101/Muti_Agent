@@ -1,9 +1,13 @@
 import subprocess
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from app.context import ContextPacketBuilder
 from app.models import (
     ContextBudget,
+    ContextPacket,
     ContextScopeKind,
     ContextSelectionReason,
     ContextTruncationReason,
@@ -107,6 +111,21 @@ def test_same_state_and_budget_produce_same_fingerprint_content_change_changes_i
 
     assert changed.fingerprint != first.fingerprint
     assert changed.changed_files == ["src/a.py"]
+
+
+def test_packet_rejects_tampered_payload_or_detached_fingerprint(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    packet = ContextPacketBuilder().build(_task(), workspace=LocalGitWorkspace(root))
+
+    tampered_payload = packet.model_dump(mode="json")
+    tampered_payload["objective"] = "Forged objective that was never fingerprinted."
+    with pytest.raises(ValidationError, match="fingerprint"):
+        ContextPacket.model_validate(tampered_payload)
+
+    detached_fingerprint = packet.model_dump(mode="json")
+    detached_fingerprint["fingerprint"] = "0" * 64
+    with pytest.raises(ValidationError, match="fingerprint"):
+        ContextPacket.model_validate(detached_fingerprint)
 
 
 def test_builder_records_per_file_and_file_count_truncation(tmp_path: Path) -> None:
