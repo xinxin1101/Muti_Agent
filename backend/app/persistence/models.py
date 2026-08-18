@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import (
     BigInteger,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
@@ -74,6 +75,21 @@ class RunRow(PersistenceBase):
 
 class TaskRow(PersistenceBase):
     __tablename__ = "tasks"
+    __table_args__ = (
+        CheckConstraint(
+            "(" 
+            "lease_owner IS NULL AND lease_dispatch_id IS NULL "
+            "AND lease_acquired_at IS NULL AND heartbeat_at IS NULL "
+            "AND lease_until IS NULL AND lease_released_at IS NULL"
+            ") OR ("
+            "lease_owner IS NOT NULL AND lease_dispatch_id IS NOT NULL "
+            "AND lease_acquired_at IS NOT NULL AND heartbeat_at IS NOT NULL "
+            "AND lease_until IS NOT NULL"
+            ")",
+            name="ck_tasks_lease_shape",
+        ),
+        Index("ix_tasks_lease_until", "lease_until"),
+    )
 
     run_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True),
@@ -83,6 +99,12 @@ class TaskRow(PersistenceBase):
     task_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     contract: Mapped[dict] = mapped_column(JSONB, nullable=False)
     contract_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    lease_owner: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    lease_dispatch_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    lease_acquired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
