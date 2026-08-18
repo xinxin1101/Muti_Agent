@@ -5,11 +5,11 @@ This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The developmen
 ## Current position
 
 - Current phase: **Phase 3 — V0.3 Safety, Context and Reliability**
-- Completed item: **Step 3.4 — PostgreSQL Persistence**
-- Next item: **Step 3.5 — Redis + Dramatiq Workers**
+- Completed item: **Step 3.5 — Redis + Dramatiq Workers**
+- Next item: **Step 3.6 — Lease + Heartbeat**
 - Phase 2 status: **ACCEPTED / COMPLETE**
 - Phase 3 status: **IN PROGRESS**
-- Step 3.5 status: **NOT STARTED**
+- Step 3.6 status: **NOT STARTED**
 - V0.1 status: **ACCEPTED / COMPLETE**
 
 ---
@@ -79,8 +79,8 @@ Current Phase 3 execution mapping:
 2. **Step 3.2 — Context Packet Builder — ACCEPTED**
 3. **Step 3.3 — AST / Import-aware Relevant-code Extraction — ACCEPTED**
 4. **Step 3.4 — PostgreSQL Persistence — ACCEPTED**
-5. **Step 3.5 — Redis + Dramatiq Workers — NEXT / NOT STARTED**
-6. Step 3.6 — Lease + heartbeat
+5. **Step 3.5 — Redis + Dramatiq Workers — ACCEPTED**
+6. **Step 3.6 — Lease + Heartbeat — NEXT / NOT STARTED**
 7. Step 3.7 — `run_token` stale-write protection
 8. Step 3.8 — Structured run/event logs
 
@@ -323,43 +323,189 @@ Frozen Step 3.4 principle:
 
 ---
 
-## Gate before Step 3.5 — Redis + Dramatiq Workers
+## Step 3.5 — Redis + Dramatiq Workers — ACCEPTED
 
-Step 3.5 may move task execution from in-process worker calls to a durable queue/worker boundary. It must build on the accepted PostgreSQL evidence schema rather than replacing it, and it must not prematurely implement lease/heartbeat or `run_token` fencing.
+Merged through PR #22: `Phase 3 Step 3.5: add Redis Dramatiq queued workers`.
+
+Squash merge commit:
+
+`51048e4818478c07e2c024d78215a43959a56465`
+
+Design / acceptance documents:
+
+- `docs/REDIS_DRAMATIQ_WORKERS.md`
+- `docs/STEP_3_5_ACCEPTANCE.md`
+
+### Accepted queued-worker architecture
+
+```text
+Validated persisted Run / Task
+        ↓
+DramatiqTaskDispatcher
+        ↓
+TaskDispatchEnvelope
+(dispatch_id, run_id, task_id)
+        ↓
+Redis
+        ↓
+Dramatiq actor
+        ↓
+QueuedTaskWorker
+        ↓
+PostgreSQL Run/Task reload + validation
+        ↓
+managed Git repository
+        ↓
+run-scoped isolated task worktree
+        ↓
+existing SingleTaskOrchestrator
+        ↓
+validated runtime result
+        +
+actual Git task commit
+        ↓
+typed PostgreSQL dispatch/runtime/worker evidence
+```
+
+### Dispatch and trust boundary
+
+- Redis messages contain only `dispatch_id`, `run_id`, and `task_id`;
+- TaskContract bodies, repository source, workspace paths from callers, prompts, model output and credentials do not enter queue payloads;
+- dispatcher performs a fresh persistence read before enqueue and rejects terminal runs or tasks not bound to the persisted run;
+- worker reloads persisted Run/Task identity before execution instead of trusting queue-carried task content;
+- Redis/Dramatiq is transport, not the DAG scheduler, execution owner, code source of truth, or completion signal;
+- PostgreSQL remains durable runtime evidence;
+- Git commit/worktree remains authoritative for code state.
+
+### Worker execution boundary
+
+- production worker reuses the accepted `SingleTaskOrchestrator`, Developer/Reviewer/Repair, Docker verifier and worktree machinery;
+- no second execution state machine or queue-owned scheduler was introduced;
+- runtime success alone is insufficient for queued success;
+- successful queued execution requires an actual Git task commit after the validated runtime result;
+- runtime success followed by Git task-commit failure remains `WORKER_EXECUTION=FAILED` and cannot finalize the persisted run as `SUCCEEDED`;
+- state/developer/verification/review/repair/failure evidence is persisted under dispatch-scoped evidence keys;
+- `DISPATCH_EVENT` and `WORKER_EXECUTION` use the accepted Step 3.4 typed JSONB/version/hash boundary, so Step 3.5 required no Alembic migration;
+- single-task persisted runs may finalize only when worker execution status agrees with the nested terminal `SingleTaskRunResult`;
+- multi-task project-run finalization remains an orchestration/integration concern.
+
+### Retry and redelivery boundary
+
+The DevFlow Dramatiq actor explicitly uses:
+
+```text
+max_retries = 0
+```
+
+Step 3.5 does not claim exactly-once execution. Without lease/heartbeat and `run_token` fencing, repository-mutating application retries are not treated as safe ownership recovery.
+
+Current fail-closed behavior includes:
+
+- terminal persisted runs reject later execution;
+- conflicting persistence evidence keys are rejected;
+- same-run duplicate task execution collides on the same run-scoped worktree/branch identity rather than silently reusing it.
+
+### Git reproducibility hardening
+
+Merge review identified two process-external execution issues and hardened both before acceptance.
+
+1. **Historical task branch collision across runs**
+   - Phase 2 task branches intentionally survive worktree removal as evidence;
+   - queued worktree identity is now scoped by `run_id` plus logical `task_id`;
+   - duplicate delivery within the same run still collides fail-closed;
+   - a later independent run may reuse the same logical task id with a distinct retained Git identity.
+
+2. **Persisted Run base older than managed HEAD**
+   - a task may wait in Redis while the managed repository advances;
+   - queued execution freezes the persisted Run `base_commit` instead of silently replacing it with current HEAD;
+   - the commit must still exist and remain an ancestor of the managed HEAD;
+   - divergence/history replacement fails closed;
+   - accepted regression evidence proves the resulting task commit descends directly from the persisted Run base and excludes repository changes committed after the Run started.
+
+The new `TaskWorktreeManager(frozen_base_commit=...)` path is backward compatible: existing Phase 2 callers retain the prior current-HEAD freeze behavior unless they explicitly provide a persisted frozen base.
+
+### Step 3.5 acceptance history
+
+- First candidate: PostgreSQL + Redis services, Alembic migration cycle, Docker image and Ruff passed; pytest reached **254 passed / 2 failed**.
+- Both first-candidate failures were test-assertion mismatches with actual Dramatiq/test evidence APIs; production Redis → Dramatiq Worker → PostgreSQL integration was already passing.
+- Assertion-only repair candidate reached **256 passed / 0 skipped**.
+- Merge review then found the cross-run branch-identity and delayed-base reproducibility issues described above.
+- Final hardening added run-scoped worktree identity, persisted frozen-base validation and dedicated real-Git regressions.
+
+Final acceptance:
+
+- PostgreSQL service: **PASS**;
+- Redis service: **PASS**;
+- PostgreSQL migration upgrade/downgrade/upgrade: **PASS**;
+- verification Docker image build: **PASS**;
+- `ruff check .`: **PASS**;
+- real Redis + Dramatiq Worker + PostgreSQL integration: **PASS**;
+- `pytest`: **258 passed in 28.48s, 0 skipped**;
+- GitHub Actions `Backend Quality`: **SUCCESS**;
+- no paid SiliconFlow API call was used by queue integration tests;
+- all previously accepted V0.1, Phase 2 and Step 3.1–3.4 behavior remained green.
+
+### Step 3.5 frozen boundary
+
+Step 3.5 intentionally does **not** introduce:
+
+- lease expiry;
+- heartbeat renewal;
+- `run_token` stale-write protection;
+- stale-worker fencing;
+- automatic worker-death recovery;
+- exactly-once execution claims;
+- new DAG scheduler semantics;
+- frontend/SSE behavior;
+- embeddings/vector retrieval;
+- additional AST/RAG/Agent behavior;
+- automatic LLM merge-conflict repair;
+- a new PostgreSQL schema migration.
+
+Frozen Step 3.5 principle:
+
+> **Queue delivery authorizes an execution attempt; Git and validated runtime evidence still decide what actually happened.**
+
+---
+
+## Gate before Step 3.6 — Lease + Heartbeat
+
+Step 3.6 may add explicit worker-execution ownership and liveness evidence around the accepted queued-worker boundary. It must not yet implement Step 3.7 `run_token` stale-write fencing or reinterpret queue delivery as success.
 
 Required direction:
 
 ```text
-Validated Task / Run identity
+Persisted RUNNING task
         ↓
-Dispatch boundary
+queued worker receives attempt
         ↓
-Redis-backed Dramatiq queue
+lease acquisition / ownership record
         ↓
-Bounded worker consumer
+periodic heartbeat renewal
         ↓
-Existing runtime execution
+lease remains live
+        or
+lease expiry exposes abandoned execution
         ↓
-PostgreSQL evidence persistence
+existing runtime / Git / PostgreSQL evidence
 ```
 
-Step 3.5 must preserve:
+Step 3.6 must preserve:
 
+- Redis/Dramatiq as dispatch transport rather than task-success authority;
 - Git/worktree as repository source of truth;
-- PostgreSQL as durable evidence rather than queue authority;
-- deterministic runtime gates and TaskContract scope;
-- existing bounded parallelism and isolated worktree semantics;
-- explicit queue message schema and idempotent persistence writes;
-- no LLM self-report as completion signal;
-- no silent fallback to in-process execution when the distributed worker boundary is configured.
+- PostgreSQL as durable runtime/ownership evidence;
+- deterministic runtime gates and existing TaskContract scope;
+- bounded lease duration and heartbeat cadence;
+- explicit, testable ownership transitions rather than inference from worker prose;
+- the Step 3.5 rule that a task is not successful without validated runtime evidence and Git evidence.
 
-Step 3.5 must **not** yet introduce:
+Step 3.6 must **not** yet introduce:
 
-- lease expiry/renewal semantics;
-- heartbeat ownership;
 - `run_token` stale-write fencing;
+- claims that an expired old worker is technically unable to write after ownership transfer;
 - frontend behavior;
 - embeddings/vector retrieval;
 - Agent/AST/RAG expansion.
 
-**Step 3.5 status: NOT STARTED.**
+**Step 3.6 status: NOT STARTED.**
