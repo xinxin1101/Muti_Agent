@@ -326,6 +326,50 @@ def test_local_queued_backend_scopes_same_task_identity_to_each_run(tmp_path: Pa
     assert _git(base.root, "show", f"{second.commit_sha}:module.py") == "VALUE = 2"
 
 
+def test_local_queued_backend_uses_persisted_base_after_managed_head_advances(
+    tmp_path: Path,
+) -> None:
+    base = _init_repository(tmp_path / "repo")
+    task = _task("QUEUE-FROZEN-BASE")
+    persisted_base = base.head_commit()
+
+    (base.root / "later.txt").write_text("created after run start\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(base.root), "add", "later.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", str(base.root), "commit", "-m", "advance managed head"],
+        check=True,
+        capture_output=True,
+    )
+    assert base.head_commit() != persisted_base
+
+    backend = LocalQueuedTaskExecutionBackend(
+        workspace_resolver=_StaticWorkspaceResolver(base),
+        worktree_root=tmp_path / "worktrees",
+        runner_factory=lambda _task: _WritingRunner(2),
+    )
+    evidence = asyncio.run(
+        backend.execute(
+            task=task,
+            project_id=uuid4(),
+            run_id=uuid4(),
+            dispatch_id=uuid4(),
+            base_commit=persisted_base,
+        )
+    )
+
+    assert evidence.status is WorkerExecutionStatus.SUCCEEDED
+    assert evidence.commit_sha is not None
+    parents = _git(base.root, "rev-list", "--parents", "-n", "1", evidence.commit_sha).split()
+    assert parents[1:] == [persisted_base]
+    assert "later.txt" not in _git(
+        base.root,
+        "ls-tree",
+        "--name-only",
+        evidence.commit_sha,
+    ).splitlines()
+    assert (base.root / "later.txt").read_text(encoding="utf-8") == "created after run start\n"
+
+
 class _RecordingStore:
     def __init__(self, snapshot) -> None:
         self.snapshot = snapshot
