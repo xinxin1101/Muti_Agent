@@ -5,8 +5,8 @@ This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The developmen
 ## Current position
 
 - Current phase: **Phase 2 — V0.2 True Multi-Agent Runtime**
-- Completed item: **Step 2.5 — Topological Merge Queue**
-- Next item: **Step 2.6 — Merge Conflict Classification**
+- Completed item: **Step 2.6 — Merge Conflict Classification**
+- Next item: **Step 2.7 — Integration / Human Gate Strategy**
 - Phase 2 status: **IN PROGRESS**
 - V0.1 status: **ACCEPTED / COMPLETE**
 
@@ -236,39 +236,77 @@ Topological integration acceptance evidence:
 - All accepted V0.1 and Phase 2 Step 2.1–2.4 tests remained green.
 - No LLM conflict resolution, rich conflict diagnosis/repair, Integration/Human Gate policy, Redis/Dramatiq, or Docker behavior was introduced prematurely.
 
-## Gate before Step 2.6 — Merge Conflict Classification
+## Step 2.6 — Merge Conflict Classification — ACCEPTED
 
-Step 2.6 may now turn the coarse, recoverable `MERGE_CONFLICT` evidence produced by Step 2.5 into structured conflict diagnostics without weakening the fail-closed integration boundary.
+Merged through PR #16: `Phase 2 Step 2.6: add merge conflict classification`.
+
+Delivered:
+
+- Added immutable structured conflict evidence models: `MergeConflictEvidence`, `MergeConflictFile`, `MergeConflictStage`, `MergeConflictMessage`, `MergeConflictStageSide`, and `MergeConflictStageShape`.
+- Added `GitMergeConflictClassifier` as a read-only classification boundary over a stopped Step 2.5 `MergeQueueSnapshot`.
+- Classification independently revalidates the integration ref, terminal conflict attempt, conflict marker parent/tree/metadata, exact conflicted task branch head, and exact task commit/base relation before trusting any diagnostic output.
+- The classifier replays `git merge-tree --write-tree -z --messages <integration-head> <task-commit>` and requires Git conflict exit code `1`; a stale or no-longer-reproducible conflict therefore fails closed.
+- Git NUL-delimited conflicted-file records are parsed into repository path, file mode, object id, and stage evidence without checking out a branch or writing the index/worktree.
+- Stage semantics are explicit: stage 1 is the merge base, stage 2 is the integration side, and stage 3 is the task side.
+- Per-path structural conflict shape is derived only from stage presence: `THREE_WAY`, `ADD_ADD`, `MODIFY_DELETE`, `DELETE_MODIFY`, or conservative `COMPLEX`.
+- Git's native machine-readable `conflict_type` is preserved independently from the stage-derived shape. Human-readable messages are retained only as bounded evidence and are not parsed to make control-flow decisions.
+- Evidence preserves the integration head, exact task commit, conflict ref, conflict marker commit, conflicted tree object, ordered conflicting paths, per-path stages/modes/object ids, machine conflict types, message records, bounded raw Git output, and an explicit truncation flag.
+- NUL-safe parsing preserves paths containing spaces and Unicode.
+- Reconstructing the stopped Step 2.5 queue and classifying again yields identical structured conflict evidence.
+- Integration-ref movement and conflicted task-branch movement after snapshot capture fail closed.
+- Classification does not advance refs, delete the conflict marker, edit files, touch the index, or continue the merge queue.
+
+Conflict-classification acceptance evidence:
+
+- Same-file content conflict yields a three-stage `1/2/3` `THREE_WAY` record with native Git conflict type.
+- Add/add conflict yields stages `2/3` and structural `ADD_ADD` without parsing free-form Git prose.
+- Modify/delete yields stages `1/2`; the inverse delete/modify yields stages `1/3`.
+- Paths with spaces and Unicode survive machine-readable NUL parsing exactly.
+- Recovered queue classification is exactly equal to the original classification.
+- Stale task branch and moved integration ref are rejected before classification is accepted.
+- Non-conflict snapshots are rejected.
+- Raw Git evidence is bounded and marks truncation explicitly.
+- Pydantic validation rejects contradictory stage/side semantics.
+- First behavioral CI candidate: Ruff **PASS**, pytest **1 failed / 184 passed**. The failure exposed a real Git 2.54 nuance: an add/add content conflict uses machine `conflict-type = CONFLICT (contents)` even though human prose mentions `add/add`.
+- The implementation was hardened rather than loosening the test: structural `ADD_ADD` is derived from the machine stage set `{2,3}`, while the native machine conflict type remains unchanged.
+- Next candidate: **185 passed**.
+- Final architecture hardening added inverse `DELETE_MODIFY` coverage plus integration-ref movement fail-closed coverage.
+- Final `ruff check .`: **PASS**.
+- Final `pytest`: **187 passed in 14.92s**.
+- GitHub Actions `Backend Quality`: **SUCCESS**.
+- Tests use real repositories, linked task worktrees, the accepted Step 2.5 merge queue, real conflict refs/markers, and real `merge-tree -z` output.
+- All accepted V0.1 and Phase 2 Step 2.1–2.5 tests remained green.
+- No LLM conflict resolution, file edits, ours/theirs selection, automatic Repair, automatic queue continuation, or Human Gate policy was introduced prematurely.
+
+## Gate before Step 2.7 — Integration / Human Gate Strategy
+
+Step 2.7 may now consume the structured `MergeConflictEvidence` produced by Step 2.6 and decide what requires explicit human intervention versus any narrowly permitted deterministic continuation policy.
 
 Required direction:
 
 ```text
-Topological Merge Queue
+stopped Topological Merge Queue
       ↓
-git merge-tree exit 1
+GitMergeConflictClassifier
       ↓
-recoverable conflict marker
-      ↓
-Merge Conflict Classifier
-      ↓
-structured conflict evidence
+MergeConflictEvidence
+      ├── exact refs/commits
       ├── conflicting paths
-      ├── conflict stages/types
-      ├── integration head
-      ├── task commit
-      └── bounded raw Git evidence
+      ├── stage shapes
+      ├── native Git conflict types
+      └── bounded raw evidence
       ↓
-explicit conflict outcome
+Integration / Human Gate
+      ↓
+explicit policy decision
 ```
 
-Step 2.6 should establish:
+Step 2.7 should establish:
 
-- deterministic parsing/classification of real Git conflict evidence rather than asking an LLM whether a merge conflicted;
-- structured conflict paths and machine-readable conflict categories where Git evidence supports them;
-- preservation of the exact integration head, task commit, conflict marker, and bounded raw evidence needed for later handling;
-- malformed, incomplete, or contradictory conflict evidence must fail closed rather than silently classifying as resolved;
-- conflict classification must not advance the integration ref or mutate the base working tree;
-- recovered conflicts must classify consistently with the original conflict evidence;
-- the output must be suitable for a later repair/human decision layer without itself authorizing code modification or conflict resolution.
+- an explicit policy layer rather than letting an Agent silently decide whether a conflicted integration may proceed;
+- deterministic routing from structured evidence into a small, auditable set of outcomes;
+- human-required cases must remain stopped until an explicit decision is recorded;
+- any future automatic path must be narrow, policy-authorized, independently verified, and unable to bypass the accepted Git/evidence boundaries;
+- the chosen decision and supporting evidence must be inspectable and recoverable.
 
-Step 2.6 must **not** automatically resolve conflicts, ask an LLM to write merge resolutions, delete conflict markers, or implement the final Integration/Human Gate policy. Those decisions remain explicitly gated for Step 2.7 or a later repair policy.
+Step 2.7 must not turn the classifier itself into an LLM resolver, erase conflict evidence, or allow successful integration to be inferred from a model claim. The runtime must continue to treat Git state and verification evidence as authoritative.
