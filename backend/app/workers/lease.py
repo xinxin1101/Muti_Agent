@@ -6,12 +6,17 @@ from uuid import UUID
 
 from app.dispatch.errors import WorkerExecutionBoundaryError
 from app.models.dispatch import TaskDispatchEnvelope, WorkerExecutionEvidence
-from app.models.lease import TaskLeaseSnapshot
+from app.models.lease import TaskLeaseGrant, TaskLeaseSnapshot
 from app.persistence.errors import TaskLeaseConflictError
 
 
 class QueuedWorker(Protocol):
-    async def execute(self, envelope: TaskDispatchEnvelope) -> WorkerExecutionEvidence: ...
+    async def execute(
+        self,
+        envelope: TaskDispatchEnvelope,
+        *,
+        run_token: UUID,
+    ) -> WorkerExecutionEvidence: ...
 
 
 class TaskLeaseStore(Protocol):
@@ -23,7 +28,7 @@ class TaskLeaseStore(Protocol):
         owner_id: str,
         dispatch_id: UUID,
         lease_seconds: float,
-    ) -> TaskLeaseSnapshot: ...
+    ) -> TaskLeaseGrant: ...
 
     async def renew_task_lease(
         self,
@@ -32,6 +37,7 @@ class TaskLeaseStore(Protocol):
         task_id: str,
         owner_id: str,
         dispatch_id: UUID,
+        run_token: UUID,
         lease_seconds: float,
     ) -> TaskLeaseSnapshot: ...
 
@@ -42,16 +48,16 @@ class TaskLeaseStore(Protocol):
         task_id: str,
         owner_id: str,
         dispatch_id: UUID,
+        run_token: UUID,
     ) -> TaskLeaseSnapshot: ...
 
 
 class LeasedQueuedTaskWorker:
-    """Wrap one Step 3.5 queued worker with bounded ownership/liveness renewal.
+    """Wrap one queued worker with lease renewal and generation fencing.
 
-    Heartbeat failure triggers cooperative cancellation of the inner execution. This is not a
-    stale-write fence: synchronous Git work or a stale process may still write after lease loss.
-    Step 3.7 must add run_token checks to the actual write boundaries before expired ownership can
-    be safely transferred.
+    The fresh token is returned by PostgreSQL acquisition and passed only inside the worker process.
+    It never comes from Redis. Heartbeat failure still triggers cooperative cancellation, while the
+    persistence and Git publication boundaries independently reject expired/stale generations.
     """
 
     def __init__(
@@ -85,7 +91,7 @@ class LeasedQueuedTaskWorker:
 
     async def execute(self, envelope: TaskDispatchEnvelope) -> WorkerExecutionEvidence:
         try:
-            await self._lease_store.acquire_task_lease(
+            grant = await self._lease_store.acquire_task_lease(
                 run_id=envelope.run_id,
                 task_id=envelope.task_id,
                 owner_id=self._worker_id,
@@ -94,16 +100,17 @@ class LeasedQueuedTaskWorker:
             )
         except TaskLeaseConflictError as exc:
             raise WorkerExecutionBoundaryError(
-                "queued execution could not acquire exclusive Step 3.6 task ownership"
+                "queued execution could not acquire a live fenced task generation"
             ) from exc
 
+        run_token = grant.run_token
         stop_heartbeat = asyncio.Event()
         heartbeat_task = asyncio.create_task(
-            self._heartbeat_loop(envelope, stop_heartbeat),
+            self._heartbeat_loop(envelope, run_token, stop_heartbeat),
             name=f"devflow-heartbeat:{envelope.run_id}:{envelope.task_id}",
         )
         execution_task = asyncio.create_task(
-            self._worker.execute(envelope),
+            self._worker.execute(envelope, run_token=run_token),
             name=f"devflow-execution:{envelope.run_id}:{envelope.task_id}",
         )
         heartbeat_failed = False
@@ -129,7 +136,7 @@ class LeasedQueuedTaskWorker:
             result = await execution_task
             stop_heartbeat.set()
             await heartbeat_task
-            await self._release(envelope)
+            await self._release(envelope, run_token)
             return result
         except BaseException:
             stop_heartbeat.set()
@@ -139,12 +146,13 @@ class LeasedQueuedTaskWorker:
             if not heartbeat_task.done():
                 await asyncio.gather(heartbeat_task, return_exceptions=True)
             if not heartbeat_failed:
-                await self._release_after_failure(envelope)
+                await self._release_after_failure(envelope, run_token)
             raise
 
     async def _heartbeat_loop(
         self,
         envelope: TaskDispatchEnvelope,
+        run_token: UUID,
         stop: asyncio.Event,
     ) -> None:
         while True:
@@ -160,26 +168,32 @@ class LeasedQueuedTaskWorker:
                     task_id=envelope.task_id,
                     owner_id=self._worker_id,
                     dispatch_id=envelope.dispatch_id,
+                    run_token=run_token,
                     lease_seconds=self._lease_seconds,
                 )
 
-    async def _release(self, envelope: TaskDispatchEnvelope) -> None:
+    async def _release(self, envelope: TaskDispatchEnvelope, run_token: UUID) -> None:
         try:
             await self._lease_store.release_task_lease(
                 run_id=envelope.run_id,
                 task_id=envelope.task_id,
                 owner_id=self._worker_id,
                 dispatch_id=envelope.dispatch_id,
+                run_token=run_token,
             )
         except TaskLeaseConflictError as exc:
             raise WorkerExecutionBoundaryError(
-                "queued execution completed but its task lease was no longer releasable"
+                "queued execution completed but its fenced task generation was no longer releasable"
             ) from exc
 
-    async def _release_after_failure(self, envelope: TaskDispatchEnvelope) -> None:
+    async def _release_after_failure(
+        self,
+        envelope: TaskDispatchEnvelope,
+        run_token: UUID,
+    ) -> None:
         try:
-            await self._release(envelope)
+            await self._release(envelope, run_token)
         except WorkerExecutionBoundaryError:
-            # Preserve the original execution error. The durable lease remains inspectable as
+            # Preserve the original execution error. The durable generation remains inspectable as
             # ACTIVE until expiry or EXPIRED after its deadline.
             return
