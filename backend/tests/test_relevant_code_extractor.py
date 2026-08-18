@@ -164,6 +164,47 @@ def test_relative_import_resolves_to_visible_local_module() -> None:
     assert any(region.symbol == "User" for region in model.regions)
 
 
+def test_ambiguous_import_suffix_does_not_guess_dependency() -> None:
+    sources = {
+        "src/service.py": (
+            "import user\n"
+            "\n"
+            "def create_user():\n"
+            "    return user.User()\n"
+        ),
+        "pkg/user.py": "class User:\n    pass\n",
+        "other/user.py": "class User:\n    pass\n",
+    }
+    task = TaskContract(
+        task_id="REL-AMBIGUOUS",
+        objective="Update create_user without guessing which user module is local.",
+        readable_files=["src/**", "pkg/**", "other/**"],
+        writable_files=["src/service.py"],
+        readonly_files=[],
+        acceptance_criteria=["Ambiguous local module suffixes do not create guessed edges."],
+        verification_commands=["pytest -q"],
+    )
+    candidates = [
+        _candidate("src/service.py", ContextScopeKind.WRITABLE),
+        _candidate("pkg/user.py", ContextScopeKind.READABLE),
+        _candidate("other/user.py", ContextScopeKind.READABLE),
+    ]
+
+    selections = RelevantCodeExtractor().select(
+        task,
+        candidates,
+        load_source=sources.get,
+    )
+    service = next(selection for selection in selections if selection.path == "src/service.py")
+
+    assert service.local_dependencies == ()
+    for selection in selections:
+        assert all(
+            not evidence.startswith("local_import_from=")
+            for evidence in selection.evidence
+        )
+
+
 def test_invalid_python_and_non_python_files_fall_back_without_ast_regions() -> None:
     sources = {
         "src/service.py": "def broken(:\n",
