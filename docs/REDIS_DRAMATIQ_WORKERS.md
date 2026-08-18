@@ -83,6 +83,12 @@ Queued worktree/branch identity is derived from both the persisted `run_id` and 
 collides fail-closed, while allowing a later independent run to reuse the same logical task id
 without colliding with the deliberately retained Git branch from an earlier run.
 
+The queued backend also freezes the persisted Run `base_commit` rather than silently replacing it
+with the managed repository's newer HEAD if the message waited in Redis. The frozen commit must
+still exist and must remain an ancestor of the current managed-repository HEAD; divergence or
+history replacement fails closed. Successful task commits therefore descend from the Run's
+original immutable base even when the managed checkout has advanced linearly since dispatch.
+
 A successful queued execution is not complete merely because the actor returned. The accepted
 runtime must succeed and the task worktree must be frozen as an actual Git commit.
 
@@ -159,6 +165,7 @@ Step 3.5 acceptance requires both isolated and real-service tests:
   the successful task branch;
 - duplicate worktree identity test proving replay in the same run fails closed;
 - distinct-run test proving the same logical `task_id` receives a distinct retained Git identity;
+- delayed-execution test proving an advanced managed HEAD does not replace the persisted Run base;
 - real Redis + Dramatiq Worker + PostgreSQL round trip with a fake execution backend, proving the
   process/thread queue boundary without paid model calls;
 - all earlier PostgreSQL, sandbox, Context, Agent, DAG, worktree, merge/conflict, and Human Gate
