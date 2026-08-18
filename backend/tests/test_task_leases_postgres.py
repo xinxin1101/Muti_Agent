@@ -149,7 +149,8 @@ async def _lease_lifecycle() -> None:
         owner_id="worker-a",
         dispatch_id=dispatch_id,
     )
-    assert repeated_release == released.model_copy(update={"observed_at": repeated_release.observed_at})
+    expected_repeat = released.model_copy(update={"observed_at": repeated_release.observed_at})
+    assert repeated_release == expected_repeat
 
     with pytest.raises(TaskLeaseConflictError, match="released"):
         await lease_store.renew_task_lease(
@@ -170,7 +171,10 @@ async def _lease_lifecycle() -> None:
 
     all_leases = await lease_store.list_task_leases(run_id)
     assert [item.task_id for item in all_leases] == ["LEASE-A", "LEASE-B"]
-    assert [item.state for item in all_leases] == [TaskLeaseState.RELEASED, TaskLeaseState.UNOWNED]
+    assert [item.state for item in all_leases] == [
+        TaskLeaseState.RELEASED,
+        TaskLeaseState.UNOWNED,
+    ]
 
     await lease_store.dispose()
     await evidence_store.dispose()
