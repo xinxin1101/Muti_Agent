@@ -11,6 +11,7 @@ from app.models.integration_gate import (
     HumanIntegrationDecision,
     IntegrationGateSnapshot,
     IntegrationGateState,
+    IntegrationPolicyDecision,
     IntegrationPolicyRoute,
 )
 from app.models.merge import MergeAttemptOutcome, MergeQueueAttempt, MergeQueueSnapshot
@@ -19,11 +20,13 @@ from app.runtime.conflict_classifier import GitMergeConflictClassifier
 from app.runtime.integration_policy import (
     IntegrationConflictPolicy,
     conflict_evidence_fingerprint,
+    integration_policy_fingerprint,
 )
 from app.runtime.scheduler import DAGScheduler
 from app.workspace import LocalGitWorkspace
 
 _OID_PATTERN = re.compile(r"^[0-9a-fA-F]{40,64}$")
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _INTEGRATION_PREFIX = "refs/devflow/integration/"
 _DECISION_PREFIX = "refs/devflow/integration-decisions/"
 _MAX_AUTO_REPAIR_BLOB_BYTES = 512_000
@@ -34,10 +37,10 @@ class IntegrationHumanGateError(RuntimeError):
 
 
 class IntegrationHumanGate:
-    """Route a classified conflict and durably record explicit human decisions.
+    """Route classified conflicts and record explicit, tree-neutral human decisions.
 
-    Step 2.7 never resolves a conflicted tree, deletes the conflict marker, or advances the
-    integration ref. `repair_may_start=True` only authorizes a later bounded repair stage.
+    `repair_may_start=True` authorizes only a later bounded repair stage. Step 2.7 never
+    resolves conflict content, deletes the conflict marker, or advances the integration ref.
     """
 
     def __init__(
@@ -69,20 +72,16 @@ class IntegrationHumanGate:
         self._validate_snapshot_binding()
         attempt = self._terminal_attempt()
         self._task = scheduler.dag.node(attempt.task_id).task
-        self._fingerprint = conflict_evidence_fingerprint(evidence)
-
-        current = self._reproduce_current_evidence()
-        if conflict_evidence_fingerprint(current) != self._fingerprint:
-            raise IntegrationHumanGateError(
-                "provided conflict evidence does not match current reproducible Git evidence"
-            )
+        self._evidence_fingerprint = conflict_evidence_fingerprint(evidence)
+        self._assert_current_evidence()
 
         self._policy_decision = self._evaluate_policy(evidence)
-        if self._policy_decision.evidence_fingerprint != self._fingerprint:
+        if self._policy_decision.evidence_fingerprint != self._evidence_fingerprint:
             raise IntegrationHumanGateError(
-                "integration policy returned a mismatched evidence hash"
+                "integration policy returned a mismatched evidence fingerprint"
             )
-        self._human_decision = self._recover_human_decision()
+        self._policy_fingerprint = integration_policy_fingerprint(self._policy_decision)
+        self._recover_human_decision()
         self._assert_authoritative_refs()
         self._assert_base_clean()
 
@@ -91,13 +90,29 @@ class IntegrationHumanGate:
         return self._decision_ref
 
     def snapshot(self) -> IntegrationGateSnapshot:
+        """Return a live-validated gate snapshot rather than cached authorization state."""
+
+        current_evidence = self._assert_current_evidence()
+        current_policy = self._evaluate_policy(current_evidence)
+        if current_policy != self._policy_decision:
+            raise IntegrationHumanGateError(
+                "integration policy changed after gate construction"
+            )
+        if integration_policy_fingerprint(current_policy) != self._policy_fingerprint:
+            raise IntegrationHumanGateError(
+                "integration policy fingerprint changed after gate construction"
+            )
+        human_decision = self._recover_human_decision()
+        self._assert_authoritative_refs()
+        self._assert_base_clean()
+
         if self._policy_decision.route is IntegrationPolicyRoute.AUTO_REPAIR_CANDIDATE:
             state = IntegrationGateState.AUTO_REPAIR_CANDIDATE
             repair_may_start = True
-        elif self._human_decision is None:
+        elif human_decision is None:
             state = IntegrationGateState.AWAITING_HUMAN
             repair_may_start = False
-        elif self._human_decision.decision is HumanGateDecision.AUTHORIZE_REPAIR:
+        elif human_decision.decision is HumanGateDecision.AUTHORIZE_REPAIR:
             state = IntegrationGateState.REPAIR_AUTHORIZED
             repair_may_start = True
         else:
@@ -113,10 +128,11 @@ class IntegrationHumanGate:
             integration_head=self._evidence.integration_head,
             conflict_ref=self._evidence.conflict_ref,
             conflict_marker_commit=self._evidence.marker_commit,
-            evidence_fingerprint=self._fingerprint,
+            evidence_fingerprint=self._evidence_fingerprint,
+            policy_fingerprint=self._policy_fingerprint,
             policy=self._policy_decision,
             state=state,
-            human_decision=self._human_decision,
+            human_decision=human_decision,
             repair_may_start=repair_may_start,
             integration_may_advance=False,
         )
@@ -134,27 +150,34 @@ class IntegrationHumanGate:
             raise IntegrationHumanGateError(
                 "human decision is not accepted for an automatic-repair policy candidate"
             )
-        if self._human_decision is not None:
+        if (
+            decision is HumanGateDecision.AUTHORIZE_REPAIR
+            and not self._policy_decision.human_repair_authorizable
+        ):
+            raise IntegrationHumanGateError(
+                "human authorization cannot bypass hard Agent Repair boundaries"
+            )
+        if self._recover_human_decision() is not None:
             raise IntegrationHumanGateError("a human integration decision is already recorded")
 
         actor = actor.strip()
         note = note.strip()
         self._validate_human_metadata(actor=actor, note=note)
 
-        current = self._reproduce_current_evidence()
-        if conflict_evidence_fingerprint(current) != self._fingerprint:
-            raise IntegrationHumanGateError(
-                "conflict evidence changed before the human decision could be recorded"
-            )
-        current_policy = self._evaluate_policy(current)
+        current_evidence = self._assert_current_evidence()
+        current_policy = self._evaluate_policy(current_evidence)
         if current_policy != self._policy_decision:
             raise IntegrationHumanGateError(
                 "integration policy changed before the human decision could be recorded"
             )
+        if integration_policy_fingerprint(current_policy) != self._policy_fingerprint:
+            raise IntegrationHumanGateError(
+                "policy fingerprint changed before the human decision could be recorded"
+            )
         self._assert_decision_ref_absent()
 
         marker_tree = self._resolve_tree(self._evidence.marker_commit)
-        commit = self._git(
+        decision_commit = self._git(
             [
                 "commit-tree",
                 marker_tree,
@@ -165,15 +188,17 @@ class IntegrationHumanGate:
             ],
             env=self._commit_environment(),
         ).stdout.strip()
-        self._require_oid(commit, label="human decision commit")
+        self._require_oid(decision_commit, label="human decision commit")
 
-        self._create_decision_ref_transactionally(commit)
-        self._human_decision = self._recover_human_decision(required=True)
+        self._create_decision_ref_transactionally(decision_commit)
+        recovered = self._recover_human_decision(required=True)
+        if recovered is None:
+            raise IntegrationHumanGateError("human decision was not durably recoverable")
         self._assert_authoritative_refs()
         self._assert_base_clean()
         return self.snapshot()
 
-    def _evaluate_policy(self, evidence: MergeConflictEvidence):
+    def _evaluate_policy(self, evidence: MergeConflictEvidence) -> IntegrationPolicyDecision:
         return self._policy.evaluate(
             evidence,
             self._task,
@@ -208,19 +233,26 @@ class IntegrationHumanGate:
             )
         if self._evidence.task_commit != attempt.task_commit:
             raise IntegrationHumanGateError("conflict evidence references a different task commit")
-        expected_conflict_ref = self._derive_conflict_ref(
-            self._queue_snapshot.integration_ref
-        )
+        expected_conflict_ref = self._derive_conflict_ref(self._queue_snapshot.integration_ref)
         if self._evidence.conflict_ref != expected_conflict_ref:
             raise IntegrationHumanGateError(
                 "conflict evidence references an unexpected conflict ref"
             )
 
-    def _reproduce_current_evidence(self) -> MergeConflictEvidence:
-        return GitMergeConflictClassifier(
+    def _assert_current_evidence(self) -> MergeConflictEvidence:
+        if self._scheduler.state(self._terminal_attempt().task_id) is not TaskScheduleState.SUCCEEDED:
+            raise IntegrationHumanGateError(
+                "conflicted task scheduler state changed after gate construction"
+            )
+        current = GitMergeConflictClassifier(
             self._workspace,
             git_timeout_seconds=self._git_timeout_seconds,
         ).classify(self._queue_snapshot)
+        if conflict_evidence_fingerprint(current) != self._evidence_fingerprint:
+            raise IntegrationHumanGateError(
+                "current reproducible Git evidence no longer matches the gated conflict"
+            )
+        return current
 
     def _recover_human_decision(
         self,
@@ -254,7 +286,8 @@ class IntegrationHumanGate:
 
         metadata = self._parse_decision_metadata(decision_commit)
         expected = {
-            "evidence_fingerprint": self._fingerprint,
+            "evidence_fingerprint": self._evidence_fingerprint,
+            "policy_fingerprint": self._policy_fingerprint,
             "policy_route": IntegrationPolicyRoute.HUMAN_REQUIRED.value,
             "conflict_marker": self._evidence.marker_commit,
             "conflict_ref": self._evidence.conflict_ref,
@@ -266,7 +299,7 @@ class IntegrationHumanGate:
         for key, expected_value in expected.items():
             if metadata[key] != expected_value:
                 raise IntegrationHumanGateError(
-                    f"human decision metadata does not match current conflict evidence: {key}"
+                    f"human decision metadata does not match current gate evidence: {key}"
                 )
 
         try:
@@ -275,30 +308,38 @@ class IntegrationHumanGate:
             raise IntegrationHumanGateError(
                 "human decision marker contains an unsupported decision"
             ) from exc
+        if (
+            decision is HumanGateDecision.AUTHORIZE_REPAIR
+            and not self._policy_decision.human_repair_authorizable
+        ):
+            raise IntegrationHumanGateError(
+                "recorded human authorization violates current hard repair boundaries"
+            )
+
         actor = self._decode_json_text(metadata["actor_json"], label="decision actor")
         note = self._decode_json_text(metadata["note_json"], label="decision note")
-
         record = HumanIntegrationDecision(
             decision=decision,
             actor=actor,
             note=note,
             decision_ref=self._decision_ref,
             decision_commit=decision_commit,
-            evidence_fingerprint=self._fingerprint,
+            evidence_fingerprint=self._evidence_fingerprint,
+            policy_fingerprint=self._policy_fingerprint,
             conflict_marker_commit=self._evidence.marker_commit,
         )
         self._validate_human_metadata(actor=record.actor, note=record.note)
         return record
 
     def _create_decision_ref_transactionally(self, decision_commit: str) -> None:
+        attempt = self._terminal_attempt()
+        task_ref = f"refs/heads/{attempt.task_branch}"
         transaction = "\n".join(
             [
                 "start",
-                (
-                    f"verify {self._queue_snapshot.integration_ref} "
-                    f"{self._evidence.integration_head}"
-                ),
+                f"verify {self._queue_snapshot.integration_ref} {self._evidence.integration_head}",
                 f"verify {self._evidence.conflict_ref} {self._evidence.marker_commit}",
+                f"verify {task_ref} {attempt.task_commit}",
                 f"create {self._decision_ref} {decision_commit}",
                 "prepare",
                 "commit",
@@ -326,7 +367,8 @@ class IntegrationHumanGate:
             f"DevFlow-Human-Decision: {decision.value}\n"
             f"DevFlow-Decision-Actor-JSON: {actor_json}\n"
             f"DevFlow-Decision-Note-JSON: {note_json}\n"
-            f"DevFlow-Evidence-Fingerprint: {self._fingerprint}\n"
+            f"DevFlow-Evidence-Fingerprint: {self._evidence_fingerprint}\n"
+            f"DevFlow-Policy-Fingerprint: {self._policy_fingerprint}\n"
             f"DevFlow-Policy-Route: {self._policy_decision.route.value}\n"
             f"DevFlow-Conflict-Marker: {self._evidence.marker_commit}\n"
             f"DevFlow-Conflict-Ref: {self._evidence.conflict_ref}\n"
@@ -343,6 +385,7 @@ class IntegrationHumanGate:
             "DevFlow-Decision-Actor-JSON: ": "actor_json",
             "DevFlow-Decision-Note-JSON: ": "note_json",
             "DevFlow-Evidence-Fingerprint: ": "evidence_fingerprint",
+            "DevFlow-Policy-Fingerprint: ": "policy_fingerprint",
             "DevFlow-Policy-Route: ": "policy_route",
             "DevFlow-Conflict-Marker: ": "conflict_marker",
             "DevFlow-Conflict-Ref: ": "conflict_ref",
@@ -368,8 +411,10 @@ class IntegrationHumanGate:
         self._require_oid(metadata["conflict_marker"], label="recorded conflict marker")
         self._require_oid(metadata["integration_head"], label="recorded integration head")
         self._require_oid(metadata["task_commit"], label="recorded task commit")
-        if re.fullmatch(r"[0-9a-f]{64}", metadata["evidence_fingerprint"]) is None:
+        if _SHA256_PATTERN.fullmatch(metadata["evidence_fingerprint"]) is None:
             raise IntegrationHumanGateError("recorded evidence fingerprint is malformed")
+        if _SHA256_PATTERN.fullmatch(metadata["policy_fingerprint"]) is None:
+            raise IntegrationHumanGateError("recorded policy fingerprint is malformed")
         return metadata
 
     @staticmethod
@@ -402,6 +447,13 @@ class IntegrationHumanGate:
         conflict = self._resolve_commit(self._evidence.conflict_ref, label="conflict ref")
         if conflict != self._evidence.marker_commit:
             raise IntegrationHumanGateError("conflict ref moved outside the human gate")
+        attempt = self._terminal_attempt()
+        task_head = self._resolve_commit(
+            f"refs/heads/{attempt.task_branch}",
+            label="conflicted task branch",
+        )
+        if task_head != attempt.task_commit:
+            raise IntegrationHumanGateError("conflicted task branch moved outside the human gate")
 
     def _terminal_attempt(self) -> MergeQueueAttempt:
         return self._queue_snapshot.attempts[-1]
