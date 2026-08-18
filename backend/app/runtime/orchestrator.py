@@ -5,6 +5,7 @@ from collections.abc import Sequence
 
 from app.agents import DeveloperAgent, RepairAgent, ReviewerAgent
 from app.agents.errors import InvalidReviewerOutputError, RepairBudgetExhaustedError
+from app.context import ContextBuildError, ContextPacketBuilder
 from app.models import (
     AgentRole,
     DeveloperStopReason,
@@ -25,7 +26,7 @@ from app.workspace import LocalGitWorkspace
 
 
 class SingleTaskOrchestrator:
-    """Execute the complete V0.1 evidence-driven loop for one validated task."""
+    """Execute the complete evidence-driven loop for one validated task."""
 
     def __init__(
         self,
@@ -37,11 +38,13 @@ class SingleTaskOrchestrator:
         developer_model: str,
         reviewer_model: str,
         repair_model: str,
+        context_builder: ContextPacketBuilder | None = None,
     ) -> None:
         self._developer = developer
         self._verifier = verifier
         self._reviewer = reviewer
         self._repair = repair
+        self._context_builder = context_builder or ContextPacketBuilder()
         self._models = {
             AgentRole.DEVELOPER: self._normalize_model(developer_model, "developer"),
             AgentRole.REVIEWER: self._normalize_model(reviewer_model, "reviewer"),
@@ -62,7 +65,29 @@ class SingleTaskOrchestrator:
 
         machine.transition(TaskRunState.RUNNING, detail="Developer Agent started initial work.")
         try:
-            developer_result = await self._developer.run(task, workspace=workspace)
+            developer_context = await self._build_context(task, workspace=workspace)
+        except ContextBuildError as exc:
+            machine.transition(
+                TaskRunState.FAILED,
+                detail="Developer ContextPacket construction failed.",
+            )
+            return self._result(
+                task=task,
+                machine=machine,
+                workspace=workspace,
+                developer=developer_result,
+                verifications=verifications,
+                reviews=reviews,
+                repairs=repairs,
+                failures=[self._context_failure(exc, stage="developer")],
+            )
+
+        try:
+            developer_result = await self._developer.run(
+                task,
+                workspace=workspace,
+                context_packet=developer_context,
+            )
         except AgentProviderError as exc:
             machine.transition(TaskRunState.FAILED, detail="Developer model provider failed.")
             return self._result(
@@ -74,6 +99,18 @@ class SingleTaskOrchestrator:
                 reviews=reviews,
                 repairs=repairs,
                 failures=[exc.to_failure_report()],
+            )
+        except ValueError as exc:
+            machine.transition(TaskRunState.FAILED, detail="Developer context gate failed.")
+            return self._result(
+                task=task,
+                machine=machine,
+                workspace=workspace,
+                developer=developer_result,
+                verifications=verifications,
+                reviews=reviews,
+                repairs=repairs,
+                failures=[self._runtime_failure(str(exc))],
             )
 
         if developer_result.stop_reason is not DeveloperStopReason.MODEL_STOP:
@@ -169,10 +206,29 @@ class SingleTaskOrchestrator:
                 detail="Hard gate passed; independent semantic review started.",
             )
             try:
+                reviewer_context = await self._build_context(task, workspace=workspace)
+            except ContextBuildError as exc:
+                machine.transition(
+                    TaskRunState.FAILED,
+                    detail="Reviewer ContextPacket construction failed.",
+                )
+                return self._result(
+                    task=task,
+                    machine=machine,
+                    workspace=workspace,
+                    developer=developer_result,
+                    verifications=verifications,
+                    reviews=reviews,
+                    repairs=repairs,
+                    failures=[self._context_failure(exc, stage="reviewer")],
+                )
+
+            try:
                 decision = await self._reviewer.review(
                     task,
                     verification,
                     workspace=workspace,
+                    context_packet=reviewer_context,
                 )
             except InvalidReviewerOutputError as exc:
                 machine.transition(
@@ -286,11 +342,30 @@ class SingleTaskOrchestrator:
             detail=f"Targeted repair attempt {attempt} started.",
         )
         try:
+            repair_context = await self._build_context(task, workspace=workspace)
+        except ContextBuildError as exc:
+            machine.transition(
+                TaskRunState.FAILED,
+                detail="Repair ContextPacket construction failed.",
+            )
+            return self._result(
+                task=task,
+                machine=machine,
+                workspace=workspace,
+                developer=developer,
+                verifications=verifications,
+                reviews=reviews,
+                repairs=repairs,
+                failures=[self._context_failure(exc, stage="repair")],
+            )
+
+        try:
             repair_result = await self._repair.repair(
                 task,
                 failures,
                 attempt=attempt,
                 workspace=workspace,
+                context_packet=repair_context,
             )
         except RepairBudgetExhaustedError as exc:
             machine.transition(
@@ -360,6 +435,23 @@ class SingleTaskOrchestrator:
 
         return repair_result
 
+    async def _build_context(
+        self,
+        task: TaskContract,
+        *,
+        workspace: LocalGitWorkspace,
+    ):
+        try:
+            return await asyncio.to_thread(
+                self._context_builder.build,
+                task,
+                workspace=workspace,
+            )
+        except ContextBuildError:
+            raise
+        except (OSError, ValueError) as exc:
+            raise ContextBuildError(f"ContextPacket validation/read failed: {exc}") from exc
+
     def _result(
         self,
         *,
@@ -422,6 +514,16 @@ class SingleTaskOrchestrator:
             prompt_tokens=prompt,
             completion_tokens=completion,
             total_tokens=total,
+        )
+
+    @staticmethod
+    def _context_failure(exc: ContextBuildError, *, stage: str) -> FailureReport:
+        return FailureReport(
+            failure_type=FailureType.TOOL_FAILURE,
+            source=FailureSource.RUNTIME,
+            message=f"{stage.capitalize()} ContextPacket construction failed.",
+            retryable=False,
+            evidence=[f"context_error={exc}"],
         )
 
     @staticmethod

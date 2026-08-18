@@ -14,6 +14,18 @@ from app.models.conflict import (
     MergeConflictStageShape,
     MergeConflictStageSide,
 )
+from app.models.context import (
+    ContextBudget,
+    ContextFile,
+    ContextPacket,
+    ContextScopeKind,
+    ContextScopeMatch,
+    ContextSelectionReason,
+    ContextSnippet,
+    ContextTruncation,
+    ContextTruncationReason,
+    ContextUsage,
+)
 from app.models.dag import TaskDAG, TaskNode
 from app.models.developer import DeveloperRunResult, DeveloperStopReason
 from app.models.failure import FailureReport, FailureSource, FailureType
@@ -64,6 +76,16 @@ __all__ = [
     "AgentUsageSummary",
     "CheckResult",
     "CheckType",
+    "ContextBudget",
+    "ContextFile",
+    "ContextPacket",
+    "ContextScopeKind",
+    "ContextScopeMatch",
+    "ContextSelectionReason",
+    "ContextSnippet",
+    "ContextTruncation",
+    "ContextTruncationReason",
+    "ContextUsage",
     "DeveloperRunResult",
     "DeveloperStopReason",
     "DockerSandboxPolicy",

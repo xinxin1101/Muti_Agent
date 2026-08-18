@@ -65,6 +65,28 @@ class LocalGitWorkspace:
             raise ValueError("repository path resolves outside the workspace") from exc
         return candidate
 
+    def head_commit(self) -> str:
+        """Return the exact Git HEAD commit for provenance."""
+
+        commit = self._git(["rev-parse", "--verify", "HEAD"]).strip()
+        if not commit:
+            raise WorkspaceGitError("workspace repository does not have a resolvable HEAD commit")
+        return commit
+
+    def tracked_files(self) -> list[str]:
+        """Return sorted tracked repository paths without exposing `.git` internals."""
+
+        return sorted(set(self._split_nul(self._git(["ls-files", "-z", "--cached", "--"]))))
+
+    def repository_files(self) -> list[str]:
+        """Return sorted tracked plus non-ignored untracked paths from current worktree truth."""
+
+        tracked = self.tracked_files()
+        untracked = self._split_nul(
+            self._git(["ls-files", "--others", "--exclude-standard", "-z", "--"])
+        )
+        return sorted(set(tracked) | set(untracked))
+
     def changed_files(self) -> list[str]:
         """Return tracked and untracked changed paths relative to HEAD.
 
