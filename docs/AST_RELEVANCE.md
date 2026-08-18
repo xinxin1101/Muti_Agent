@@ -96,8 +96,16 @@ Python AST then adds symbol-level relevance:
 
 - task-term overlap with function/class/method qualified names;
 - imported-symbol overlap for local dependency files;
-- a small top-level-symbol fallback for changed/writable Python files when no
+- a small top-level-symbol bonus only after actual task/import relevance exists;
+- a separate top-level fallback for changed/writable Python files only when no
   lexical symbol matches.
+
+The top-level bonus cannot create relevance by itself. Unrelated definitions are
+therefore not selected merely because they are top-level declarations.
+
+Overlapping class/method regions are de-duplicated before packet construction. The
+higher-ranked overlapping symbol wins, avoiding redundant nested definitions and
+keeping selected-region provenance precise.
 
 The module docstring/import preamble is retained as a small region when present,
 so selected definitions keep their local import context.
@@ -115,6 +123,11 @@ Supported first-version cases include:
 
 Only one-hop local dependency expansion is performed in Step 3.3. External
 packages are ignored because they have no visible local candidate path.
+
+Import resolution prefers the most specific visible module alias. If an alias maps
+to more than one visible repository path, resolution fails closed for that edge:
+DevFlow does not choose a dependency by path ordering or guess which module the
+runtime would import.
 
 A local dependency receives a bounded score derived from the strongest importing
 visible parent. Explicit `from ... import Symbol` names are also used to select
@@ -176,6 +189,9 @@ For the same:
 selection ordering, regions, `ContextPacket`, and packet fingerprint are stable.
 No model call, embedding service, vector database, random number, wall clock, or
 network request participates in relevance selection.
+
+Determinism is not permission to guess: ambiguous local-import aliases deliberately
+produce no dependency edge instead of selecting the lexicographically first path.
 
 ## Explicitly out of scope
 
