@@ -183,6 +183,7 @@ def test_content_conflict_has_paths_types_and_three_git_stages(tmp_path: Path) -
     assert _git(base.root, "rev-parse", evidence.conflict_ref) == evidence.marker_commit
     assert evidence.conflicting_paths == ("shared.txt",)
     assert "CONFLICT (contents)" in evidence.conflict_types
+    assert evidence.files[0].stage_shape is models.MergeConflictStageShape.THREE_WAY
     assert [stage.stage for stage in evidence.files[0].stages] == [1, 2, 3]
     assert [stage.side for stage in evidence.files[0].stages] == [
         models.MergeConflictStageSide.BASE,
@@ -195,7 +196,7 @@ def test_content_conflict_has_paths_types_and_three_git_stages(tmp_path: Path) -
     assert base.changed_files() == []
 
 
-def test_add_add_conflict_has_only_integration_and_task_stages(tmp_path: Path) -> None:
+def test_add_add_conflict_is_derived_from_stage_shape(tmp_path: Path) -> None:
     base = _repository(tmp_path, {"README.md": "base\n"})
     task_a = _task("TASK-A", "new.txt")
     task_b = _task("TASK-B", "new.txt")
@@ -208,7 +209,8 @@ def test_add_add_conflict_has_only_integration_and_task_stages(tmp_path: Path) -
     evidence = GitMergeConflictClassifier(base).classify(snapshot)
 
     assert evidence.conflicting_paths == ("new.txt",)
-    assert "CONFLICT (add/add)" in evidence.conflict_types
+    assert "CONFLICT (contents)" in evidence.conflict_types
+    assert evidence.files[0].stage_shape is models.MergeConflictStageShape.ADD_ADD
     assert [stage.stage for stage in evidence.files[0].stages] == [2, 3]
     assert [stage.side for stage in evidence.files[0].stages] == [
         models.MergeConflictStageSide.INTEGRATION,
@@ -237,6 +239,7 @@ def test_modify_delete_conflict_preserves_missing_task_stage(tmp_path: Path) -> 
 
     assert evidence.conflicting_paths == ("shared.txt",)
     assert "CONFLICT (modify/delete)" in evidence.conflict_types
+    assert evidence.files[0].stage_shape is models.MergeConflictStageShape.MODIFY_DELETE
     assert [stage.stage for stage in evidence.files[0].stages] == [1, 2]
     assert [stage.side for stage in evidence.files[0].stages] == [
         models.MergeConflictStageSide.BASE,
