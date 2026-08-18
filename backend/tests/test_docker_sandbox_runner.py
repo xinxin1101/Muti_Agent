@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -41,7 +42,12 @@ def test_docker_run_command_contains_non_optional_security_boundaries(tmp_path: 
     assert "--read-only" in command
     assert command[command.index("--cap-drop") + 1] == "ALL"
     assert command[command.index("--security-opt") + 1] == "no-new-privileges=true"
-    assert command[command.index("--user") + 1] == "65532:65532"
+    expected_user = "65532:65532"
+    getuid = getattr(os, "getuid", None)
+    getgid = getattr(os, "getgid", None)
+    if callable(getuid) and callable(getgid) and getuid() > 0:
+        expected_user = f"{getuid()}:{getgid()}"
+    assert command[command.index("--user") + 1] == expected_user
     assert command[command.index("--cpus") + 1] == "0.5"
     assert command[command.index("--memory") + 1] == "256m"
     assert command[command.index("--memory-swap") + 1] == "256m"
@@ -52,7 +58,43 @@ def test_docker_run_command_contains_non_optional_security_boundaries(tmp_path: 
     assert f"src={workspace.resolve()}" in mount
     assert "dst=/workspace" in mount
     assert mount.endswith("readonly")
-    assert command[-4:] == ["python", "-c", "print('ok')"][-4:]
+    image_index = command.index("trusted-verifier:test")
+    assert command[image_index + 1 :] == ["python", "-c", "print('ok')"]
+
+
+def test_rootless_daemon_is_rejected_before_untrusted_command_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = DockerSandboxRunner()
+
+    def fake_control(arguments, *, timeout_seconds):
+        del timeout_seconds
+        assert arguments[0] == "info"
+        return subprocess.CompletedProcess(
+            arguments,
+            0,
+            '["name=seccomp","name=rootless"]|systemd\n',
+            "",
+        )
+
+    monkeypatch.setattr(runner, "_control_command", fake_control)
+
+    assert "Rootless Docker is refused" in runner._preflight(1.0)
+
+
+def test_missing_cgroup_driver_is_rejected_before_untrusted_command_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = DockerSandboxRunner()
+
+    def fake_control(arguments, *, timeout_seconds):
+        del timeout_seconds
+        assert arguments[0] == "info"
+        return subprocess.CompletedProcess(arguments, 0, '["name=seccomp"]|none\n', "")
+
+    monkeypatch.setattr(runner, "_control_command", fake_control)
+
+    assert "no usable cgroup driver" in runner._preflight(1.0)
 
 
 def test_timeout_forces_container_removal_and_returns_sandbox_timeout(
@@ -62,15 +104,18 @@ def test_timeout_forces_container_removal_and_returns_sandbox_timeout(
     workspace = tmp_path / "repo"
     workspace.mkdir()
     calls: list[list[str]] = []
+    runner = DockerSandboxRunner()
+    monkeypatch.setattr(runner, "_preflight", lambda timeout: "")
 
     def fake_run(command, **kwargs):
+        del kwargs
         calls.append(list(command))
         if command[1] == "run":
             raise subprocess.TimeoutExpired(command, timeout=0.1, output="partial")
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    result = DockerSandboxRunner().run(
+    result = runner.run(
         ["python", "-c", "import time; time.sleep(10)"],
         workspace=workspace,
         timeout_seconds=0.1,
@@ -93,6 +138,7 @@ def test_missing_docker_fails_closed_without_host_fallback(
     workspace.mkdir()
 
     def missing_docker(command, **kwargs):
+        del command, kwargs
         raise FileNotFoundError("docker not installed")
 
     monkeypatch.setattr(subprocess, "run", missing_docker)
@@ -104,7 +150,7 @@ def test_missing_docker_fails_closed_without_host_fallback(
 
     assert result.failure_type is FailureType.TOOL_FAILURE
     assert result.exit_code is None
-    assert "Docker verification sandbox" in result.stderr
+    assert "Docker executable is unavailable" in result.stderr
 
 
 def test_docker_start_failure_is_not_misclassified_as_project_failure(
@@ -113,12 +159,15 @@ def test_docker_start_failure_is_not_misclassified_as_project_failure(
 ) -> None:
     workspace = tmp_path / "repo"
     workspace.mkdir()
+    runner = DockerSandboxRunner()
+    monkeypatch.setattr(runner, "_preflight", lambda timeout: "")
 
     def fake_run(command, **kwargs):
+        del kwargs
         return subprocess.CompletedProcess(command, 125, "", "image not found")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    result = DockerSandboxRunner().run(
+    result = runner.run(
         ["python", "-m", "pytest"],
         workspace=workspace,
         timeout_seconds=1.0,
