@@ -210,7 +210,7 @@ class LocalQueuedTaskExecutionBackend:
     @staticmethod
     def _worktree_identity(run_id: UUID, task_id: str, run_token: UUID) -> str:
         generation_digest = hashlib.sha256(
-            f"{task_id}:{run_token.hex}".encode("utf-8")
+            f"{task_id}:{run_token.hex}".encode()
         ).hexdigest()[:16]
         return f"run-{run_id.hex}-generation-{generation_digest}"
 
