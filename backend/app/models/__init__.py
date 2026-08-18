@@ -6,6 +6,14 @@ from app.models.agent import (
     MessageRole,
     TokenUsage,
 )
+from app.models.conflict import (
+    MergeConflictEvidence,
+    MergeConflictFile,
+    MergeConflictMessage,
+    MergeConflictStage,
+    MergeConflictStageShape,
+    MergeConflictStageSide,
+)
 from app.models.dag import TaskDAG, TaskNode
 from app.models.developer import DeveloperRunResult, DeveloperStopReason
 from app.models.failure import FailureReport, FailureSource, FailureType
@@ -48,6 +56,12 @@ __all__ = [
     "FailureSource",
     "FailureType",
     "MergeAttemptOutcome",
+    "MergeConflictEvidence",
+    "MergeConflictFile",
+    "MergeConflictMessage",
+    "MergeConflictStage",
+    "MergeConflictStageShape",
+    "MergeConflictStageSide",
     "MergeQueueAttempt",
     "MergeQueueSnapshot",
     "MessageRole",
