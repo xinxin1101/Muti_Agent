@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from dramatiq import Worker
@@ -83,7 +84,7 @@ def test_dispatch_envelope_is_minimal_and_forbids_extra_fields() -> None:
         TaskDispatchEnvelope.model_validate(
             {
                 **envelope.model_dump(mode="json"),
-                "repository_code": "secret source",
+                "run_token": str(uuid4()),
             }
         )
 
@@ -180,6 +181,27 @@ class _StaticWorkspaceResolver:
         return self._workspace
 
 
+class _AllowPublicationFence:
+    def __init__(self) -> None:
+        self.tokens: list[UUID] = []
+
+    @asynccontextmanager
+    async def guard_task_publication(
+        self,
+        *,
+        run_id,
+        task_id,
+        dispatch_id,
+        run_token,
+    ):
+        self.tokens.append(run_token)
+        yield SimpleNamespace(
+            run_id=run_id,
+            task_id=task_id,
+            dispatch_id=dispatch_id,
+        )
+
+
 class _WritingRunner:
     def __init__(self, value: int) -> None:
         self._value = value
@@ -223,14 +245,30 @@ def _init_repository(path: Path) -> LocalGitWorkspace:
     return LocalGitWorkspace(path)
 
 
-def test_local_queued_backend_uses_isolated_worktree_and_commits_success(tmp_path: Path) -> None:
+def _backend(
+    base: LocalGitWorkspace,
+    worktree_root: Path,
+    *,
+    value: int = 2,
+    fence: _AllowPublicationFence | None = None,
+) -> tuple[LocalQueuedTaskExecutionBackend, _AllowPublicationFence]:
+    publication_fence = fence or _AllowPublicationFence()
+    return (
+        LocalQueuedTaskExecutionBackend(
+            workspace_resolver=_StaticWorkspaceResolver(base),
+            worktree_root=worktree_root,
+            runner_factory=lambda _task: _WritingRunner(value),
+            publication_fence=publication_fence,
+        ),
+        publication_fence,
+    )
+
+
+def test_local_queued_backend_uses_isolated_worktree_and_fenced_commit(tmp_path: Path) -> None:
     base = _init_repository(tmp_path / "repo")
     task = _task("QUEUE-GIT")
-    backend = LocalQueuedTaskExecutionBackend(
-        workspace_resolver=_StaticWorkspaceResolver(base),
-        worktree_root=tmp_path / "worktrees",
-        runner_factory=lambda _task: _WritingRunner(2),
-    )
+    backend, fence = _backend(base, tmp_path / "worktrees")
+    run_token = uuid4()
 
     evidence = asyncio.run(
         backend.execute(
@@ -238,6 +276,7 @@ def test_local_queued_backend_uses_isolated_worktree_and_commits_success(tmp_pat
             project_id=uuid4(),
             run_id=uuid4(),
             dispatch_id=uuid4(),
+            run_token=run_token,
             base_commit=base.head_commit(),
         )
     )
@@ -245,21 +284,18 @@ def test_local_queued_backend_uses_isolated_worktree_and_commits_success(tmp_pat
     assert evidence.status is WorkerExecutionStatus.SUCCEEDED
     assert evidence.commit_sha is not None
     assert evidence.branch_name is not None
+    assert fence.tokens == [run_token]
     assert (base.root / "module.py").read_text(encoding="utf-8") == "VALUE = 1\n"
     assert _git(base.root, "show", f"{evidence.commit_sha}:module.py") == "VALUE = 2"
 
 
-def test_local_queued_backend_fails_closed_on_duplicate_worktree_identity(
-    tmp_path: Path,
-) -> None:
+def test_same_run_task_different_generations_use_distinct_worktree_identity(tmp_path: Path) -> None:
     base = _init_repository(tmp_path / "repo")
-    task = _task("QUEUE-DUP")
+    task = _task("QUEUE-TAKEOVER")
     run_id = uuid4()
-    backend = LocalQueuedTaskExecutionBackend(
-        workspace_resolver=_StaticWorkspaceResolver(base),
-        worktree_root=tmp_path / "worktrees",
-        runner_factory=lambda _task: _WritingRunner(2),
-    )
+    backend, fence = _backend(base, tmp_path / "worktrees")
+    first_token = uuid4()
+    second_token = uuid4()
 
     first = asyncio.run(
         backend.execute(
@@ -267,6 +303,7 @@ def test_local_queued_backend_fails_closed_on_duplicate_worktree_identity(
             project_id=uuid4(),
             run_id=run_id,
             dispatch_id=uuid4(),
+            run_token=first_token,
             base_commit=base.head_commit(),
         )
     )
@@ -276,26 +313,23 @@ def test_local_queued_backend_fails_closed_on_duplicate_worktree_identity(
             project_id=uuid4(),
             run_id=run_id,
             dispatch_id=uuid4(),
+            run_token=second_token,
             base_commit=base.head_commit(),
         )
     )
 
     assert first.status is WorkerExecutionStatus.SUCCEEDED
-    assert second.status is WorkerExecutionStatus.FAILED
-    assert second.commit_sha is None
-    assert second.failures
-    assert second.failures[0].retryable is False
-    assert "exception_type=TaskWorktreeCollisionError" in second.failures[0].evidence
+    assert second.status is WorkerExecutionStatus.SUCCEEDED
+    assert first.branch_name != second.branch_name
+    assert first.commit_sha is not None
+    assert second.commit_sha is not None
+    assert fence.tokens == [first_token, second_token]
 
 
 def test_local_queued_backend_scopes_same_task_identity_to_each_run(tmp_path: Path) -> None:
     base = _init_repository(tmp_path / "repo")
     task = _task("QUEUE-REUSED-ID")
-    backend = LocalQueuedTaskExecutionBackend(
-        workspace_resolver=_StaticWorkspaceResolver(base),
-        worktree_root=tmp_path / "worktrees",
-        runner_factory=lambda _task: _WritingRunner(2),
-    )
+    backend, _ = _backend(base, tmp_path / "worktrees")
     base_commit = base.head_commit()
 
     first = asyncio.run(
@@ -304,6 +338,7 @@ def test_local_queued_backend_scopes_same_task_identity_to_each_run(tmp_path: Pa
             project_id=uuid4(),
             run_id=uuid4(),
             dispatch_id=uuid4(),
+            run_token=uuid4(),
             base_commit=base_commit,
         )
     )
@@ -313,6 +348,7 @@ def test_local_queued_backend_scopes_same_task_identity_to_each_run(tmp_path: Pa
             project_id=uuid4(),
             run_id=uuid4(),
             dispatch_id=uuid4(),
+            run_token=uuid4(),
             base_commit=base_commit,
         )
     )
@@ -342,17 +378,14 @@ def test_local_queued_backend_uses_persisted_base_after_managed_head_advances(
     )
     assert base.head_commit() != persisted_base
 
-    backend = LocalQueuedTaskExecutionBackend(
-        workspace_resolver=_StaticWorkspaceResolver(base),
-        worktree_root=tmp_path / "worktrees",
-        runner_factory=lambda _task: _WritingRunner(2),
-    )
+    backend, _ = _backend(base, tmp_path / "worktrees")
     evidence = asyncio.run(
         backend.execute(
             task=task,
             project_id=uuid4(),
             run_id=uuid4(),
             dispatch_id=uuid4(),
+            run_token=uuid4(),
             base_commit=persisted_base,
         )
     )
@@ -373,8 +406,8 @@ def test_local_queued_backend_uses_persisted_base_after_managed_head_advances(
 class _RecordingStore:
     def __init__(self, snapshot) -> None:
         self.snapshot = snapshot
-        self.finalized: list[SingleTaskRunResult] = []
-        self.appended: list[tuple[PersistenceEvidenceKind, str]] = []
+        self.finalized: list[tuple[SingleTaskRunResult, UUID | None]] = []
+        self.appended: list[tuple[PersistenceEvidenceKind, str, UUID | None]] = []
 
     async def load_run(self, _run_id):
         return self.snapshot
@@ -389,17 +422,19 @@ class _RecordingStore:
         task_id=None,
         stage=None,
         sequence=None,
+        run_token=None,
     ):
-        self.appended.append((kind, evidence_key))
+        self.appended.append((kind, evidence_key, run_token))
         return len(self.appended)
 
-    async def finalize_single_task_run(self, *, run_id, result):
-        self.finalized.append(result)
+    async def finalize_single_task_run(self, *, run_id, result, run_token=None):
+        self.finalized.append((result, run_token))
 
 
 class _CommitFailureBackend:
     def __init__(self, result: SingleTaskRunResult) -> None:
         self.result = result
+        self.seen_token: UUID | None = None
 
     async def execute(
         self,
@@ -408,8 +443,10 @@ class _CommitFailureBackend:
         project_id,
         run_id,
         dispatch_id,
+        run_token,
         base_commit,
     ):
+        self.seen_token = run_token
         return WorkerExecutionEvidence(
             dispatch_id=dispatch_id,
             run_id=run_id,
@@ -432,7 +469,7 @@ class _CommitFailureBackend:
         )
 
 
-def test_worker_does_not_finalize_success_when_git_commit_boundary_failed() -> None:
+def test_worker_propagates_token_and_does_not_finalize_success_when_git_commit_failed() -> None:
     task = _task("QUEUE-COMMIT-FAIL")
     run_id = uuid4()
     snapshot = SimpleNamespace(
@@ -443,18 +480,20 @@ def test_worker_does_not_finalize_success_when_git_commit_boundary_failed() -> N
         tasks=(SimpleNamespace(task=task),),
     )
     store = _RecordingStore(snapshot)
-    worker = QueuedTaskWorker(
-        store=store,
-        backend=_CommitFailureBackend(_success_result(task.task_id)),
-    )
+    backend = _CommitFailureBackend(_success_result(task.task_id))
+    worker = QueuedTaskWorker(store=store, backend=backend)
     envelope = TaskDispatchEnvelope(
         dispatch_id=uuid4(),
         run_id=run_id,
         task_id=task.task_id,
     )
+    run_token = uuid4()
 
-    evidence = asyncio.run(worker.execute(envelope))
+    evidence = asyncio.run(worker.execute(envelope, run_token=run_token))
 
     assert evidence.status is WorkerExecutionStatus.FAILED
+    assert backend.seen_token == run_token
     assert store.finalized == []
-    assert any(kind is PersistenceEvidenceKind.WORKER_EXECUTION for kind, _ in store.appended)
+    assert store.appended
+    assert all(item[2] == run_token for item in store.appended)
+    assert any(item[0] is PersistenceEvidenceKind.WORKER_EXECUTION for item in store.appended)
