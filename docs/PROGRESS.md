@@ -5,11 +5,11 @@ This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The developmen
 ## Current position
 
 - Current phase: **Phase 3 — V0.3 Safety, Context and Reliability**
-- Completed item: **Step 3.1 — Docker Verification Sandbox + Resource Limits**
-- Next item: **Step 3.2 — Context Packet Builder**
+- Completed item: **Step 3.2 — Context Packet Builder**
+- Next item: **Step 3.3 — AST / Import-aware Relevant-code Extraction**
 - Phase 2 status: **ACCEPTED / COMPLETE**
 - Phase 3 status: **IN PROGRESS**
-- Step 3.2 status: **NOT STARTED**
+- Step 3.3 status: **NOT STARTED**
 - V0.1 status: **ACCEPTED / COMPLETE**
 
 ---
@@ -79,8 +79,8 @@ Step 2.7 squash merge commit:
 Current Phase 3 execution mapping:
 
 1. **Step 3.1 — Docker Verification Sandbox + resource limits — ACCEPTED**
-2. **Step 3.2 — Context Packet Builder — NEXT / NOT STARTED**
-3. AST/import-aware relevant-code extraction
+2. **Step 3.2 — Context Packet Builder — ACCEPTED**
+3. **Step 3.3 — AST / Import-aware Relevant-code Extraction — NEXT / NOT STARTED**
 4. PostgreSQL persistence
 5. Redis + Dramatiq workers
 6. Lease + heartbeat
@@ -231,9 +231,179 @@ FailureReport / Reviewer
 
 ---
 
-## Gate before Step 3.2 — Context Packet Builder
+## Step 3.2 — Context Packet Builder — ACCEPTED
 
-Step 3.2 may now improve **what bounded repository context is supplied to Agents**. It must not weaken the accepted Git/scope/sandbox evidence boundaries.
+Merged through PR #19: `Phase 3 Step 3.2: add bounded Context Packet Builder`.
+
+Squash merge commit:
+
+`2a4d948b29045be3cbcf5ffae4f541d9135457bb`
+
+### Runtime-owned bounded context artifact
+
+Step 3.2 replaces per-Agent ad hoc repository context assembly with a single runtime-owned `ContextPacketBuilder` boundary:
+
+```text
+TaskContract
+      +
+Trusted managed worktree state
+      ↓
+ContextPacketBuilder
+      ├── task objective / acceptance criteria / scopes
+      ├── selected repository files and snippets
+      ├── Git/path/scope provenance
+      ├── deterministic ordering
+      ├── explicit content budgets
+      ├── truncation / omission evidence
+      └── canonical fingerprint
+      ↓
+ContextPacket
+      ↓
+Developer / Repair / Reviewer
+```
+
+Repository file content inside a packet is explicitly **untrusted model data**. Runtime-generated Task/Git/scope/budget/provenance/fingerprint fields remain control-plane evidence.
+
+### Deterministic Step 3.2 selection policy
+
+Step 3.2 deliberately avoids semantic retrieval. Candidate ordering is mechanical and reproducible:
+
+1. current Git-changed visible files;
+2. writable-scope visible files;
+3. read-only-scope visible files;
+4. readable-scope visible files;
+5. repository-relative path as the stable tie-breaker.
+
+A selected file records:
+
+- repository-relative path;
+- tracked/untracked state;
+- current changed-state fact;
+- all matching TaskContract scope patterns;
+- deterministic selection reasons;
+- exact selected snippet line range;
+- SHA-256 of the complete current source bytes;
+- source character/byte size;
+- selected character/token-unit usage;
+- explicit truncation status.
+
+The builder inventories only managed Git worktree state through `LocalGitWorkspace`; `.git` internals and symbolic-link traversal remain outside the accepted path boundary.
+
+### Budget and truncation semantics
+
+`ContextBudget` independently bounds:
+
+- selected file count;
+- characters per selected file;
+- total selected characters;
+- conservative token units;
+- maximum source-file bytes inspected as text.
+
+The accepted provider-neutral estimator is explicitly named:
+
+`utf8_bytes_upper_bound`
+
+It records selected UTF-8 byte count as a conservative budgeting unit. DevFlow does **not** claim this is an exact SiliconFlow/model tokenizer count. A future model-specific tokenizer must be an explicit policy change rather than a silent semantic change.
+
+Step 3.2 uses deterministic prefix snippets. When content cannot be included completely, the packet records structured evidence rather than silently losing context:
+
+- `PER_FILE_CHAR_LIMIT`;
+- `TOTAL_CHAR_LIMIT`;
+- `TOKEN_BUDGET`;
+- `FILE_COUNT_LIMIT`;
+- `SOURCE_FILE_TOO_LARGE`;
+- `NON_UTF8`;
+- `PATH_UNAVAILABLE`.
+
+Developer and Repair retain their accepted controlled repository tools for additional task-visible reads when a bounded packet is insufficient. Reviewer remains tool-less and continues to receive actual Git diff plus deterministic verification evidence.
+
+### Canonical packet integrity
+
+Each `ContextPacket` carries a SHA-256 fingerprint over its canonical runtime payload, including task projection, Git identity, selected files/snippets, provenance, budget, usage, and truncation evidence.
+
+`ContextPacket` re-computes the canonical fingerprint during Pydantic validation. Therefore:
+
+- mutating a packet payload while keeping an old fingerprint fails validation;
+- supplying a detached/forged fingerprint fails validation;
+- identical task + worktree state + budget produces the same packet/fingerprint;
+- relevant repository-content changes produce a different fingerprint.
+
+Developer, Reviewer, and Repair additionally validate that a supplied packet matches the complete TaskContract projection represented in the packet:
+
+- task id;
+- objective;
+- acceptance criteria;
+- readable scope;
+- writable scope;
+- read-only scope.
+
+A caller cannot use a same-id packet with altered task semantics to widen context or scope silently.
+
+### Stage-local rebuild from current repository truth
+
+Production `SingleTaskOrchestrator` owns packet construction and rebuilds context from current worktree truth at every Agent stage boundary:
+
+1. immediately before initial Developer execution;
+2. immediately before each targeted Repair attempt;
+3. after deterministic verification passes and immediately before independent Reviewer execution.
+
+The accepted end-to-end test demonstrates three distinct repository states:
+
+```text
+Developer packet: VALUE = 1
+        ↓ Developer mutation
+Repair packet:    VALUE = 3
+        ↓ targeted Repair
+Reviewer packet:  VALUE = 2
+```
+
+The three packets have distinct fingerprints. Repair/Reviewer therefore do not inherit stale Developer conversation context as repository truth.
+
+Context construction is offloaded through `asyncio.to_thread`, preserving the accepted bounded parallel-worker event-loop behavior. Context build/validation failure becomes non-retryable runtime `TOOL_FAILURE` evidence and cannot be converted into success.
+
+### Step 3.2 acceptance evidence
+
+Dedicated tests cover:
+
+- deterministic changed/writable/read-only/readable/path ordering;
+- path/scope/Git provenance;
+- same-state deterministic packet/fingerprint;
+- content-change fingerprint movement;
+- forged/detached fingerprint rejection;
+- per-file, total, file-count, token-unit, and source-size boundaries;
+- multibyte UTF-8 conservative budgeting;
+- non-UTF-8 omission with explicit evidence;
+- current-state packet rebuild across Developer → Repair → Reviewer;
+- Reviewer remains `tools=[]`.
+
+Final validation:
+
+- verification Docker image build: **PASS**;
+- `ruff check .`: **PASS**;
+- `pytest`: **228 passed in 27.17s, 0 skipped**;
+- GitHub Actions `Backend Quality`: **SUCCESS**;
+- all accepted V0.1, Phase 2, and Step 3.1 regression behavior remained green.
+
+### Step 3.2 frozen boundary
+
+Step 3.2 intentionally did **not** introduce:
+
+- AST traversal or import/dependency expansion;
+- symbol ranking / call-graph analysis;
+- embeddings or vector retrieval;
+- PostgreSQL;
+- Redis/Dramatiq;
+- distributed lease/heartbeat/run-token behavior;
+- frontend behavior;
+- changes to DAG/scheduler/worktree/merge/conflict/Human Gate semantics.
+
+The packet contract, provenance, budget, canonical fingerprint, and stage-local rebuild semantics are now frozen as the input boundary that later context-selection improvements must preserve.
+
+---
+
+## Gate before Step 3.3 — AST / Import-aware Relevant-code Extraction
+
+Step 3.3 may improve **which repository regions are selected as relevant context**, but it must build on the accepted Step 3.2 `ContextPacket` contract rather than replacing or bypassing it.
 
 Required direction:
 
@@ -242,21 +412,33 @@ TaskContract
       +
 Trusted repository state
       ↓
-Context Packet Builder
-      ├── task objective / acceptance criteria
-      ├── allowed/readable scope
-      ├── bounded selected files/snippets
-      ├── path + provenance metadata
-      ├── explicit truncation/budget evidence
-      └── deterministic size/token budget
+AST / Import-aware Extraction
+      ├── language-aware symbols
+      ├── imports / local dependency edges
+      ├── task-scope filtering
+      ├── deterministic relevance evidence
+      └── bounded selected regions
       ↓
-Developer / Reviewer / Repair context
+ContextPacketBuilder
+      ├── existing budget enforcement
+      ├── existing path/provenance metadata
+      ├── truncation / omission evidence
+      └── canonical fingerprint
+      ↓
+Developer / Repair / Reviewer
 ```
 
-Step 3.2 should establish a bounded, inspectable context artifact rather than forwarding large repository history or arbitrary whole-repository text to an Agent.
+Step 3.3 must preserve:
 
-Step 3.2 must remain separate from the later AST/import-aware extraction step: first define the packet contract, budgeting, provenance, deterministic ordering, and fail-closed/truncation semantics; semantic code-graph selection belongs to the following step.
+- TaskContract as the authority for readable/writable/read-only scope;
+- current managed worktree/Git state as the repository source of truth;
+- repository contents as untrusted model data;
+- deterministic, inspectable selection evidence;
+- Step 3.2 content budgets and truncation semantics;
+- canonical packet fingerprint validation;
+- stage-local packet rebuild before Developer, Repair, and Reviewer;
+- existing sandbox, verification, review, repair, DAG, worktree, merge, and Human Gate boundaries.
 
-Step 3.2 must not introduce PostgreSQL, Redis/Dramatiq, distributed leases, frontend behavior, or automatic merge-conflict Repair.
+Step 3.3 may add AST/import-aware extraction and relevance ranking needed to replace deterministic prefix-only selection, but it must not introduce PostgreSQL, Redis/Dramatiq, distributed leases, frontend behavior, embeddings/vector retrieval unless the development plan is deliberately amended.
 
-**Step 3.2 status: NOT STARTED.**
+**Step 3.3 status: NOT STARTED.**
