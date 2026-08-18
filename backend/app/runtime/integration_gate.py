@@ -12,13 +12,14 @@ from app.models.integration_gate import (
     IntegrationGateState,
     IntegrationPolicyRoute,
 )
-from app.models.merge import MergeAttemptOutcome, MergeQueueSnapshot
-from app.models.task import TaskContract
+from app.models.merge import MergeAttemptOutcome, MergeQueueAttempt, MergeQueueSnapshot
+from app.models.scheduler import TaskScheduleState
 from app.runtime.conflict_classifier import GitMergeConflictClassifier
 from app.runtime.integration_policy import (
     IntegrationConflictPolicy,
     conflict_evidence_fingerprint,
 )
+from app.runtime.scheduler import DAGScheduler
 from app.workspace import LocalGitWorkspace
 
 _OID_PATTERN = re.compile(r"^[0-9a-fA-F]{40,64}$")
@@ -42,7 +43,7 @@ class IntegrationHumanGate:
         *,
         workspace: LocalGitWorkspace,
         queue_snapshot: MergeQueueSnapshot,
-        task: TaskContract,
+        scheduler: DAGScheduler,
         evidence: MergeConflictEvidence,
         policy: IntegrationConflictPolicy | None = None,
         git_timeout_seconds: float = 15.0,
@@ -56,7 +57,7 @@ class IntegrationHumanGate:
 
         self._workspace = workspace
         self._queue_snapshot = queue_snapshot
-        self._task = task
+        self._scheduler = scheduler
         self._evidence = evidence
         self._policy = policy or IntegrationConflictPolicy()
         self._git_timeout_seconds = git_timeout_seconds
@@ -64,14 +65,17 @@ class IntegrationHumanGate:
         self._validate_ref_name(self._decision_ref)
 
         self._validate_snapshot_binding()
+        attempt = self._terminal_attempt()
+        self._task = scheduler.dag.node(attempt.task_id).task
         self._fingerprint = conflict_evidence_fingerprint(evidence)
+
         current = self._reproduce_current_evidence()
         if conflict_evidence_fingerprint(current) != self._fingerprint:
             raise IntegrationHumanGateError(
                 "provided conflict evidence does not match current reproducible Git evidence"
             )
 
-        self._policy_decision = self._policy.evaluate(evidence, task)
+        self._policy_decision = self._policy.evaluate(evidence, self._task)
         if self._policy_decision.evidence_fingerprint != self._fingerprint:
             raise IntegrationHumanGateError("integration policy returned a mismatched evidence hash")
         self._human_decision = self._recover_human_decision()
@@ -173,9 +177,15 @@ class IntegrationHumanGate:
         attempt = self._terminal_attempt()
         if attempt.outcome is not MergeAttemptOutcome.CONFLICT:
             raise IntegrationHumanGateError("terminal merge-queue attempt is not a conflict")
-        if attempt.task_id != self._task.task_id:
+        try:
+            self._scheduler.dag.node(attempt.task_id)
+        except KeyError as exc:
             raise IntegrationHumanGateError(
-                "task contract does not match the terminal conflicted task"
+                "terminal conflicted task is not present in the trusted scheduler DAG"
+            ) from exc
+        if self._scheduler.state(attempt.task_id) is not TaskScheduleState.SUCCEEDED:
+            raise IntegrationHumanGateError(
+                "terminal conflicted task must remain SUCCEEDED in the trusted scheduler"
             )
         if attempt.previous_integration_commit != self._queue_snapshot.head_commit:
             raise IntegrationHumanGateError(
@@ -364,7 +374,7 @@ class IntegrationHumanGate:
         if conflict != self._evidence.marker_commit:
             raise IntegrationHumanGateError("conflict ref moved outside the human gate")
 
-    def _terminal_attempt(self):
+    def _terminal_attempt(self) -> MergeQueueAttempt:
         return self._queue_snapshot.attempts[-1]
 
     @staticmethod
