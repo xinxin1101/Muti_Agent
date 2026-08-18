@@ -91,6 +91,10 @@ class PostgresTaskLeaseStore:
                     )
                 if existing.state is not TaskLeaseState.EXPIRED:
                     raise TaskLeaseConflictError("task lease state cannot be safely acquired")
+                if task.lease_dispatch_id == dispatch_id:
+                    raise TaskLeaseConflictError(
+                        "expired-owner takeover requires a fresh dispatch_id"
+                    )
                 next_generation = task.lease_generation + 1
 
             token = uuid4()
