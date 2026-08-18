@@ -11,12 +11,20 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.sql import func
 
+from app.models.events import (
+    PersistedRuntimeEvent,
+    RuntimeEventDraft,
+    RuntimeEventKind,
+    RuntimeEventLevel,
+    RuntimeEventSource,
+)
 from app.models.run import SingleTaskRunResult
 from app.models.task import TaskContract
 from app.persistence.database import create_postgres_engine, create_session_factory
 from app.persistence.errors import PersistenceConflictError, PersistenceCorruptionError
+from app.persistence.events import append_runtime_event, decode_runtime_event
 from app.persistence.fencing import assert_live_current_run_token, database_time
-from app.persistence.models import EvidenceRow, ProjectRow, RunRow, TaskRow
+from app.persistence.models import EvidenceRow, ProjectRow, RunRow, RuntimeEventRow, TaskRow
 from app.persistence.serialization import (
     canonical_payload,
     decode_evidence,
@@ -35,13 +43,30 @@ from app.persistence.types import (
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40,64}$")
 _SCHEMA_VERSION = 1
 
+_EVIDENCE_EVENT_SOURCES = {
+    PersistenceEvidenceKind.STATE_TRANSITION: RuntimeEventSource.RUNTIME,
+    PersistenceEvidenceKind.DEVELOPER_RUN: RuntimeEventSource.AGENT,
+    PersistenceEvidenceKind.VERIFICATION_RESULT: RuntimeEventSource.VERIFICATION,
+    PersistenceEvidenceKind.REVIEW_DECISION: RuntimeEventSource.REVIEW,
+    PersistenceEvidenceKind.REPAIR_RUN: RuntimeEventSource.REPAIR,
+    PersistenceEvidenceKind.FAILURE_REPORT: RuntimeEventSource.RUNTIME,
+    PersistenceEvidenceKind.MERGE_QUEUE_SNAPSHOT: RuntimeEventSource.INTEGRATION,
+    PersistenceEvidenceKind.MERGE_CONFLICT: RuntimeEventSource.INTEGRATION,
+    PersistenceEvidenceKind.INTEGRATION_GATE: RuntimeEventSource.INTEGRATION,
+    PersistenceEvidenceKind.HUMAN_DECISION: RuntimeEventSource.INTEGRATION,
+    PersistenceEvidenceKind.CONTEXT_REFERENCE: RuntimeEventSource.RUNTIME,
+    PersistenceEvidenceKind.DISPATCH_EVENT: RuntimeEventSource.DISPATCH,
+    PersistenceEvidenceKind.WORKER_EXECUTION: RuntimeEventSource.WORKER,
+}
+
 
 class PostgresEvidenceStore:
-    """Transactional durability boundary for runtime evidence.
+    """Transactional durability boundary for runtime evidence and event projections.
 
-    Git and validated runtime models remain authoritative. Task-scoped worker writes become fenced
-    automatically after that task has acquired a `run_token`; non-leased/local persistence paths
-    keep the Step 3.4 behavior and do not require a token.
+    Git and validated runtime models remain authoritative. Structured runtime events are a compact,
+    queryable observability projection over accepted persistence facts; they never replace typed
+    evidence or authorize task success. Task-scoped worker writes become fenced automatically after
+    that task has acquired a `run_token`; non-leased/local persistence paths keep Step 3.4 behavior.
     """
 
     def __init__(
@@ -132,14 +157,14 @@ class PostgresEvidenceStore:
                 if project_exists is None:
                     raise ValueError(f"unknown persistence project: {project_id}")
 
-                session.add(
-                    RunRow(
-                        id=candidate_run_id,
-                        project_id=project_id,
-                        base_commit=commit,
-                        status=PersistedRunStatus.RUNNING.value,
-                    )
+                run = RunRow(
+                    id=candidate_run_id,
+                    project_id=project_id,
+                    base_commit=commit,
+                    status=PersistedRunStatus.RUNNING.value,
+                    event_sequence=0,
                 )
+                session.add(run)
                 for task in tasks:
                     payload, digest = canonical_payload(task)
                     session.add(
@@ -150,6 +175,22 @@ class PostgresEvidenceStore:
                             contract_sha256=digest,
                         )
                     )
+                await session.flush()
+                await append_runtime_event(
+                    session,
+                    run=run,
+                    draft=RuntimeEventDraft(
+                        event_key="run:started",
+                        kind=RuntimeEventKind.RUN_STARTED,
+                        source=RuntimeEventSource.PERSISTENCE,
+                        message="Persisted run started.",
+                        attributes={
+                            "project_id": str(project_id),
+                            "base_commit": commit,
+                            "task_count": len(tasks),
+                        },
+                    ),
+                )
         except IntegrityError as exc:
             raise PersistenceConflictError(
                 "run identity already exists or violates persistence constraints: "
@@ -183,6 +224,7 @@ class PostgresEvidenceStore:
             if run.status != PersistedRunStatus.RUNNING.value:
                 raise PersistenceConflictError("terminal persisted runs are append-closed")
 
+            task: TaskRow | None = None
             if normalized_task is not None:
                 task = await self._locked_task(session, run_id, normalized_task)
                 if run_token is not None or task.run_token is not None:
@@ -228,6 +270,15 @@ class PostgresEvidenceStore:
             )
             session.add(row)
             await session.flush()
+            await append_runtime_event(
+                session,
+                run=run,
+                draft=self._evidence_event_draft(
+                    row=row,
+                    task=task,
+                    kind=kind,
+                ),
+            )
             return row.id
 
     async def record_context_reference(
@@ -384,6 +435,29 @@ class PostgresEvidenceStore:
             run.terminal_result = payload
             run.terminal_result_sha256 = digest
             run.finished_at = func.now()
+            await session.flush()
+            await append_runtime_event(
+                session,
+                run=run,
+                draft=RuntimeEventDraft(
+                    event_key="run:finalized",
+                    kind=RuntimeEventKind.RUN_FINALIZED,
+                    source=RuntimeEventSource.PERSISTENCE,
+                    level=(
+                        RuntimeEventLevel.ERROR
+                        if persisted_status is PersistedRunStatus.FAILED
+                        else RuntimeEventLevel.INFO
+                    ),
+                    task_id=result.task_id,
+                    dispatch_id=task.lease_dispatch_id,
+                    generation=task.lease_generation or None,
+                    message=f"Persisted run finalized as {persisted_status.value}.",
+                    attributes={
+                        "status": persisted_status.value,
+                        "terminal_result_sha256": digest,
+                    },
+                ),
+            )
 
     async def load_run(self, run_id: UUID) -> PersistedRunSnapshot:
         async with self._session_factory() as session:
@@ -461,6 +535,45 @@ class PostgresEvidenceStore:
                 await session.execute(statement.order_by(EvidenceRow.id))
             ).scalars().all()
         return tuple(self._decode_evidence_row(row) for row in rows)
+
+    async def list_runtime_events(
+        self,
+        run_id: UUID,
+        *,
+        task_id: str | None = None,
+        dispatch_id: UUID | None = None,
+        kind: RuntimeEventKind | None = None,
+        source: RuntimeEventSource | None = None,
+        after_sequence: int = 0,
+        limit: int = 200,
+    ) -> tuple[PersistedRuntimeEvent, ...]:
+        if after_sequence < 0:
+            raise ValueError("after_sequence must be non-negative")
+        if limit < 1 or limit > 1000:
+            raise ValueError("runtime event query limit must be between 1 and 1000")
+        normalized_task = self._optional_text(task_id, "task_id", max_length=128)
+
+        async with self._session_factory() as session:
+            run_exists = await session.scalar(select(RunRow.id).where(RunRow.id == run_id))
+            if run_exists is None:
+                raise ValueError(f"unknown persistence run: {run_id}")
+
+            statement = select(RuntimeEventRow).where(
+                RuntimeEventRow.run_id == run_id,
+                RuntimeEventRow.sequence > after_sequence,
+            )
+            if normalized_task is not None:
+                statement = statement.where(RuntimeEventRow.task_id == normalized_task)
+            if dispatch_id is not None:
+                statement = statement.where(RuntimeEventRow.dispatch_id == dispatch_id)
+            if kind is not None:
+                statement = statement.where(RuntimeEventRow.kind == kind.value)
+            if source is not None:
+                statement = statement.where(RuntimeEventRow.source == source.value)
+            rows = (
+                await session.execute(statement.order_by(RuntimeEventRow.sequence).limit(limit))
+            ).scalars().all()
+        return tuple(decode_runtime_event(row) for row in rows)
 
     async def _locked_run(self, session: AsyncSession, run_id: UUID) -> RunRow:
         run = (
@@ -544,6 +657,46 @@ class PostgresEvidenceStore:
             and row.sequence == sequence
             and row.schema_version == _SCHEMA_VERSION
             and row.payload_sha256 == payload_sha256
+        )
+
+    @classmethod
+    def _evidence_event_draft(
+        cls,
+        *,
+        row: EvidenceRow,
+        task: TaskRow | None,
+        kind: PersistenceEvidenceKind,
+    ) -> RuntimeEventDraft:
+        source = _EVIDENCE_EVENT_SOURCES[kind]
+        level = (
+            RuntimeEventLevel.ERROR
+            if kind is PersistenceEvidenceKind.FAILURE_REPORT
+            else RuntimeEventLevel.WARNING
+            if kind is PersistenceEvidenceKind.MERGE_CONFLICT
+            else RuntimeEventLevel.INFO
+        )
+        generation = (
+            task.lease_generation
+            if task is not None and task.lease_generation
+            else None
+        )
+        return RuntimeEventDraft(
+            event_key=f"evidence:{row.id}",
+            kind=RuntimeEventKind.EVIDENCE_RECORDED,
+            source=source,
+            level=level,
+            task_id=row.task_id,
+            dispatch_id=task.lease_dispatch_id if task is not None else None,
+            generation=generation,
+            message=f"Accepted {kind.value} evidence.",
+            attributes={
+                "evidence_id": row.id,
+                "evidence_key": row.evidence_key,
+                "evidence_kind": kind.value,
+                "stage": row.stage,
+                "evidence_sequence": row.sequence,
+                "payload_sha256": row.payload_sha256,
+            },
         )
 
     @staticmethod

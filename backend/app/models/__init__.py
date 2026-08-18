@@ -36,6 +36,13 @@ from app.models.dispatch import (
     WorkerExecutionEvidence,
     WorkerExecutionStatus,
 )
+from app.models.events import (
+    PersistedRuntimeEvent,
+    RuntimeEventDraft,
+    RuntimeEventKind,
+    RuntimeEventLevel,
+    RuntimeEventSource,
+)
 from app.models.failure import FailureReport, FailureSource, FailureType
 from app.models.integration_gate import (
     HumanGateDecision,
@@ -118,6 +125,7 @@ __all__ = [
     "MergeQueueSnapshot",
     "MessageRole",
     "ParallelWorkerWaveResult",
+    "PersistedRuntimeEvent",
     "RepairRunResult",
     "RepairStopReason",
     "ReviewDecision",
@@ -125,6 +133,10 @@ __all__ = [
     "ReviewOutcome",
     "ReviewSeverity",
     "RunEvent",
+    "RuntimeEventDraft",
+    "RuntimeEventKind",
+    "RuntimeEventLevel",
+    "RuntimeEventSource",
     "SchedulerEvent",
     "SchedulerSnapshot",
     "SingleTaskRunResult",

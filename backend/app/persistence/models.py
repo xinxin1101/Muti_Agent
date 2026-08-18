@@ -45,6 +45,12 @@ class ProjectRow(PersistenceBase):
 
 class RunRow(PersistenceBase):
     __tablename__ = "runs"
+    __table_args__ = (
+        CheckConstraint(
+            "event_sequence >= 0",
+            name="ck_runs_event_sequence_nonnegative",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     project_id: Mapped[UUID] = mapped_column(
@@ -55,6 +61,7 @@ class RunRow(PersistenceBase):
     )
     base_commit: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="RUNNING")
+    event_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     terminal_result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     terminal_result_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     started_at: Mapped[datetime] = mapped_column(
@@ -70,6 +77,11 @@ class RunRow(PersistenceBase):
         back_populates="run",
         cascade="all, delete-orphan",
         order_by="EvidenceRow.id",
+    )
+    events: Mapped[list[RuntimeEventRow]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="RuntimeEventRow.sequence",
     )
 
 
@@ -157,3 +169,60 @@ class EvidenceRow(PersistenceBase):
     )
 
     run: Mapped[RunRow] = relationship(back_populates="evidence")
+
+
+class RuntimeEventRow(PersistenceBase):
+    __tablename__ = "runtime_events"
+    __table_args__ = (
+        UniqueConstraint("event_id", name="uq_runtime_events_event_id"),
+        UniqueConstraint("run_id", "event_key", name="uq_runtime_events_run_key"),
+        UniqueConstraint("run_id", "sequence", name="uq_runtime_events_run_sequence"),
+        ForeignKeyConstraint(
+            ["run_id", "task_id"],
+            ["tasks.run_id", "tasks.task_id"],
+            name="fk_runtime_events_task",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "generation IS NULL OR generation >= 1",
+            name="ck_runtime_events_generation",
+        ),
+        CheckConstraint(
+            "schema_version >= 1",
+            name="ck_runtime_events_schema_version",
+        ),
+        CheckConstraint(
+            "task_id IS NOT NULL OR (dispatch_id IS NULL AND generation IS NULL)",
+            name="ck_runtime_events_task_correlation",
+        ),
+        Index("ix_runtime_events_run_sequence", "run_id", "sequence"),
+        Index("ix_runtime_events_run_task_sequence", "run_id", "task_id", "sequence"),
+        Index("ix_runtime_events_dispatch", "dispatch_id", "sequence"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    event_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False, default=uuid4)
+    run_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    level: Mapped[str] = mapped_column(String(16), nullable=False)
+    task_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    dispatch_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    generation: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    attributes: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    attributes_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    run: Mapped[RunRow] = relationship(back_populates="events")
