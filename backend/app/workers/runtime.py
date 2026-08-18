@@ -94,7 +94,7 @@ async def execute_task_from_settings(
             workspace_resolver=resolver,
             worktree_root=settings.workspace_root / "worktrees",
             runner_factory=build_runner_factory(settings),
-            publication_fence=lease_store,
+            git_fence=lease_store,
         )
         queued_worker = QueuedTaskWorker(store=evidence_store, backend=backend)
         leased_worker = LeasedQueuedTaskWorker(
