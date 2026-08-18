@@ -5,11 +5,11 @@ This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The developmen
 ## Current position
 
 - Current phase: **Phase 3 — V0.3 Safety, Context and Reliability**
-- Completed item: **Step 3.6 — Lease + Heartbeat**
-- Next item: **Step 3.7 — `run_token` stale-write protection**
+- Completed item: **Step 3.7 — `run_token` stale-write protection**
+- Next item: **Step 3.8 — Structured run/event logs**
 - Phase 2 status: **ACCEPTED / COMPLETE**
 - Phase 3 status: **IN PROGRESS**
-- Step 3.7 status: **NOT STARTED**
+- Step 3.8 status: **NOT STARTED**
 - V0.1 status: **ACCEPTED / COMPLETE**
 
 ---
@@ -31,8 +31,6 @@ Phase 1 was completed through PR #1–#10.
 | 1.9 | Failure-aware targeted Repair | 97 tests passed |
 | 1.10 | Single-task Orchestrator + CLI | 104 tests passed |
 
-V0.1 exit criterion is satisfied: a validated `TaskContract` can run through Developer → Git scope → deterministic verification → independent semantic review → targeted repair → terminal evidence without trusting an LLM self-report as the success signal.
-
 Frozen principle:
 
 > **Agents propose; evidence decides.**
@@ -53,21 +51,19 @@ Phase 2 was completed through PR #11–#17.
 | 2.6 | Structured merge-conflict classification | 187 tests passed |
 | 2.7 | Evidence-bound Integration / Human Gate | 205 tests passed |
 
-Phase 2 squash completion commit:
+Phase 2 completion commit:
 
 `4d091949f1ba5a57465dc30edd4f5935f1a06fdd`
 
-Accepted boundary:
+Frozen Phase 2 boundary:
 
 - validated dependency truth and bounded parallel execution;
 - isolated Git worktrees per task;
-- successful task output frozen as auditable task commits;
+- successful output frozen as auditable task commits;
 - deterministic topological integration;
 - structured merge-conflict evidence;
 - evidence-bound Integration/Human Gate authorization;
-- no LLM self-report can mark integration successful or bypass hard evidence gates.
-
-**Phase 2 is frozen as ACCEPTED / COMPLETE.**
+- no LLM self-report can bypass hard evidence gates.
 
 ---
 
@@ -81,8 +77,8 @@ Accepted boundary:
 | 3.4 | PostgreSQL Persistence | **ACCEPTED** | `577da384072cc882c8851497351d99012de1f653` | 248 tests passed |
 | 3.5 | Redis + Dramatiq Workers | **ACCEPTED** | `51048e4818478c07e2c024d78215a43959a56465` | 258 tests passed |
 | 3.6 | Lease + Heartbeat | **ACCEPTED** | `c7732d3ad832ff4abd159b322c8f39381159ed83` | 270 tests passed |
-| 3.7 | `run_token` stale-write protection | **NEXT / NOT STARTED** | — | — |
-| 3.8 | Structured run/event logs | NOT STARTED | — | — |
+| 3.7 | `run_token` stale-write protection | **ACCEPTED** | `31a71bc45b58f8c865a54a972e96678e696f5c66` | 273 tests passed |
+| 3.8 | Structured run/event logs | **NEXT / NOT STARTED** | — | — |
 
 Detailed accepted design/acceptance documents:
 
@@ -91,276 +87,207 @@ Detailed accepted design/acceptance documents:
 - Step 3.3: `docs/AST_RELEVANCE.md`, `docs/AST_RELEVANCE_ACCEPTANCE.md`;
 - Step 3.4: `docs/POSTGRESQL_PERSISTENCE.md` and PR #21;
 - Step 3.5: `docs/REDIS_DRAMATIQ_WORKERS.md`, `docs/STEP_3_5_ACCEPTANCE.md`;
-- Step 3.6: `docs/LEASE_HEARTBEAT.md`, `docs/STEP_3_6_ACCEPTANCE.md`.
+- Step 3.6: `docs/LEASE_HEARTBEAT.md`, `docs/STEP_3_6_ACCEPTANCE.md`;
+- Step 3.7: `docs/RUN_TOKEN_FENCING.md`, `docs/STEP_3_7_ACCEPTANCE.md`.
 
 ---
 
-## Step 3.1–3.5 frozen baseline
+## Step 3.1–3.6 frozen baseline
 
-The accepted baseline entering Step 3.6 already guarantees:
+The accepted baseline entering Step 3.7 already guarantees:
 
-1. **Sandboxed deterministic verification**
-   - project verification executes in a bounded Docker sandbox;
-   - no silent host fallback;
-   - read-only project/worktree mount, no Docker socket, no network, bounded CPU/memory/PIDs/time.
-
-2. **Bounded, provenance-aware model context**
-   - `ContextPacketBuilder` owns readable scope, budgets, truncation evidence and packet fingerprint;
-   - AST/import analysis may rank/select relevant regions but cannot widen TaskContract scope.
-
-3. **Durable PostgreSQL runtime evidence**
-   - Git remains authoritative for repository contents;
-   - PostgreSQL stores typed/hash-validated runtime evidence;
-   - `(run_id, evidence_key)` is the idempotency boundary;
-   - same-run writes are transactionally serialized;
-   - terminal Runs are append-closed.
-
-4. **Process-external Redis/Dramatiq execution**
-   - queue payload contains only `dispatch_id`, `run_id`, `task_id`;
-   - worker reloads Run/Task truth from PostgreSQL;
-   - Redis is transport, not scheduler/ownership/success authority;
-   - `max_retries=0` remains deliberate before stale-write fencing;
-   - queued success requires validated runtime evidence plus an actual Git task commit;
-   - queued worktrees are run-scoped and execute from the persisted immutable Run base.
-
-Frozen Step 3.5 principle:
-
-> **Queue delivery authorizes an execution attempt; Git and validated runtime evidence still decide what actually happened.**
-
----
-
-## Step 3.6 — Lease + Heartbeat — ACCEPTED
-
-Merged through PR #23: `Phase 3 Step 3.6: add task lease and heartbeat ownership`.
-
-Squash merge commit:
-
-`c7732d3ad832ff4abd159b322c8f39381159ed83`
-
-Design / acceptance documents:
-
-- `docs/LEASE_HEARTBEAT.md`
-- `docs/STEP_3_6_ACCEPTANCE.md`
-
-### Accepted ownership architecture
-
-```text
-Redis / Dramatiq delivery
-        ↓
-LeasedQueuedTaskWorker
-        ↓
-PostgreSQL task lease acquisition
-        ↓
-ACTIVE owner
-        ↓
-periodic heartbeat renewal
-        ↓
-existing QueuedTaskWorker
-        ↓
-existing Git / runtime / verification / review / repair
-        ↓
-normal completion
-        ↓
-RELEASED
-
-heartbeat stops / renewal fails
-        ↓
-lease_until passes
-        ↓
-EXPIRED
-        ↓
-abandoned-execution evidence only
-```
-
-Lease ownership is per `(run_id, task_id)`, not per whole Run, so independent DAG tasks may be owned by different workers concurrently.
-
-Persisted task lease fields are:
-
-```text
-lease_owner
-lease_dispatch_id
-lease_acquired_at
-heartbeat_at
-lease_until
-lease_released_at
-```
-
-Migration:
-
-`0002_task_lease_heartbeat`
-
-No `run_token` or equivalent fencing generation exists in Step 3.6.
-
-### Lease state semantics
-
-```text
-UNOWNED
-   ↓ acquire
-ACTIVE
-   ├── exact-owner heartbeat → ACTIVE with later lease_until
-   ├── live completion/failure unwind → RELEASED
-   └── no heartbeat before deadline → EXPIRED
-```
-
-- **UNOWNED**: no execution owner has ever acquired this task lease.
-- **ACTIVE**: exact `(worker_id, dispatch_id)` owns a lease whose deadline is after PostgreSQL observation time.
-- **RELEASED**: the exact owner explicitly released a still-live lease; history remains durable and is not silently reused.
-- **EXPIRED**: latest deadline has passed without release; the coordinator may classify that execution as abandoned.
-
-PostgreSQL `clock_timestamp()` is authoritative for acquisition, heartbeat, deadline comparison, release, and inspection. Worker-local clocks do not decide liveness.
-
-### Acquisition and concurrency guarantees
-
-- new lease acquisition requires the persisted Run to be `RUNNING`;
-- Run/task rows are locked inside the lease transaction;
-- any existing lease history is non-reacquirable in Step 3.6;
-- two independent PostgreSQL stores racing for the same `(run_id, task_id)` are proven to yield exactly one ACTIVE owner and one fail-closed conflict;
-- wrong worker or dispatch identity cannot renew or release another owner's lease.
-
-### Heartbeat and terminal unwind
-
-`LeasedQueuedTaskWorker` wraps the accepted Step 3.5 worker rather than replacing it.
-
-- heartbeat interval must be shorter than lease duration;
-- heartbeat renews both `heartbeat_at` and `lease_until`;
-- heartbeat failure cooperatively cancels the inner asyncio execution and leaves ownership to become EXPIRED;
-- cooperative cancellation is explicitly **not** stale-write fencing;
-- existing deterministic verification and ContextPacket construction already leave the event loop via `asyncio.to_thread`, so long Docker verification does not intentionally starve heartbeat scheduling.
-
-A merge-review race was hardened before acceptance: a single-task inner worker may finalize its Run immediately before the outer lease wrapper stops heartbeat/releases ownership. Therefore:
-
-- terminal Run → **new acquire is always rejected**;
-- exact already-established still-live owner → may heartbeat/release during deterministic terminal unwind;
-- expired/released lease → cannot renew.
-
-This keeps successful terminal persistence from being falsely converted into a heartbeat failure during cleanup.
-
-### Worker identity
-
-`DEVFLOW_WORKER_ID` can provide an explicit owner label.
-
-Without explicit configuration, the fallback identity is generated and cached by actual process PID:
-
-```text
-hostname : pid : random-process-suffix
-```
-
-It is stable within one worker process and changes after a fork/process change. Worker identity is auditable metadata, not a credential or fencing token.
-
-### Explicit Step 3.7 boundary
-
-Step 3.6 intentionally proves that liveness detection is **not** write fencing.
-
-A real PostgreSQL regression demonstrates:
-
-```text
-Worker A lease expires
-        ↓
-TaskLeaseSnapshot = EXPIRED
-        ↓
-old caller can still reach existing PostgresEvidenceStore.append_evidence()
-while Run remains RUNNING
-```
-
-Therefore Step 3.6 deliberately does **not** reassign an EXPIRED task to Worker B.
-
-`EXPIRED` means:
-
-> the recorded ownership is no longer live from the coordinator's point of view.
-
-It does **not** mean:
-
-> the old process has technically lost the ability to write Git/PostgreSQL state.
-
-### Final acceptance
-
-Final exact-head CI for PR #23:
-
-- PostgreSQL service: **PASS**;
-- Redis service: **PASS**;
-- Alembic `0001 → 0002 → downgrade base → 0001 → 0002`: **PASS**;
-- verification Docker image build: **PASS**;
-- `ruff check .`: **PASS**;
-- real PostgreSQL concurrent lease acquisition: **PASS**;
-- terminal-run lease unwind regression: **PASS**;
-- Redis/Dramatiq worker regressions: **PASS**;
-- explicit stale-write-still-possible Step 3.7 boundary regression: **PASS**;
-- `pytest`: **270 passed in 29.08s, 0 skipped**;
-- GitHub Actions `Backend Quality`: **SUCCESS**;
-- no paid SiliconFlow API call was required by lease/heartbeat tests.
+1. deterministic project verification executes inside a bounded Docker sandbox;
+2. `ContextPacketBuilder` owns readable scope, context budgets, provenance and truncation evidence;
+3. AST/import relevance may select code regions but cannot widen TaskContract scope;
+4. PostgreSQL stores typed/hash-validated runtime evidence while Git remains repository truth;
+5. `(run_id, evidence_key)` remains the persistence idempotency boundary;
+6. Redis/Dramatiq messages contain only `dispatch_id`, `run_id`, `task_id`;
+7. workers reload Run/Task truth from PostgreSQL rather than trusting queue-carried task bodies;
+8. queued success still requires validated runtime evidence plus actual Git evidence;
+9. per-task PostgreSQL leases provide explicit ownership and heartbeat liveness;
+10. PostgreSQL `clock_timestamp()` is authoritative for lease expiry;
+11. Step 3.6 can classify an execution as EXPIRED/abandoned but deliberately cannot fence its later writes.
 
 Frozen Step 3.6 principle:
 
-> **Lease expiry can prove that ownership is no longer live from the coordinator's point of view; it cannot prove that the old process has lost the technical ability to write.**
+> **Lease expiry can prove that ownership is no longer live from the coordinator's point of view; it cannot by itself prove that the old process has lost the technical ability to write.**
 
 ---
 
-## Gate before Step 3.7 — `run_token` stale-write protection
+## Step 3.7 — `run_token` Stale-Write Protection — ACCEPTED
 
-Step 3.7 must close the safety gap that Step 3.6 deliberately exposes.
+Merged through PR #24: `Phase 3 Step 3.7: add run token stale-write fencing`.
 
-Target transition:
+Squash merge commit:
+
+`31a71bc45b58f8c865a54a972e96678e696f5c66`
+
+Design / acceptance documents:
+
+- `docs/RUN_TOKEN_FENCING.md`
+- `docs/STEP_3_7_ACCEPTANCE.md`
+
+### Accepted fencing architecture
 
 ```text
-Step 3.6
-lease_owner + heartbeat + lease_until
+Redis / Dramatiq delivery
+(dispatch_id, run_id, task_id only)
         ↓
-can identify abandoned ownership
+PostgreSQL lease acquisition
         ↓
-BUT old worker may still write
+TaskLeaseGrant
+  generation = N
+  run_token = T_N
+        ↓
+LeasedQueuedTaskWorker
+        ↓
+current token + ACTIVE DB-time lease required
+        ├── heartbeat / release
+        ├── task-scoped PostgreSQL evidence
+        ├── single-task finalization
+        ├── generation worktree / branch creation
+        └── final Git commit / ref publication
 
-Step 3.7
-fresh run_token / ownership generation
+lease expires
         ↓
-all mutable worker write boundaries require current token
+T_N loses write authority
         ↓
-expired old owner keeps stale token
+EXPIRED takeover with fresh dispatch
         ↓
-stale writes fail closed
+generation = N + 1
+run_token = fresh T_(N+1)
         ↓
-only then can ownership transfer / recovery become safe
+T_N permanently stale
 ```
 
-Required Step 3.7 direction:
+### Ownership-generation guarantees
 
-1. **Fresh ownership generation**
-   - acquisition/takeover must issue a fresh unpredictable or monotonic fencing identity (`run_token`);
-   - ownership identity and fencing generation must not be conflated with human-readable `worker_id`.
+- an UNOWNED task begins at generation `0` with no token;
+- first acquisition issues generation `1` and a fresh UUID token;
+- an ACTIVE generation remains exclusive;
+- RELEASED ownership remains durable, non-reacquirable history;
+- an EXPIRED generation may be atomically replaced with generation `N+1` and a fresh token;
+- takeover requires a fresh `dispatch_id`, preventing a replacement generation from reusing the abandoned generation's dispatch-scoped evidence namespace;
+- `worker_id` remains auditable owner metadata and is not the fencing credential.
 
-2. **Fence actual mutable boundaries**
-   - PostgreSQL worker-owned evidence writes/finalization must require the current token;
-   - lease heartbeat/release must be tied to the current token;
-   - Git/worktree finalization paths that can publish worker output must verify current ownership before accepting the write;
-   - a stale worker must not be able to turn late execution into accepted evidence merely because it still has process access.
+`run_token` is returned directly from PostgreSQL acquisition to the worker process through `TaskLeaseGrant`. It is intentionally excluded from ordinary `TaskLeaseSnapshot` serialization/repr, queue messages, routine logs and branch names.
 
-3. **Safe expired-owner transfer**
-   - only after stale writes are fenced may an EXPIRED lease be replaced by a new owner/token;
-   - old token remains permanently stale after transfer;
-   - Worker A cannot regain authority by sending a later heartbeat with its stale token.
+### PostgreSQL stale-write fencing
 
-4. **Preserve existing truth boundaries**
-   - Redis remains transport, not ownership/success authority;
-   - Git remains repository/code truth;
-   - PostgreSQL remains durable runtime/ownership evidence;
-   - deterministic verifier + Reviewer + Git commit evidence remain required for success;
-   - `run_token` is an authorization/fencing primitive, never a task-success signal.
+Token equality alone is insufficient. Worker-owned writes require both:
 
-Step 3.7 must include real concurrency regressions for at least:
+1. the exact current task `run_token`; and
+2. an ACTIVE lease according to PostgreSQL database time.
 
-- Worker A ACTIVE → lease expires → Worker B takeover receives fresh token;
-- Worker A late heartbeat rejected after takeover;
-- Worker A late PostgreSQL evidence append rejected;
-- Worker A late terminal/finalization write rejected;
-- Worker B current-token writes accepted;
-- duplicate/current-token idempotent behavior remains deterministic;
-- no regression to Step 3.4 persistence idempotency, Step 3.5 queue boundary, or Step 3.6 heartbeat behavior.
+This means lease expiry revokes the old generation's worker-write authority **before** another worker performs takeover.
 
-Step 3.7 must **not** yet introduce:
+Accepted fenced worker boundaries include:
 
-- frontend/SSE behavior;
-- embeddings/vector retrieval;
-- new Agent/AST/RAG behavior;
-- generic automatic LLM merge-conflict repair;
-- broad structured observability work reserved for Step 3.8.
+- dispatch / worker execution evidence;
+- runtime state-transition evidence;
+- Developer, verification, Reviewer, Repair and failure evidence;
+- leased-task context references;
+- single-task terminal finalization;
+- heartbeat and release.
 
-**Step 3.7 status: NOT STARTED.**
+Fencing occurs before evidence-key idempotency lookup, so a stale generation cannot make a late retry look accepted merely because an identical persistence key already exists.
+
+The Step 3.4 local/non-leased persistence path remains available only when both persisted task state and caller are explicitly token-free. A caller-supplied fabricated token for an UNOWNED task fails closed rather than bypassing fencing through legacy behavior.
+
+### Runtime-owned Git mutation fencing
+
+Step 3.7 fences both Git mutation points owned by the queued runtime:
+
+```text
+git worktree add -b
+        +
+final task commit / branch ref publication
+```
+
+`PostgresTaskLeaseStore.guard_task_git_mutation()` locks the persisted Run/task, validates current token + live lease + dispatch, and keeps that lock across the bounded Git mutation.
+
+This closes the ownership check/use race:
+
+- if generation N enters the guard while live, that Git mutation linearizes before any later takeover;
+- takeover cannot install generation N+1 in the middle of the protected mutation;
+- if N is already expired or stale when it reaches the guard, the Git mutation is rejected.
+
+A real PostgreSQL + real Git regression proves that after Worker B takeover, stale Worker A cannot even create a new runtime-owned branch ref; the Git ref set remains unchanged by A, while B's current generation can create its workspace and publish its result.
+
+### Generation-scoped worktrees
+
+Queued execution identity now incorporates generation identity derived from the token without exposing the token itself in the branch name.
+
+This lets a valid replacement worker start from the persisted Run base even when an abandoned older generation left a registered/dirty worktree behind. Old-generation artifacts may remain inspectable evidence, but stale generations cannot create new runtime-owned refs or publish accepted result commits after losing the fence.
+
+### Migration boundary
+
+Migration:
+
+`0003_run_token_fencing`
+
+It adds `lease_generation` and `run_token` and tightens the task lease-shape constraint.
+
+Existing Step 3.6-owned rows are upgraded to generation `1` with a database-generated fresh token. A pre-upgrade worker never received that token, so the migration does not create a compatibility path that lets the old process keep writing under the new fencing API.
+
+### Final acceptance
+
+Final exact-head CI for PR #24:
+
+- PostgreSQL service: **PASS**;
+- Redis service: **PASS**;
+- Alembic `0001 → 0002 → 0003 → downgrade base → 0001 → 0002 → 0003`: **PASS**;
+- verification Docker image build: **PASS**;
+- `ruff check .`: **PASS**;
+- initial/concurrent lease-generation tests: **PASS**;
+- expired-owner takeover + fresh-dispatch regression: **PASS**;
+- stale heartbeat/evidence/finalization regressions: **PASS**;
+- fabricated-token fail-closed regression: **PASS**;
+- real stale Git-mutation fencing regression: **PASS**;
+- real Redis/Dramatiq → worker-internal token propagation: **PASS**;
+- `pytest`: **273 passed in 44.35s, 0 skipped**;
+- GitHub Actions `Backend Quality`: **SUCCESS**;
+- no paid SiliconFlow API call was required by Step 3.7 acceptance tests.
+
+Step 3.7 does **not** claim exactly-once execution. A failed generation may have performed computation or left local artifacts before losing ownership. The accepted guarantee is narrower:
+
+> **Only the current live execution generation may mutate DevFlow's accepted worker-owned PostgreSQL and runtime-owned Git boundaries.**
+
+Step 3.7 also does not introduce an automatic worker-death redispatch/recovery controller.
+
+Frozen Step 3.7 principle:
+
+> **Lease expiry revokes the old generation's write authority; a fresh token fences the replacement generation so only the current live owner can mutate DevFlow worker state.**
+
+---
+
+## Gate before Step 3.8 — Structured run/event logs
+
+Step 3.8 may now build structured observability on top of the accepted persistence, dispatch, ownership and fencing boundaries. It must observe existing truth rather than becoming a second source of lifecycle truth.
+
+Required direction:
+
+```text
+validated runtime / worker / lease / fencing events
+        ↓
+structured event schema
+        ↓
+correlation by run / task / dispatch / generation / stage
+        ↓
+queryable chronological evidence
+        ↓
+future API / SSE / UI consumption
+```
+
+Step 3.8 should preserve:
+
+- deterministic runtime state machines as lifecycle authority;
+- PostgreSQL as durable evidence/ownership/fencing authority;
+- Redis/Dramatiq as delivery transport;
+- Git/worktree as code-state truth;
+- current `run_token` as a write fence rather than a logging or success signal;
+- explicit separation between operational telemetry and evidence that can authorize success.
+
+Step 3.8 should focus on structured run/event observability and correlation. It must not use logging records to bypass deterministic verification, Reviewer decisions, Git evidence, lease ownership, or token fencing.
+
+**Step 3.8 status: NOT STARTED.**
