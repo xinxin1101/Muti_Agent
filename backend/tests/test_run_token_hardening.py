@@ -96,7 +96,10 @@ async def _unowned_token_boundary() -> None:
     result = SingleTaskRunResult(
         task_id=task.task_id,
         status=TaskRunState.SUCCEEDED,
-        events=[RunEvent(sequence=0, state=TaskRunState.SUCCEEDED, detail="Done.")],
+        events=[
+            RunEvent(sequence=0, state=TaskRunState.PENDING, detail="Created."),
+            RunEvent(sequence=1, state=TaskRunState.SUCCEEDED, detail="Done."),
+        ],
     )
     with pytest.raises(StaleRunTokenError, match="does not have"):
         await store.finalize_single_task_run(
