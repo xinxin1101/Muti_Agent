@@ -7,8 +7,16 @@ class PersistenceConfigurationError(PersistenceError):
 
 
 class PersistenceConflictError(PersistenceError):
-    """Raised when an idempotency key is reused for different evidence."""
+    """Raised when an idempotency key or durable state transition conflicts."""
 
 
 class PersistenceCorruptionError(PersistenceError):
     """Raised when persisted payload/hash/type evidence cannot be validated."""
+
+
+class TaskLeaseConflictError(PersistenceConflictError):
+    """Raised when task execution ownership conflicts with an existing lease."""
+
+
+class TaskLeaseExpiredError(TaskLeaseConflictError):
+    """Raised when a worker attempts to renew or release an expired task lease."""

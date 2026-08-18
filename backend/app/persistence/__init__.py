@@ -4,7 +4,10 @@ from app.persistence.errors import (
     PersistenceConflictError,
     PersistenceCorruptionError,
     PersistenceError,
+    TaskLeaseConflictError,
+    TaskLeaseExpiredError,
 )
+from app.persistence.leases import PostgresTaskLeaseStore
 from app.persistence.repository import PostgresEvidenceStore
 from app.persistence.types import (
     ContextFingerprintReference,
@@ -27,6 +30,9 @@ __all__ = [
     "PersistenceError",
     "PersistenceEvidenceKind",
     "PostgresEvidenceStore",
+    "PostgresTaskLeaseStore",
+    "TaskLeaseConflictError",
+    "TaskLeaseExpiredError",
     "create_postgres_engine",
     "create_session_factory",
 ]
