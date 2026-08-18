@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from dramatiq import Worker
@@ -17,10 +17,15 @@ from app.models import (
     WorkerExecutionEvidence,
     WorkerExecutionStatus,
 )
-from app.persistence import PersistenceEvidenceKind, PostgresEvidenceStore
+from app.persistence import (
+    PersistenceEvidenceKind,
+    PostgresEvidenceStore,
+    PostgresTaskLeaseStore,
+)
 from app.persistence.types import PersistedRunStatus
 from app.workers.actor import create_task_actor
 from app.workers.executor import QueuedTaskWorker
+from app.workers.lease import LeasedQueuedTaskWorker
 
 
 def _database_url() -> str:
@@ -69,6 +74,7 @@ def _success_result(task_id: str) -> SingleTaskRunResult:
 class _FakeExecutionBackend:
     def __init__(self, result: SingleTaskRunResult) -> None:
         self._result = result
+        self.seen_tokens: list[UUID] = []
 
     async def execute(
         self,
@@ -77,10 +83,12 @@ class _FakeExecutionBackend:
         project_id,
         run_id,
         dispatch_id,
+        run_token: UUID,
         base_commit: str,
     ) -> WorkerExecutionEvidence:
         assert task.task_id == self._result.task_id
         assert project_id
+        self.seen_tokens.append(run_token)
         return WorkerExecutionEvidence(
             dispatch_id=dispatch_id,
             run_id=run_id,
@@ -94,7 +102,7 @@ class _FakeExecutionBackend:
         )
 
 
-def test_real_redis_worker_persists_typed_postgresql_evidence() -> None:
+def test_real_redis_worker_persists_fenced_postgresql_evidence() -> None:
     asyncio.run(_real_redis_worker_round_trip())
 
 
@@ -118,16 +126,23 @@ async def _real_redis_worker_round_trip() -> None:
     namespace = f"devflow-test-{uuid4().hex}"
     queue_name = f"devflow_tasks_{uuid4().hex}"
     broker = create_redis_broker(redis_url, namespace=namespace)
+    backend = _FakeExecutionBackend(result)
 
     async def handler(envelope: TaskDispatchEnvelope) -> WorkerExecutionEvidence:
         worker_store = PostgresEvidenceStore.from_url(database_url)
+        lease_store = PostgresTaskLeaseStore.from_url(database_url)
         try:
-            worker = QueuedTaskWorker(
-                store=worker_store,
-                backend=_FakeExecutionBackend(result),
+            queued = QueuedTaskWorker(store=worker_store, backend=backend)
+            worker = LeasedQueuedTaskWorker(
+                worker=queued,
+                lease_store=lease_store,
+                worker_id="redis-integration-worker",
+                lease_seconds=1.0,
+                heartbeat_interval_seconds=0.2,
             )
             return await worker.execute(envelope)
         finally:
+            await lease_store.dispose()
             await worker_store.dispose()
 
     actor = create_task_actor(
@@ -168,6 +183,15 @@ async def _real_redis_worker_round_trip() -> None:
         assert len(worker_evidence) == 1
         assert worker_evidence[0].payload["dispatch_id"] == str(receipt.dispatch_id)
         assert snapshot.terminal_result is not None
+        assert len(backend.seen_tokens) == 1
+
+        lease_store = PostgresTaskLeaseStore.from_url(database_url)
+        try:
+            lease = await lease_store.inspect_task_lease(run_id=run_id, task_id=task.task_id)
+        finally:
+            await lease_store.dispose()
+        assert lease.generation == 1
+        assert lease.owner_id == "redis-integration-worker"
     finally:
         dramatiq_worker.stop(timeout=5_000)
         broker.flush_all()
