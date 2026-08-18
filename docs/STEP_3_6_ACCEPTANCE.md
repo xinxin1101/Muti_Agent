@@ -8,7 +8,11 @@ Step 3.7 fencing semantics:
 - per-task PostgreSQL lease ownership keyed by `(run_id, task_id)`;
 - PostgreSQL database time is authoritative for acquisition, heartbeat, expiry and release;
 - ACTIVE leases are exclusive and require exact worker/dispatch identity for renewal/release;
+- two independent PostgreSQL clients racing to acquire one task produce exactly one ACTIVE owner and
+  one fail-closed conflict;
 - heartbeat renewal extends `heartbeat_at` and `lease_until`;
+- terminal Runs reject new lease acquisition, while the exact already-established live owner may
+  heartbeat/release during deterministic terminal unwind;
 - normal completion releases a live lease;
 - missing heartbeat yields inspectable `EXPIRED` / abandoned evidence;
 - EXPIRED leases cannot be resurrected or reassigned in Step 3.6;
