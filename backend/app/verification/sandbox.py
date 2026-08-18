@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -14,6 +15,8 @@ from app.models.failure import FailureType
 from app.models.sandbox import DockerSandboxPolicy
 from app.models.verification import VerificationBackend
 
+_IMAGE_ID_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+
 
 @dataclass(frozen=True)
 class VerificationExecution:
@@ -24,6 +27,12 @@ class VerificationExecution:
     backend: VerificationBackend
     details: tuple[str, ...] = ()
     failure_type: FailureType | None = None
+
+
+@dataclass(frozen=True)
+class _DockerPreflight:
+    image_id: str
+    cgroup_driver: str
 
 
 @runtime_checkable
@@ -164,15 +173,23 @@ class DockerSandboxRunner:
                 started_at=started_at,
             )
 
-        preflight_error = self._preflight(timeout_seconds)
-        if preflight_error:
-            return self._tool_failure(preflight_error, started_at=started_at)
+        preflight = self._preflight(timeout_seconds)
+        if isinstance(preflight, str):
+            return self._tool_failure(preflight, started_at=started_at)
 
         container_name = f"devflow-verify-{uuid4().hex}"
+        container_user = self._resolved_container_user()
+        details = self._execution_details(
+            container_name,
+            preflight=preflight,
+            container_user=container_user,
+        )
         command = self._docker_run_command(
             argv=argv,
             workspace=root,
             container_name=container_name,
+            image_reference=preflight.image_id,
+            container_user=container_user,
         )
         try:
             completed = subprocess.run(
@@ -197,7 +214,7 @@ class DockerSandboxRunner:
                 stderr=stderr,
                 duration_ms=_duration_ms(started_at),
                 backend=VerificationBackend.DOCKER,
-                details=self._execution_details(container_name),
+                details=details,
                 failure_type=FailureType.SANDBOX_TIMEOUT,
             )
         except OSError as exc:
@@ -207,7 +224,7 @@ class DockerSandboxRunner:
                 stderr=f"Unable to start Docker verification sandbox: {exc}",
                 duration_ms=_duration_ms(started_at),
                 backend=VerificationBackend.DOCKER,
-                details=self._execution_details(container_name),
+                details=details,
                 failure_type=FailureType.TOOL_FAILURE,
             )
 
@@ -231,11 +248,11 @@ class DockerSandboxRunner:
             stderr=stderr,
             duration_ms=_duration_ms(started_at),
             backend=VerificationBackend.DOCKER,
-            details=self._execution_details(container_name),
+            details=details,
             failure_type=failure_type,
         )
 
-    def _preflight(self, requested_timeout_seconds: float) -> str:
+    def _preflight(self, requested_timeout_seconds: float) -> _DockerPreflight | str:
         timeout = min(self._CONTROL_TIMEOUT_SECONDS, requested_timeout_seconds)
         info = self._control_command(
             [
@@ -251,12 +268,13 @@ class DockerSandboxRunner:
         if "|" not in raw_info:
             return "Docker daemon returned malformed sandbox capability evidence."
         security_options, cgroup_driver = raw_info.rsplit("|", 1)
+        normalized_cgroup_driver = cgroup_driver.strip()
         if "rootless" in security_options.lower():
             return (
                 "Rootless Docker is refused for Step 3.1 verification because cgroup resource "
                 "controllers may be partially delegated or silently ignored."
             )
-        if not cgroup_driver.strip() or cgroup_driver.strip().lower() == "none":
+        if not normalized_cgroup_driver or normalized_cgroup_driver.lower() == "none":
             return (
                 "Docker reports no usable cgroup driver; CPU, memory, and PID limits cannot be "
                 "treated as enforceable verification evidence."
@@ -271,9 +289,13 @@ class DockerSandboxRunner:
                 "Configured verification image is unavailable locally and DevFlow never pulls "
                 f"verification images implicitly: {self._policy.image}. {image}"
             )
-        if not image.stdout.strip().startswith("sha256:"):
-            return "Docker image inspection returned an invalid image identity."
-        return ""
+        image_id = image.stdout.strip().lower()
+        if _IMAGE_ID_PATTERN.fullmatch(image_id) is None:
+            return "Docker image inspection returned an invalid immutable image id."
+        return _DockerPreflight(
+            image_id=image_id,
+            cgroup_driver=normalized_cgroup_driver,
+        )
 
     def _control_command(
         self,
@@ -308,7 +330,11 @@ class DockerSandboxRunner:
         argv: Sequence[str],
         workspace: Path,
         container_name: str,
+        image_reference: str,
+        container_user: str,
     ) -> list[str]:
+        if _IMAGE_ID_PATTERN.fullmatch(image_reference) is None:
+            raise ValueError("sandbox execution requires an immutable Docker image id")
         policy = self._policy
         memory = f"{policy.memory_mb}m"
         return [
@@ -327,7 +353,7 @@ class DockerSandboxRunner:
             "--security-opt",
             "no-new-privileges=true",
             "--user",
-            self._resolved_container_user(),
+            container_user,
             "--cpus",
             f"{policy.cpus:g}",
             "--memory",
@@ -359,7 +385,9 @@ class DockerSandboxRunner:
             "TMPDIR=/tmp",
             "--env",
             "XDG_CACHE_HOME=/tmp/cache",
-            policy.image,
+            "--entrypoint",
+            "",
+            image_reference,
             *argv,
         ]
 
@@ -373,11 +401,20 @@ class DockerSandboxRunner:
                 return f"{uid}:{gid}"
         return self._policy.container_user
 
-    def _execution_details(self, container_name: str) -> tuple[str, ...]:
+    def _execution_details(
+        self,
+        container_name: str,
+        *,
+        preflight: _DockerPreflight,
+        container_user: str,
+    ) -> tuple[str, ...]:
         policy = self._policy
         return (
             f"container={container_name}",
-            f"image={policy.image}",
+            f"configured_image={policy.image}",
+            f"image_id={preflight.image_id}",
+            f"cgroup_driver={preflight.cgroup_driver}",
+            "entrypoint=cleared",
             "workspace=readonly",
             "rootfs=readonly",
             f"network={policy.network}",
@@ -387,7 +424,7 @@ class DockerSandboxRunner:
             f"tmpfs_mb={policy.tmpfs_mb}",
             "capabilities=none",
             "no_new_privileges=true",
-            f"user={self._resolved_container_user()}",
+            f"user={container_user}",
         )
 
     def _force_remove(self, container_name: str) -> str:
@@ -421,7 +458,7 @@ class DockerSandboxRunner:
             stderr=message,
             duration_ms=_duration_ms(started_at),
             backend=VerificationBackend.DOCKER,
-            details=(f"image={self._policy.image}", "sandboxed=true"),
+            details=(f"configured_image={self._policy.image}", "sandboxed=true"),
             failure_type=FailureType.TOOL_FAILURE,
         )
 
