@@ -181,12 +181,12 @@ class _StaticWorkspaceResolver:
         return self._workspace
 
 
-class _AllowPublicationFence:
+class _AllowGitFence:
     def __init__(self) -> None:
         self.tokens: list[UUID] = []
 
     @asynccontextmanager
-    async def guard_task_publication(
+    async def guard_task_git_mutation(
         self,
         *,
         run_id,
@@ -250,17 +250,17 @@ def _backend(
     worktree_root: Path,
     *,
     value: int = 2,
-    fence: _AllowPublicationFence | None = None,
-) -> tuple[LocalQueuedTaskExecutionBackend, _AllowPublicationFence]:
-    publication_fence = fence or _AllowPublicationFence()
+    fence: _AllowGitFence | None = None,
+) -> tuple[LocalQueuedTaskExecutionBackend, _AllowGitFence]:
+    git_fence = fence or _AllowGitFence()
     return (
         LocalQueuedTaskExecutionBackend(
             workspace_resolver=_StaticWorkspaceResolver(base),
             worktree_root=worktree_root,
             runner_factory=lambda _task: _WritingRunner(value),
-            publication_fence=publication_fence,
+            git_fence=git_fence,
         ),
-        publication_fence,
+        git_fence,
     )
 
 
@@ -284,7 +284,7 @@ def test_local_queued_backend_uses_isolated_worktree_and_fenced_commit(tmp_path:
     assert evidence.status is WorkerExecutionStatus.SUCCEEDED
     assert evidence.commit_sha is not None
     assert evidence.branch_name is not None
-    assert fence.tokens == [run_token]
+    assert fence.tokens == [run_token, run_token]
     assert (base.root / "module.py").read_text(encoding="utf-8") == "VALUE = 1\n"
     assert _git(base.root, "show", f"{evidence.commit_sha}:module.py") == "VALUE = 2"
 
@@ -323,7 +323,7 @@ def test_same_run_task_different_generations_use_distinct_worktree_identity(tmp_
     assert first.branch_name != second.branch_name
     assert first.commit_sha is not None
     assert second.commit_sha is not None
-    assert fence.tokens == [first_token, second_token]
+    assert fence.tokens == [first_token, first_token, second_token, second_token]
 
 
 def test_local_queued_backend_scopes_same_task_identity_to_each_run(tmp_path: Path) -> None:
