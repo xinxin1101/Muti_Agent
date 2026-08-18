@@ -41,6 +41,9 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
+      - name: Build verification sandbox image
+        run: docker build -f docker/verification.Dockerfile -t devflow-verifier:py311 .
+
       - name: Run Ruff
         run: ruff check .
 

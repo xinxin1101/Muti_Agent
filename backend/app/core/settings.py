@@ -27,6 +27,14 @@ class Settings(BaseSettings):
     reviewer_model: str = "Pro/zai-org/GLM-4.7"
     repair_model: str = "deepseek-ai/DeepSeek-V3.2"
 
+    verification_sandbox_image: str = "devflow-verifier:py311"
+    verification_sandbox_cpus: float = Field(default=1.0, ge=0.05, le=32.0)
+    verification_sandbox_memory_mb: int = Field(default=512, ge=64, le=32_768)
+    verification_sandbox_pids_limit: int = Field(default=128, ge=16, le=2_048)
+    verification_sandbox_tmpfs_mb: int = Field(default=128, ge=16, le=4_096)
+    verification_sandbox_shm_mb: int = Field(default=64, ge=16, le=1_024)
+    verification_sandbox_timeout_seconds: float = Field(default=60.0, ge=0.05, le=600.0)
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

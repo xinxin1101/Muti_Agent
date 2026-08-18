@@ -2,7 +2,9 @@ import json
 from pathlib import Path
 
 from app import cli, models
+from app.core.settings import Settings
 from app.models.run import RunEvent, SingleTaskRunResult, TaskRunState
+from app.verification import DockerSandboxRunner
 
 
 def _task_payload() -> dict:
@@ -26,6 +28,29 @@ def test_load_task_validates_json_contract(tmp_path: Path) -> None:
 
     assert task.task_id == "CLI-001"
     assert task.writable_files == ["module.py"]
+
+
+def test_build_verifier_uses_configured_docker_sandbox_policy() -> None:
+    settings = Settings(
+        verification_sandbox_image="trusted-project-verifier:test",
+        verification_sandbox_cpus=0.75,
+        verification_sandbox_memory_mb=384,
+        verification_sandbox_pids_limit=96,
+        verification_sandbox_tmpfs_mb=80,
+        verification_sandbox_shm_mb=48,
+        verification_sandbox_timeout_seconds=17.0,
+    )
+
+    verifier = cli.build_verifier(settings)
+
+    assert isinstance(verifier.command_runner, DockerSandboxRunner)
+    policy = verifier.command_runner.policy
+    assert policy.image == "trusted-project-verifier:test"
+    assert policy.cpus == 0.75
+    assert policy.memory_mb == 384
+    assert policy.pids_limit == 96
+    assert policy.tmpfs_mb == 80
+    assert policy.shm_mb == 48
 
 
 def test_cli_run_prints_terminal_json_and_exit_zero(monkeypatch, capsys, tmp_path: Path) -> None:

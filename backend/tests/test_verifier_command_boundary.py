@@ -2,7 +2,7 @@ import subprocess
 from pathlib import Path
 
 from app.models import FailureType, TaskContract
-from app.verification import DeterministicVerifier
+from app.verification import DeterministicVerifier, LocalProcessVerificationRunner
 from app.workspace import LocalGitWorkspace
 
 
@@ -48,6 +48,10 @@ def _task(command: str) -> TaskContract:
     )
 
 
+def _verifier() -> DeterministicVerifier:
+    return DeterministicVerifier(command_runner=LocalProcessVerificationRunner())
+
+
 def test_parent_traversal_argument_is_rejected_before_pytest_runs(tmp_path: Path) -> None:
     root = _repository(tmp_path)
     marker = tmp_path / "outside-ran.txt"
@@ -60,7 +64,7 @@ def test_parent_traversal_argument_is_rejected_before_pytest_runs(tmp_path: Path
         encoding="utf-8",
     )
 
-    result = DeterministicVerifier().verify(
+    result = _verifier().verify(
         _task("pytest ../outside_test.py"),
         workspace=LocalGitWorkspace(root),
     )
@@ -74,7 +78,7 @@ def test_parent_traversal_argument_is_rejected_before_pytest_runs(tmp_path: Path
 def test_absolute_option_value_is_rejected_before_pytest_runs(tmp_path: Path) -> None:
     root = _repository(tmp_path)
 
-    result = DeterministicVerifier().verify(
+    result = _verifier().verify(
         _task("pytest --rootdir=/tmp -q"),
         workspace=LocalGitWorkspace(root),
     )
@@ -88,7 +92,7 @@ def test_pytest_verification_does_not_leave_cache_or_bytecode_changes(tmp_path: 
     root = _repository(tmp_path)
     workspace = LocalGitWorkspace(root)
 
-    result = DeterministicVerifier().verify(
+    result = _verifier().verify(
         _task("pytest -q"),
         workspace=workspace,
     )
@@ -104,7 +108,7 @@ def test_ruff_fix_mode_is_rejected_before_it_can_mutate_source(tmp_path: Path) -
     original = "import os\n\nVALUE = 2\n"
     (root / "module.py").write_text(original, encoding="utf-8")
 
-    result = DeterministicVerifier().verify(
+    result = _verifier().verify(
         _task("ruff check --fix ."),
         workspace=LocalGitWorkspace(root),
     )
@@ -131,7 +135,7 @@ def test_post_verification_scope_detects_test_generated_out_of_scope_file(
     _git(root, "commit", "-m", "prepare side-effect fixture")
     (root / "module.py").write_text("VALUE = 3\n", encoding="utf-8")
 
-    result = DeterministicVerifier().verify(
+    result = _verifier().verify(
         _task("pytest -q"),
         workspace=LocalGitWorkspace(root),
     )

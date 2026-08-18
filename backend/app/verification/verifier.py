@@ -1,15 +1,12 @@
 from __future__ import annotations
 
-import os
 import shlex
-import subprocess
-import sys
 from dataclasses import dataclass
-from time import perf_counter
 
 from app.models.failure import FailureReport, FailureSource, FailureType
 from app.models.task import TaskContract
 from app.models.verification import CheckResult, CheckType, VerificationResult
+from app.verification.sandbox import DockerSandboxRunner, VerificationCommandRunner
 from app.workspace import LocalGitWorkspace, ScopeCheckResult, ScopeEnforcer
 
 _MAX_OUTPUT_CHARS = 20_000
@@ -21,14 +18,15 @@ class _CommandSpec:
     check_type: CheckType
     failure_type: FailureType
     name: str
+    requires_sandbox: bool = False
 
 
 class DeterministicVerifier:
-    """Run deterministic V0.1 hard-gate checks against repository state.
+    """Run deterministic hard-gate checks against repository state.
 
-    Verification is fail-closed. Git scope integrity is evaluated before any target-project
-    process is started. V0.1 intentionally allows only pytest and Ruff commands and always uses
-    ``shell=False``; arbitrary project commands remain deferred until a sandbox exists.
+    Scope integrity is checked before any target-project process starts. The default runner is the
+    Docker verification sandbox. Known pytest/Ruff commands retain typed failure semantics, while
+    project-specific commands are accepted only when the selected runner is sandboxed.
     """
 
     def __init__(
@@ -37,15 +35,20 @@ class DeterministicVerifier:
         command_timeout_seconds: float = 60.0,
         max_commands: int = 8,
         scope_enforcer: ScopeEnforcer | None = None,
+        command_runner: VerificationCommandRunner | None = None,
     ) -> None:
         if not 0.05 <= command_timeout_seconds <= 600.0:
             raise ValueError("command_timeout_seconds must be between 0.05 and 600")
         if not 1 <= max_commands <= 32:
             raise ValueError("max_commands must be between 1 and 32")
-
         self._command_timeout_seconds = command_timeout_seconds
         self._max_commands = max_commands
         self._scope_enforcer = scope_enforcer or ScopeEnforcer()
+        self._command_runner = command_runner or DockerSandboxRunner()
+
+    @property
+    def command_runner(self) -> VerificationCommandRunner:
+        return self._command_runner
 
     def verify(
         self,
@@ -54,10 +57,8 @@ class DeterministicVerifier:
         workspace: LocalGitWorkspace,
     ) -> VerificationResult:
         checks: list[CheckResult] = []
-        changed_files = workspace.changed_files()
-        scope_result = self._scope_enforcer.check(task, changed_files)
+        scope_result = self._scope_enforcer.check(task, workspace.changed_files())
         checks.append(self._scope_check("git_scope", scope_result))
-
         if not scope_result.passed:
             return VerificationResult(passed=False, checks=checks)
 
@@ -68,7 +69,7 @@ class DeterministicVerifier:
                     name="verification_command_budget",
                     passed=False,
                     stderr=(
-                        "Task requested more verification commands than the V0.1 runtime budget: "
+                        "Task requested more verification commands than the runtime budget: "
                         f"{len(task.verification_commands)} > {self._max_commands}."
                     ),
                     failure_type=FailureType.TOOL_FAILURE,
@@ -92,6 +93,22 @@ class DeterministicVerifier:
                 )
                 continue
 
+            if spec.requires_sandbox and not self._command_runner.is_sandboxed:
+                checks.append(
+                    CheckResult(
+                        check_type=CheckType.CUSTOM,
+                        name="sandbox_required",
+                        command=command,
+                        passed=False,
+                        stderr=(
+                            "Project-specific verification commands require the Docker sandbox; "
+                            "host execution is refused."
+                        ),
+                        failure_type=FailureType.TOOL_FAILURE,
+                    )
+                )
+                continue
+
             checks.append(self._run_command(command, spec, workspace=workspace))
 
         post_scope = self._scope_enforcer.check(task, workspace.changed_files())
@@ -109,17 +126,18 @@ class DeterministicVerifier:
         for check in result.checks:
             if check.passed or check.failure_type is None:
                 continue
-
             evidence = [f"check={check.name}"]
             if check.command:
                 evidence.append(f"command={check.command}")
             if check.exit_code is not None:
                 evidence.append(f"exit_code={check.exit_code}")
+            if check.execution_backend is not None:
+                evidence.append(f"execution_backend={check.execution_backend.value}")
+            evidence.extend(f"execution={detail}" for detail in check.execution_details)
             if check.stderr:
                 evidence.append(f"stderr={check.stderr}")
             elif check.stdout:
                 evidence.append(f"stdout={check.stdout}")
-
             reports.append(
                 FailureReport(
                     failure_type=check.failure_type,
@@ -139,64 +157,25 @@ class DeterministicVerifier:
         *,
         workspace: LocalGitWorkspace,
     ) -> CheckResult:
-        started_at = perf_counter()
-        environment = os.environ.copy()
-        environment["PYTHONDONTWRITEBYTECODE"] = "1"
-        try:
-            completed = subprocess.run(
-                spec.argv,
-                cwd=workspace.root,
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                timeout=self._command_timeout_seconds,
-                check=False,
-                shell=False,
-                env=environment,
-            )
-        except subprocess.TimeoutExpired as exc:
-            duration_ms = max(0, int((perf_counter() - started_at) * 1000))
-            return CheckResult(
-                check_type=spec.check_type,
-                name=spec.name,
-                command=command,
-                passed=False,
-                exit_code=None,
-                stdout=self._clip_output(self._timeout_text(exc.stdout)),
-                stderr=self._clip_output(
-                    self._timeout_text(exc.stderr)
-                    or (
-                        "Verification command timed out after "
-                        f"{self._command_timeout_seconds:.2f} seconds."
-                    )
-                ),
-                duration_ms=duration_ms,
-                failure_type=FailureType.TOOL_FAILURE,
-            )
-        except OSError as exc:
-            duration_ms = max(0, int((perf_counter() - started_at) * 1000))
-            return CheckResult(
-                check_type=spec.check_type,
-                name=spec.name,
-                command=command,
-                passed=False,
-                stderr=self._clip_output(f"Unable to start verification command: {exc}"),
-                duration_ms=duration_ms,
-                failure_type=FailureType.TOOL_FAILURE,
-            )
-
-        duration_ms = max(0, int((perf_counter() - started_at) * 1000))
-        passed = completed.returncode == 0
+        execution = self._command_runner.run(
+            spec.argv,
+            workspace=workspace.root,
+            timeout_seconds=self._command_timeout_seconds,
+        )
+        passed = execution.failure_type is None and execution.exit_code == 0
+        failure_type = None if passed else execution.failure_type or spec.failure_type
         return CheckResult(
             check_type=spec.check_type,
             name=spec.name,
             command=command,
             passed=passed,
-            exit_code=completed.returncode,
-            stdout=self._clip_output(completed.stdout),
-            stderr=self._clip_output(completed.stderr),
-            duration_ms=duration_ms,
-            failure_type=None if passed else spec.failure_type,
+            exit_code=execution.exit_code,
+            stdout=self._clip_output(execution.stdout),
+            stderr=self._clip_output(execution.stderr),
+            duration_ms=execution.duration_ms,
+            failure_type=failure_type,
+            execution_backend=execution.backend,
+            execution_details=execution.details,
         )
 
     @staticmethod
@@ -205,23 +184,17 @@ class DeterministicVerifier:
             argv = shlex.split(command, posix=True)
         except ValueError as exc:
             raise ValueError(f"Invalid verification command syntax: {exc}") from exc
-
         if not argv:
             raise ValueError("Verification command must not be empty.")
+        if argv[0].startswith("-"):
+            raise ValueError("Verification executable must not begin with an option prefix.")
 
         executable = argv[0]
         if executable in {"pytest", "py.test"}:
             arguments = argv[1:]
             DeterministicVerifier._assert_workspace_bound_arguments(arguments)
             return _CommandSpec(
-                argv=[
-                    sys.executable,
-                    "-m",
-                    "pytest",
-                    "-p",
-                    "no:cacheprovider",
-                    *arguments,
-                ],
+                argv=["python", "-m", "pytest", "-p", "no:cacheprovider", *arguments],
                 check_type=CheckType.TEST,
                 failure_type=FailureType.TEST_FAILURE,
                 name="pytest",
@@ -232,7 +205,7 @@ class DeterministicVerifier:
             DeterministicVerifier._assert_workspace_bound_arguments(arguments)
             DeterministicVerifier._assert_non_mutating_ruff(arguments)
             return _CommandSpec(
-                argv=[sys.executable, "-m", "ruff", *arguments],
+                argv=["python", "-m", "ruff", "check", "--no-cache", *arguments[1:]],
                 check_type=CheckType.LINT,
                 failure_type=FailureType.LINT_FAILURE,
                 name="ruff",
@@ -244,14 +217,7 @@ class DeterministicVerifier:
                 arguments = argv[3:]
                 DeterministicVerifier._assert_workspace_bound_arguments(arguments)
                 return _CommandSpec(
-                    argv=[
-                        sys.executable,
-                        "-m",
-                        "pytest",
-                        "-p",
-                        "no:cacheprovider",
-                        *arguments,
-                    ],
+                    argv=["python", "-m", "pytest", "-p", "no:cacheprovider", *arguments],
                     check_type=CheckType.TEST,
                     failure_type=FailureType.TEST_FAILURE,
                     name="pytest",
@@ -261,15 +227,19 @@ class DeterministicVerifier:
                 DeterministicVerifier._assert_workspace_bound_arguments(arguments)
                 DeterministicVerifier._assert_non_mutating_ruff(arguments)
                 return _CommandSpec(
-                    argv=[sys.executable, "-m", "ruff", *arguments],
+                    argv=["python", "-m", "ruff", "check", "--no-cache", *arguments[1:]],
                     check_type=CheckType.LINT,
                     failure_type=FailureType.LINT_FAILURE,
                     name="ruff",
                 )
 
-        raise ValueError(
-            "Unsupported V0.1 verification command. Only pytest and `ruff check` are allowed "
-            "before sandboxed custom-command execution is implemented."
+        DeterministicVerifier._assert_workspace_bound_arguments(argv[1:])
+        return _CommandSpec(
+            argv=argv,
+            check_type=CheckType.CUSTOM,
+            failure_type=FailureType.TOOL_FAILURE,
+            name="custom",
+            requires_sandbox=True,
         )
 
     @staticmethod
@@ -278,7 +248,6 @@ class DeterministicVerifier:
             candidates = [argument]
             if "=" in argument:
                 candidates.append(argument.split("=", 1)[1])
-
             for candidate in candidates:
                 normalized = candidate.strip().replace("\\", "/")
                 if not normalized:
@@ -332,15 +301,9 @@ class DeterministicVerifier:
             return "Deterministic pytest verification failed."
         if check.failure_type is FailureType.LINT_FAILURE:
             return "Deterministic Ruff verification failed."
+        if check.failure_type is FailureType.SANDBOX_TIMEOUT:
+            return "Docker verification sandbox exceeded its execution deadline."
         return "Deterministic verification could not complete safely."
-
-    @staticmethod
-    def _timeout_text(value: str | bytes | None) -> str:
-        if value is None:
-            return ""
-        if isinstance(value, bytes):
-            return value.decode("utf-8", errors="replace")
-        return value
 
     @staticmethod
     def _clip_output(value: str) -> str:
