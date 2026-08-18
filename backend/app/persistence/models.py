@@ -77,7 +77,7 @@ class TaskRow(PersistenceBase):
     __tablename__ = "tasks"
     __table_args__ = (
         CheckConstraint(
-            "(" 
+            "("
             "lease_owner IS NULL AND lease_dispatch_id IS NULL "
             "AND lease_acquired_at IS NULL AND heartbeat_at IS NULL "
             "AND lease_until IS NULL AND lease_released_at IS NULL"
@@ -101,10 +101,14 @@ class TaskRow(PersistenceBase):
     contract_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     lease_owner: Mapped[str | None] = mapped_column(String(255), nullable=True)
     lease_dispatch_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
-    lease_acquired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_acquired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    lease_released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_released_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
