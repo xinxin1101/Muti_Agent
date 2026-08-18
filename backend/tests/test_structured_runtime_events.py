@@ -26,6 +26,7 @@ from app.models import (
     RuntimeEventSource,
     SingleTaskRunResult,
     TaskContract,
+    TaskLeaseState,
     TaskRunState,
     VerificationResult,
     WorkerDispatchEvent,
@@ -34,6 +35,7 @@ from app.models import (
     WorkerExecutionStatus,
 )
 from app.persistence import (
+    PersistenceConflictError,
     PersistenceCorruptionError,
     PersistenceEvidenceKind,
     PostgresEvidenceStore,
@@ -411,6 +413,70 @@ async def _lease_event_timeline() -> None:
         RuntimeEventKind.LEASE_TAKEN_OVER,
         RuntimeEventKind.LEASE_RELEASED,
     ]
+    await lease_store.dispose()
+    await evidence_store.dispose()
+
+
+def test_terminal_run_allows_lease_release_event_but_keeps_evidence_append_closed() -> None:
+    asyncio.run(_terminal_cleanup_event())
+
+
+async def _terminal_cleanup_event() -> None:
+    database_url = _database_url()
+    evidence_store = PostgresEvidenceStore.from_url(database_url)
+    lease_store = PostgresTaskLeaseStore.from_url(database_url)
+    run_id, task = await _new_run(evidence_store, "EVENT-TERMINAL-CLEANUP")
+    dispatch_id = uuid4()
+
+    grant = await lease_store.acquire_task_lease(
+        run_id=run_id,
+        task_id=task.task_id,
+        owner_id="worker-terminal",
+        dispatch_id=dispatch_id,
+        lease_seconds=1.0,
+    )
+    await evidence_store.finalize_single_task_run(
+        run_id=run_id,
+        result=_success_result(task.task_id),
+        run_token=grant.run_token,
+    )
+
+    with pytest.raises(PersistenceConflictError, match="append-closed"):
+        await evidence_store.append_evidence(
+            run_id=run_id,
+            task_id=task.task_id,
+            evidence_key="late:forbidden",
+            kind=PersistenceEvidenceKind.STATE_TRANSITION,
+            payload_model=RunEvent(
+                sequence=99,
+                state=TaskRunState.SUCCEEDED,
+                detail="Late typed evidence must stay rejected.",
+            ),
+            stage="runtime",
+            sequence=99,
+            run_token=grant.run_token,
+        )
+
+    released = await lease_store.release_task_lease(
+        run_id=run_id,
+        task_id=task.task_id,
+        owner_id="worker-terminal",
+        dispatch_id=dispatch_id,
+        run_token=grant.run_token,
+    )
+    assert released.state is TaskLeaseState.RELEASED
+
+    events = await evidence_store.list_runtime_events(run_id)
+    assert [event.kind for event in events] == [
+        RuntimeEventKind.RUN_STARTED,
+        RuntimeEventKind.LEASE_ACQUIRED,
+        RuntimeEventKind.RUN_FINALIZED,
+        RuntimeEventKind.LEASE_RELEASED,
+    ]
+    assert events[-1].sequence == events[-2].sequence + 1
+    assert events[-1].dispatch_id == dispatch_id
+    assert events[-1].generation == grant.snapshot.generation
+
     await lease_store.dispose()
     await evidence_store.dispose()
 
