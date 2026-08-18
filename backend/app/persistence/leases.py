@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
 from datetime import datetime, timedelta
 from uuid import UUID
 
@@ -108,7 +107,9 @@ class PostgresTaskLeaseStore:
                 raise TaskLeaseConflictError("released task leases cannot be renewed")
             assert task.lease_until is not None
             if task.lease_until <= observed_at:
-                raise TaskLeaseExpiredError("expired task leases cannot be resurrected by heartbeat")
+                raise TaskLeaseExpiredError(
+                    "expired task leases cannot be resurrected by heartbeat"
+                )
 
             task.heartbeat_at = observed_at
             task.lease_until = observed_at + duration
@@ -136,7 +137,8 @@ class PostgresTaskLeaseStore:
             assert task.lease_until is not None
             if task.lease_until <= observed_at:
                 raise TaskLeaseExpiredError(
-                    "expired task leases remain EXPIRED evidence and cannot be rewritten as RELEASED"
+                    "expired task leases remain EXPIRED evidence and cannot be rewritten "
+                    "as RELEASED"
                 )
 
             task.lease_released_at = observed_at
@@ -184,8 +186,9 @@ class PostgresTaskLeaseStore:
             )
             if run_id is not None:
                 statement = statement.where(TaskRow.run_id == run_id)
-            tasks = (await session.execute(statement.order_by(TaskRow.run_id, TaskRow.task_id))).scalars()
-            return tuple(self._snapshot(task, observed_at=observed_at) for task in tasks.all())
+            ordered = statement.order_by(TaskRow.run_id, TaskRow.task_id)
+            tasks = (await session.execute(ordered)).scalars().all()
+            return tuple(self._snapshot(task, observed_at=observed_at) for task in tasks)
 
     async def _locked_run(self, session: AsyncSession, run_id: UUID) -> RunRow:
         run = (
