@@ -20,7 +20,7 @@ def test_database_url_requires_explicit_postgresql_psycopg_scheme() -> None:
         == "postgresql+psycopg://user:pass@localhost/devflow"
     )
 
-    with pytest.raises(PersistenceConfigurationError, match="postgresql\+psycopg"):
+    with pytest.raises(PersistenceConfigurationError, match=r"postgresql\+psycopg"):
         reveal_database_url("sqlite:///devflow.db")
 
 
