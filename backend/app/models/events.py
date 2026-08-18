@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from enum import StrEnum
 from typing import Any
 from uuid import UUID
@@ -102,3 +103,25 @@ class RuntimeEventDraft(BaseModel):
         if isinstance(value, (list, tuple)):
             for nested in value:
                 cls._validate_attributes(nested)
+
+
+class PersistedRuntimeEvent(BaseModel):
+    """Database-assigned immutable event returned by timeline queries."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: int = Field(ge=1)
+    event_id: UUID
+    run_id: UUID
+    sequence: int = Field(ge=1)
+    event_key: str = Field(min_length=1, max_length=255)
+    kind: RuntimeEventKind
+    source: RuntimeEventSource
+    level: RuntimeEventLevel
+    task_id: str | None = Field(default=None, min_length=1, max_length=128)
+    dispatch_id: UUID | None = None
+    generation: int | None = Field(default=None, ge=1)
+    message: str = Field(min_length=1, max_length=1000)
+    attributes: dict[str, Any]
+    attributes_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    created_at: datetime
