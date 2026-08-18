@@ -235,6 +235,61 @@ async def _full_result_round_trip() -> None:
     await reopened.dispose()
 
 
+def test_concurrent_identical_evidence_append_is_idempotent() -> None:
+    asyncio.run(_concurrent_identical_append())
+
+
+async def _concurrent_identical_append() -> None:
+    database_url = _database_url()
+    task = _task("PG-CONCURRENT")
+    first_store = PostgresEvidenceStore.from_url(database_url)
+    second_store = PostgresEvidenceStore.from_url(database_url)
+    project_id = await first_store.ensure_project(
+        repository_url=f"https://example.test/{uuid4()}/concurrent.git",
+        default_branch="main",
+    )
+    run_id = await first_store.start_run(
+        project_id=project_id,
+        tasks=[task],
+        base_commit="e" * 40,
+    )
+    event = RunEvent(
+        sequence=0,
+        state=TaskRunState.PENDING,
+        detail="Task run created.",
+    )
+
+    ids = await asyncio.gather(
+        first_store.append_evidence(
+            run_id=run_id,
+            task_id=task.task_id,
+            evidence_key="state:concurrent",
+            kind=PersistenceEvidenceKind.STATE_TRANSITION,
+            payload_model=event,
+            stage="runtime",
+            sequence=0,
+        ),
+        second_store.append_evidence(
+            run_id=run_id,
+            task_id=task.task_id,
+            evidence_key="state:concurrent",
+            kind=PersistenceEvidenceKind.STATE_TRANSITION,
+            payload_model=event,
+            stage="runtime",
+            sequence=0,
+        ),
+    )
+
+    assert ids[0] == ids[1]
+    evidence = await first_store.list_evidence(
+        run_id,
+        kind=PersistenceEvidenceKind.STATE_TRANSITION,
+    )
+    assert len(evidence) == 1
+    await first_store.dispose()
+    await second_store.dispose()
+
+
 def test_running_multi_task_run_survives_store_restart_with_run_level_evidence() -> None:
     asyncio.run(_partial_multi_task_recovery())
 
