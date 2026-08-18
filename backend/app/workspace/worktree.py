@@ -53,6 +53,7 @@ class TaskWorktreeManager:
         worktree_root: str | Path,
         *,
         git_timeout_seconds: float = 10.0,
+        frozen_base_commit: str | None = None,
     ) -> None:
         if git_timeout_seconds <= 0:
             raise ValueError("git_timeout_seconds must be greater than zero")
@@ -75,9 +76,13 @@ class TaskWorktreeManager:
         self._base_workspace = base_workspace
         self._root = resolved_root
         self._git_timeout_seconds = git_timeout_seconds
-        self._base_commit = self._git(["rev-parse", "--verify", "HEAD^{commit}"]).stdout.strip()
-        if _COMMIT_PATTERN.fullmatch(self._base_commit) is None:
+        current_head = self._git(["rev-parse", "--verify", "HEAD^{commit}"]).stdout.strip()
+        if _COMMIT_PATTERN.fullmatch(current_head) is None:
             raise TaskWorktreeError("Git did not return a full immutable base commit id")
+        self._base_commit = self._freeze_base_commit(
+            current_head=current_head,
+            requested=frozen_base_commit,
+        )
 
     @property
     def base_commit(self) -> str:
@@ -333,6 +338,32 @@ class TaskWorktreeManager:
             raise TaskWorktreeError(
                 "new task worktree is not checked out on its reserved task branch"
             )
+
+    def _freeze_base_commit(self, *, current_head: str, requested: str | None) -> str:
+        if requested is None:
+            return current_head
+        if _COMMIT_PATTERN.fullmatch(requested) is None:
+            raise ValueError("frozen base commit must be a full 40-64 character hexadecimal id")
+
+        resolved = self._git(
+            ["rev-parse", "--verify", f"{requested}^{{commit}}"],
+            check=False,
+        )
+        canonical = resolved.stdout.strip()
+        if resolved.returncode != 0 or _COMMIT_PATTERN.fullmatch(canonical) is None:
+            raise TaskWorktreeError("frozen base commit does not exist in the repository")
+
+        ancestry = self._git(
+            ["merge-base", "--is-ancestor", canonical, current_head],
+            check=False,
+        )
+        if ancestry.returncode == 1:
+            raise TaskWorktreeError(
+                "frozen base commit must remain an ancestor of the managed repository HEAD"
+            )
+        if ancestry.returncode != 0:
+            raise TaskWorktreeError("Git could not validate frozen base ancestry")
+        return canonical
 
     def _resolve_task_base(self, requested: str | None) -> str:
         if requested is None:
