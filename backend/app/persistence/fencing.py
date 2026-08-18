@@ -3,9 +3,9 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import func
-from sqlalchemy import select
 
 from app.persistence.errors import StaleRunTokenError
 from app.persistence.models import TaskRow
