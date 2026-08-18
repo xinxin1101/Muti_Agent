@@ -41,8 +41,8 @@ class ProjectWorkspaceResolver(Protocol):
     def resolve(self, project_id: UUID) -> LocalGitWorkspace: ...
 
 
-class TaskPublicationFence(Protocol):
-    def guard_task_publication(
+class TaskGitMutationFence(Protocol):
+    def guard_task_git_mutation(
         self,
         *,
         run_id: UUID,
@@ -116,7 +116,7 @@ class LocalQueuedTaskExecutionBackend:
         workspace_resolver: ProjectWorkspaceResolver,
         worktree_root: str | Path,
         runner_factory: Callable[[TaskContract], SingleTaskRunner],
-        publication_fence: TaskPublicationFence,
+        git_fence: TaskGitMutationFence,
     ) -> None:
         root = Path(worktree_root).expanduser()
         if root.exists() and root.is_symlink():
@@ -125,7 +125,7 @@ class LocalQueuedTaskExecutionBackend:
         self._workspace_resolver = workspace_resolver
         self._worktree_root = root.resolve()
         self._runner_factory = runner_factory
-        self._publication_fence = publication_fence
+        self._git_fence = git_fence
 
     async def execute(
         self,
@@ -148,7 +148,16 @@ class LocalQueuedTaskExecutionBackend:
                 self._worktree_root / str(run_id),
                 frozen_base_commit=base_commit,
             )
-            record = worktrees.create(worktree_identity)
+
+            # `git worktree add -b` creates a branch ref, so workspace creation is itself a
+            # runtime-owned Git mutation and must be fenced against stale generations.
+            async with self._git_fence.guard_task_git_mutation(
+                run_id=run_id,
+                task_id=task.task_id,
+                dispatch_id=dispatch_id,
+                run_token=run_token,
+            ):
+                record = await asyncio.to_thread(worktrees.create, worktree_identity)
             workspace = worktrees.open_workspace(worktree_identity)
 
             runner = self._runner_factory(task)
@@ -167,9 +176,9 @@ class LocalQueuedTaskExecutionBackend:
             if run_result.status is not TaskRunState.SUCCEEDED:
                 raise RuntimeError("single-task runtime returned a non-terminal status")
 
-            # The database task-row lock is held while Git publishes the generation branch ref.
+            # The database task-row lock is held while Git publishes the generation result.
             # Takeover therefore cannot replace the token between validation and update-ref.
-            async with self._publication_fence.guard_task_publication(
+            async with self._git_fence.guard_task_git_mutation(
                 run_id=run_id,
                 task_id=task.task_id,
                 dispatch_id=dispatch_id,
