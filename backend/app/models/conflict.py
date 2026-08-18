@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 _OID_PATTERN = r"^[0-9a-fA-F]{40,64}$"
 _MODE_PATTERN = r"^[0-7]{6}$"
@@ -15,10 +15,24 @@ class MergeConflictStageSide(StrEnum):
     TASK = "task"
 
 
+class MergeConflictStageShape(StrEnum):
+    THREE_WAY = "THREE_WAY"
+    ADD_ADD = "ADD_ADD"
+    MODIFY_DELETE = "MODIFY_DELETE"
+    DELETE_MODIFY = "DELETE_MODIFY"
+    COMPLEX = "COMPLEX"
+
+
 _STAGE_SIDE = {
     1: MergeConflictStageSide.BASE,
     2: MergeConflictStageSide.INTEGRATION,
     3: MergeConflictStageSide.TASK,
+}
+_STAGE_SHAPE = {
+    (1, 2, 3): MergeConflictStageShape.THREE_WAY,
+    (2, 3): MergeConflictStageShape.ADD_ADD,
+    (1, 2): MergeConflictStageShape.MODIFY_DELETE,
+    (1, 3): MergeConflictStageShape.DELETE_MODIFY,
 }
 
 
@@ -55,6 +69,14 @@ class MergeConflictFile(BaseModel):
         if stage_numbers != tuple(sorted(stage_numbers)):
             raise ValueError("conflict file stages must be ordered by stage number")
         return self
+
+    @computed_field
+    @property
+    def stage_shape(self) -> MergeConflictStageShape:
+        """Classify the structural stage pattern without parsing human Git messages."""
+
+        stage_numbers = tuple(stage.stage for stage in self.stages)
+        return _STAGE_SHAPE.get(stage_numbers, MergeConflictStageShape.COMPLEX)
 
 
 class MergeConflictMessage(BaseModel):
