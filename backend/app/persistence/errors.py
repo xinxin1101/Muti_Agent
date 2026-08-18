@@ -20,3 +20,7 @@ class TaskLeaseConflictError(PersistenceConflictError):
 
 class TaskLeaseExpiredError(TaskLeaseConflictError):
     """Raised when a worker attempts to renew or release an expired task lease."""
+
+
+class StaleRunTokenError(PersistenceConflictError):
+    """Raised when a mutable task write is not authorized by the live fencing generation."""
