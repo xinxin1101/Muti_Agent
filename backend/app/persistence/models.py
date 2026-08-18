@@ -107,7 +107,7 @@ class EvidenceRow(PersistenceBase):
         ForeignKey("runs.id", ondelete="CASCADE"),
         nullable=False,
     )
-    task_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    task_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     evidence_key: Mapped[str] = mapped_column(String(255), nullable=False)
     kind: Mapped[str] = mapped_column(String(64), nullable=False)
     stage: Mapped[str | None] = mapped_column(String(64), nullable=True)
