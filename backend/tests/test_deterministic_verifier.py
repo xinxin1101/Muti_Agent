@@ -2,7 +2,7 @@ import subprocess
 from pathlib import Path
 
 from app.models import FailureType, TaskContract
-from app.verification import DeterministicVerifier
+from app.verification import DeterministicVerifier, LocalProcessVerificationRunner
 from app.workspace import LocalGitWorkspace
 
 
@@ -56,11 +56,18 @@ def _task(*commands: str) -> TaskContract:
     )
 
 
+def _local_verifier(**kwargs) -> DeterministicVerifier:
+    return DeterministicVerifier(
+        command_runner=LocalProcessVerificationRunner(),
+        **kwargs,
+    )
+
+
 def test_passing_project_returns_hard_gate_pass(tmp_path: Path) -> None:
     root = _make_repository(tmp_path, test_body=_file_content_test("VALUE = 2"))
     (root / "module.py").write_text("VALUE = 2\n", encoding="utf-8")
 
-    result = DeterministicVerifier().verify(
+    result = _local_verifier().verify(
         _task("pytest -q", "ruff check ."),
         workspace=LocalGitWorkspace(root),
     )
@@ -70,12 +77,13 @@ def test_passing_project_returns_hard_gate_pass(tmp_path: Path) -> None:
     assert all(check.passed for check in result.checks)
     assert result.checks[1].exit_code == 0
     assert result.checks[2].exit_code == 0
+    assert result.checks[1].execution_backend.value == "host"
 
 
 def test_failing_test_is_classified_as_test_failure(tmp_path: Path) -> None:
     root = _make_repository(tmp_path, test_body=_file_content_test("VALUE = 3"))
     (root / "module.py").write_text("VALUE = 2\n", encoding="utf-8")
-    verifier = DeterministicVerifier()
+    verifier = _local_verifier()
 
     result = verifier.verify(_task("pytest -q"), workspace=LocalGitWorkspace(root))
     reports = verifier.failure_reports(result)
@@ -94,7 +102,7 @@ def test_lint_failure_is_distinguishable_from_test_failure(tmp_path: Path) -> No
     root = _make_repository(tmp_path, test_body=_file_content_test("VALUE = 2"))
     (root / "module.py").write_text("import os\n\nVALUE = 2\n", encoding="utf-8")
 
-    result = DeterministicVerifier().verify(
+    result = _local_verifier().verify(
         _task("pytest -q", "ruff check ."),
         workspace=LocalGitWorkspace(root),
     )
@@ -116,7 +124,7 @@ def test_scope_violation_prevents_process_execution(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    result = DeterministicVerifier().verify(
+    result = _local_verifier().verify(
         _task("pytest -q"),
         workspace=LocalGitWorkspace(root),
     )
@@ -128,7 +136,7 @@ def test_scope_violation_prevents_process_execution(tmp_path: Path) -> None:
     assert "READ_ONLY:tests/test_module.py" in result.checks[0].stderr
 
 
-def test_unsupported_command_is_rejected_without_shell_execution(tmp_path: Path) -> None:
+def test_custom_command_is_rejected_on_explicit_host_runner(tmp_path: Path) -> None:
     root = _make_repository(
         tmp_path,
         test_body="def test_ok():\n    assert True\n",
@@ -136,7 +144,7 @@ def test_unsupported_command_is_rejected_without_shell_execution(tmp_path: Path)
     (root / "module.py").write_text("VALUE = 2\n", encoding="utf-8")
     marker = root / "should-not-exist.txt"
 
-    result = DeterministicVerifier().verify(
+    result = _local_verifier().verify(
         _task("python -c \"open('should-not-exist.txt', 'w').write('bad')\""),
         workspace=LocalGitWorkspace(root),
     )
@@ -144,7 +152,8 @@ def test_unsupported_command_is_rejected_without_shell_execution(tmp_path: Path)
     assert result.passed is False
     assert marker.exists() is False
     assert result.checks[1].failure_type is FailureType.TOOL_FAILURE
-    assert "Only pytest" in result.checks[1].stderr
+    assert result.checks[1].name == "sandbox_required"
+    assert "require the Docker sandbox" in result.checks[1].stderr
 
 
 def test_verification_command_timeout_is_bounded(tmp_path: Path) -> None:
@@ -159,7 +168,7 @@ def test_verification_command_timeout_is_bounded(tmp_path: Path) -> None:
     )
     (root / "module.py").write_text("VALUE = 2\n", encoding="utf-8")
 
-    result = DeterministicVerifier(command_timeout_seconds=0.1).verify(
+    result = _local_verifier(command_timeout_seconds=0.1).verify(
         _task("pytest -q"),
         workspace=LocalGitWorkspace(root),
     )
@@ -174,7 +183,7 @@ def test_python_module_forms_are_supported(tmp_path: Path) -> None:
     root = _make_repository(tmp_path, test_body=_file_content_test("VALUE = 2"))
     (root / "module.py").write_text("VALUE = 2\n", encoding="utf-8")
 
-    result = DeterministicVerifier().verify(
+    result = _local_verifier().verify(
         _task("python -m pytest -q", "python -m ruff check ."),
         workspace=LocalGitWorkspace(root),
     )
