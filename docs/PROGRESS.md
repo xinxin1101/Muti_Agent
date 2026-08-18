@@ -1,18 +1,21 @@
 # DevFlow Implementation Progress
 
-This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The development plan defines *what* should be built; this file records *what has actually passed acceptance*.
+This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The development plan defines *what* should be built; this file records *what has actually passed acceptance*. Detailed implementation discussions remain preserved in the corresponding pull requests and Git history.
 
 ## Current position
 
-- Current phase: **Phase 2 — V0.2 True Multi-Agent Runtime**
-- Completed item: **Step 2.6 — Merge Conflict Classification**
-- Next item: **Step 2.7 — Integration / Human Gate Strategy**
-- Phase 2 status: **IN PROGRESS**
+- Current phase: **Phase 3 — V0.3 Safety, Context and Reliability**
+- Completed item: **Step 2.7 — Integration / Human Gate Strategy**
+- Next item: **Step 3.1 — Docker Verification Sandbox**
+- Phase 2 status: **ACCEPTED / COMPLETE**
+- Phase 3 status: **NOT STARTED**
 - V0.1 status: **ACCEPTED / COMPLETE**
 
-## Phase 1 — V0.1 Single Task Evidence Loop — ACCEPTED
+---
 
-Phase 1 was completed through PR #1–#10. Detailed implementation and acceptance evidence remain preserved in those PR descriptions and Git history.
+# Phase 1 — V0.1 Single Task Evidence Loop — ACCEPTED / COMPLETE
+
+Phase 1 was completed through PR #1–#10.
 
 | Step | Capability | Acceptance snapshot |
 | --- | --- | --- |
@@ -29,284 +32,325 @@ Phase 1 was completed through PR #1–#10. Detailed implementation and acceptanc
 
 V0.1 exit criterion is satisfied: one validated `TaskContract` can run through Developer → Git scope → deterministic verification → independent semantic review → targeted repair → terminal `SUCCEEDED` / `FAILED` evidence without trusting an LLM self-report as the success signal.
 
+Frozen V0.1 principle:
+
+> **Agents propose; evidence decides.**
+
 ---
 
-# Phase 2 — V0.2 True Multi-Agent Runtime
+# Phase 2 — V0.2 True Multi-Agent Runtime — ACCEPTED / COMPLETE
 
-Goal: safely support dependent and eventually parallel tasks while preserving every V0.1 evidence, scope, verification, review, and repair boundary.
-
-Planned order:
-
-1. Task DAG representation.
-2. `READY/RUNNING/SUCCEEDED/FAILED/BLOCKED` scheduler.
-3. Git Worktree per task.
-4. Parallel worker execution.
-5. Topological merge queue.
-6. Merge conflict classification.
-7. Integration/Human Gate strategy.
+Goal: safely support dependent and parallel tasks while preserving every V0.1 scope, verification, review, repair, and evidence boundary.
 
 ## Step 2.1 — Task DAG Representation — ACCEPTED
 
 Merged through PR #11: `Phase 2 Step 2.1: add validated task DAG representation`.
 
-Delivered:
+Key accepted boundaries:
 
-- `TaskNode` wraps the accepted V0.1 `TaskContract` with immutable dependency edges.
-- `TaskDAG` rejects duplicate task ids, unknown dependencies, duplicate dependencies, self-dependencies, and cycles.
-- Deterministic topological ordering.
-- Deterministic ready-task derivation.
+- Immutable `TaskNode` / `TaskDAG` representation.
+- Duplicate ids, unknown dependencies, duplicate dependencies, self-dependencies, and cycles fail validation.
+- Deterministic topological ordering and ready-task derivation.
 - Transitive blocked-task derivation from failed dependencies.
-- Runtime graph queries fail closed on contradictory completed/failed state.
-- DAG task/dependency collections are immutable tuples, closing the Pydantic shallow-freeze mutation gap.
+- Contradictory runtime graph state fails closed.
 
 Acceptance evidence:
 
 - `ruff check .`: **PASS**.
-- `pytest`: **120 passed in 6.67s**.
+- `pytest`: **120 passed**.
 - GitHub Actions `Backend Quality`: **SUCCESS**.
-- All accepted V0.1 tests remained green.
-- No Scheduler, Worktree, worker pool, merge queue, or conflict handling was introduced early.
 
 ## Step 2.2 — DAG Scheduler — ACCEPTED
 
 Merged through PR #12: `Phase 2 Step 2.2: add deterministic DAG scheduler`.
 
-Delivered:
+Key accepted boundaries:
 
-- Added scheduler lifecycle states: `PENDING`, `READY`, `RUNNING`, `SUCCEEDED`, `FAILED`, `BLOCKED`.
-- `DAGScheduler` is the single owner of mutable scheduling state for one immutable validated `TaskDAG`.
-- Zero-dependency tasks become `READY` deterministically at initialization.
-- Only `READY` tasks may become `RUNNING`.
-- Only `RUNNING` tasks may become `SUCCEEDED` or `FAILED`.
-- Successful tasks trigger deterministic readiness recomputation; a dependent becomes `READY` only when every dependency is `SUCCEEDED`.
-- Failed tasks propagate `BLOCKED` transitively to downstream pending tasks.
-- Independent runnable branches remain unaffected by another branch failure.
-- Multi-parent tasks stay blocked once any required dependency fails, even if another parent later succeeds.
-- Centralized allowed-transition rules reject illegal lifecycle moves before mutation, including `PENDING -> RUNNING`, `READY -> BLOCKED`, terminal restarts, and `BLOCKED -> READY`.
-- Failure propagation pre-validates the full blocked descendant set before changing the failed task, preventing partial state updates if an invariant is violated.
-- Added immutable `TaskScheduleRecord`, `SchedulerEvent`, and `SchedulerSnapshot` evidence models.
-- Scheduler snapshots/events are deterministic and do not expose the internal mutable state mapping.
-- Multiple independent tasks may be represented as `RUNNING` for future parallelism, but Step 2.2 launches no Agent or Worker.
+- Scheduler states: `PENDING`, `READY`, `RUNNING`, `SUCCEEDED`, `FAILED`, `BLOCKED`.
+- Only `READY` tasks may start; only `RUNNING` tasks may terminalize.
+- Dependency success deterministically unlocks downstream tasks.
+- Failure propagates `BLOCKED` transitively without cancelling independent branches.
+- Centralized transition rules reject illegal state changes before mutation.
+- Immutable scheduler snapshots/events expose evidence without leaking mutable scheduler state.
 
 Acceptance evidence:
 
-- First CI candidate exposed one Ruff line-length error; pytest did not run until the static gate was fixed.
-- Second candidate: `ruff check .` **PASS**, `pytest` **135 passed**.
-- Pre-merge invariant review tightened the centralized transition table and disallowed revoking an already-`READY` task into `BLOCKED`.
-- Final `ruff check .`: **PASS**.
-- Final `pytest`: **135 passed in 6.36s**.
+- `ruff check .`: **PASS**.
+- `pytest`: **135 passed**.
 - GitHub Actions `Backend Quality`: **SUCCESS**.
-- All V0.1 and Step 2.1 tests remained green.
-- No Git Worktree, Agent launch, async/thread/process worker execution, merge queue, Redis/Dramatiq, or merge-conflict behavior was introduced prematurely.
 
-## Step 2.3 — Git Worktree per task — ACCEPTED
+## Step 2.3 — Git Worktree per Task — ACCEPTED
 
 Merged through PR #13: `Phase 2 Step 2.3: add isolated Git worktree per task`.
 
-Delivered:
+Key accepted boundaries:
 
-- Added `TaskWorktreeManager` as the owner of task-linked-worktree lifecycle for one clean base repository.
-- Manager freezes an immutable run base commit from the clean base repository before task worktrees are created.
-- Task branch and filesystem identities use a sanitized slug plus deterministic SHA-256 task-id suffix rather than trusting raw task ids as Git ref names.
-- Generated task branches are checked through Git ref-format validation before creation.
-- Task worktrees are created as locked linked worktrees on fresh task branches and are post-verified to be registered, locked, clean, on the expected branch, and at the exact requested commit.
-- Default task worktrees start from the frozen run base even if the base repository HEAD later advances.
-- An optional explicit full commit SHA can be used as a later task base only if it exists and is a descendant of the frozen run base. This provides a safe primitive for future dependency-resolved task creation without implementing dependency integration in Step 2.3.
-- `open_workspace()` returns the existing `LocalGitWorkspace`, preserving the already accepted path, `.git`, symlink, scope, tool, and verifier boundaries inside each linked worktree.
-- Existing registered worktrees, pre-existing task branches, unregistered filesystem collisions, missing worktree directories, and stale/prunable registrations fail closed instead of being silently reused or overwritten.
-- The worktree root must be outside the base repository and is validated before directory creation, so an invalid configuration does not itself dirty the target repository.
-- Removal is restricted to the exact manager-owned path/branch registration.
-- Dirty worktree removal is refused by default; destructive cleanup requires explicit `force=True`.
-- Removing a worktree deliberately preserves its task branch, including committed task output, so later merge-queue stages do not lose completed task evidence.
+- One manager-owned linked Git worktree per task.
+- Task branches and filesystem names use sanitized identities plus deterministic hashes.
+- Worktrees start from a frozen run base unless an explicit full descendant integration commit is supplied.
+- Duplicate branch/path state, stale registrations, invalid roots, and dirty base repositories fail closed.
+- Existing `LocalGitWorkspace` path, `.git`, symlink, scope, and verification protections remain active inside each worktree.
+- Removing a worktree preserves its task branch and committed evidence.
 
-Isolation and lifecycle acceptance evidence:
+Acceptance evidence:
 
-- Real Git test creates two linked task worktrees from the same run base; an uncommitted edit in TASK-A is invisible to TASK-B and the base repository.
-- Real Git test confirms default later task worktrees remain pinned to the frozen run base after the base repository HEAD advances.
-- Real Git test confirms an explicit descendant commit can be selected as a task base, while an unrelated commit and abbreviated SHA are rejected.
-- Duplicate task creation cannot overwrite or reuse existing branch/path state.
-- Missing linked-worktree directories are surfaced as stale registrations rather than automatically pruned/recreated.
-- Dirty base repositories cannot initialize or continue worktree creation.
-- Invalid in-repository worktree roots fail without creating `.devflow` or other repository pollution.
-- Clean removal, explicit forced dirty removal, and branch-preserving cleanup are exercised with real Git.
-- A real commit made inside a task worktree remains reachable from the preserved task branch after the linked worktree directory is removed.
-- First CI candidate was stopped by four Ruff line-length errors before pytest; no behavior test was bypassed.
-- Second candidate: `ruff check .` **PASS**, `pytest` **148 passed**.
-- Pre-merge architecture review added validated descendant task-base support and branch-preservation/root-pollution regression tests for later DAG integration.
-- Final `ruff check .`: **PASS**.
-- Final `pytest`: **153 passed in 7.13s**.
+- `ruff check .`: **PASS**.
+- `pytest`: **153 passed**.
+- Real Git linked-worktree tests.
 - GitHub Actions `Backend Quality`: **SUCCESS**.
-- Tests use real Git linked worktrees rather than mocked `git worktree` commands.
-- All accepted V0.1, Step 2.1, and Step 2.2 tests remained green.
-- No Worker pool, concurrent Agent execution, merge queue, dependency integration, merge-conflict classification, Redis/Dramatiq, or Docker behavior was introduced prematurely.
 
 ## Step 2.4 — Parallel Worker Execution — ACCEPTED
 
 Merged through PR #14: `Phase 2 Step 2.4: add bounded parallel worker execution`.
 
-Delivered:
+Key accepted boundaries:
 
-- Added `ParallelWorkerCoordinator` as the bounded executor for one deterministic snapshot of scheduler-`READY` tasks.
-- `asyncio.Semaphore` enforces `max_concurrency`; a READY task is not moved to `RUNNING` until it has actually acquired a worker slot.
-- The Coordinator rejects overlapping/re-entrant `run_ready_wave()` calls so separate callers cannot bypass the configured concurrency bound on the same runtime object.
-- Each worker creates exactly one manager-owned linked worktree and runs a task-specific V0.1 runner inside that isolated `LocalGitWorkspace`.
-- The accepted `SingleTaskOrchestrator` remains the execution path inside each worker, preserving Developer → deterministic verification → independent Reviewer → targeted Repair semantics.
-- Blocking deterministic verification is offloaded through `asyncio.to_thread()`, allowing pytest/Ruff verification from independent task worktrees to overlap without serially blocking the shared asyncio event loop.
-- V0.1 terminal evidence maps deterministically back into scheduler `SUCCEEDED` / `FAILED` state.
-- Worker exceptions and task-level cancellation produce explicit non-retryable runtime failure evidence and cannot leave scheduler tasks falsely stuck in `RUNNING`.
-- Failure in one independent worker does not cancel unrelated runnable branches; existing DAG dependency propagation remains the only mechanism that blocks descendants.
-- Added immutable `WorkerTaskResult` and `ParallelWorkerWaveResult` evidence models, including worktree path, task branch, task base commit, finalized task commit, peak concurrency, and final scheduler snapshot.
-- Successful task output is committed only to the worker's task branch; no task worker merges into the base repository.
-- `TaskWorktreeManager.commit_task_changes()` finalizes successful output with `git add --all`, `write-tree`, `commit-tree`, and atomic `update-ref`, avoiding repository-controlled normal commit hooks while preserving a concrete task-branch commit for the future merge queue.
-- Base repository HEAD and files remain unchanged while successful task branches advance independently.
-- Newly-ready downstream tasks are returned as `next_ready_task_ids` but are not automatically executed in the same worker wave.
-- A dependent READY task cannot be executed from the stale frozen run base. A later wave requires an externally resolved full descendant integration commit through `task_base_resolver`.
-- The supplied downstream base is still revalidated by `TaskWorktreeManager` for commit existence and run-base ancestry before a task worktree is created.
-- Step 2.4 deliberately does not create integration commits; the resolver is only the safe handoff boundary that Step 2.5 may satisfy.
+- `ParallelWorkerCoordinator` executes a deterministic READY wave under `asyncio.Semaphore` concurrency bounds.
+- A task moves to `RUNNING` only after acquiring a worker slot.
+- Re-entrant/overlapping waves on the same coordinator are rejected.
+- Each worker executes the accepted V0.1 `SingleTaskOrchestrator` in its own linked worktree.
+- Blocking deterministic verification is offloaded from the shared asyncio event loop.
+- Worker exception/cancellation terminalizes structured failure evidence instead of leaving tasks stuck `RUNNING`.
+- Successful work is committed only to the task branch; base repository files and HEAD remain unchanged.
+- Downstream tasks require a trusted descendant integration commit; they never silently start from stale run base state.
 
-Parallel execution acceptance evidence:
+Acceptance evidence:
 
-- A three-root-task test with `max_concurrency=2` proves two tasks are simultaneously `RUNNING` while the third remains `READY` until a slot is available.
-- Real linked-worktree tests prove overlapping workers cannot see one another's uncommitted changes and do not mutate the base repository.
-- A same-Coordinator re-entry regression test rejects two overlapping READY waves.
-- Newly-unlocked dependent tasks remain READY after the current wave rather than being executed from the wrong base commit.
-- A follow-up wave without a dependency integration base fails before scheduler mutation or worktree creation.
-- A synthetic descendant integration commit demonstrates that the future Step 2.5 handoff can safely enable a later dependent worker wave.
-- One failed independent branch blocks only its DAG descendants while another branch can still succeed and unlock its own dependent.
-- Runner exception and cancellation tests prove task state is terminalized with structured evidence instead of remaining `RUNNING`.
-- Successful-worker tests prove the task branch receives a real commit while base HEAD is unchanged and the finalized worktree is clean.
-- Two real V0.1 `SingleTaskOrchestrator` instances execute concurrently with real Developer tool calls, real Git linked worktrees, real pytest/Ruff verification, independent semantic review, and independent task-branch commits.
-- A thread-barrier verifier regression proves synchronous deterministic verification is truly offloaded and can overlap across workers.
-- First complete candidate: `ruff check .` **PASS**, `pytest` **162 passed**.
-- Architecture hardening added non-reentrant waves and the dependent-task integration-base gate; next candidate: **164 passed**.
-- Final handoff regression added descendant-base execution coverage.
-- Final `ruff check .`: **PASS**.
-- Final `pytest`: **165 passed in 8.61s**.
+- `ruff check .`: **PASS**.
+- `pytest`: **165 passed**.
+- Real concurrent V0.1 workers, Git worktrees, verification, review, and task commits.
 - GitHub Actions `Backend Quality`: **SUCCESS**.
-- No real SiliconFlow API call was required by CI.
-- All accepted V0.1 and Phase 2 Step 2.1–2.3 tests remained green.
-- No topological merge queue, dependency integration implementation, merge-conflict classification, Redis/Dramatiq, or Docker behavior was introduced prematurely.
 
 ## Step 2.5 — Topological Merge Queue — ACCEPTED
 
 Merged through PR #15: `Phase 2 Step 2.5: add topological merge queue`.
 
-Delivered:
+Key accepted boundaries:
 
-- Added `TopologicalMergeQueue` with one explicit `refs/devflow/integration/<integration_id>` head rooted at the frozen run base.
-- Successful `WorkerTaskResult` evidence is validated at queue admission and revalidated immediately before each individual integration, closing the branch-movement TOCTOU window.
-- Validation covers scheduler `SUCCEEDED`, manager-owned worktree identity, exact task branch, exact current branch head, full task/base commit ids, and exact single-parent task history.
-- Caller result order is ignored for integration order; candidates are sorted by the validated DAG's deterministic topological order.
-- A globally earlier topological task must already be integrated or become `FAILED/BLOCKED` before a later successful task may advance the integration head.
-- Declared dependencies must already be integrated before a dependent task is eligible.
-- Integration is object-level: `git merge-tree --write-tree` computes the merged tree, `git commit-tree` creates an auditable two-parent integration commit, and compare-and-swap `git update-ref <ref> <new> <old>` advances only the expected integration head.
-- The base repository working tree and index are never used as a merge workspace and remain clean.
-- Each integration commit preserves the previous integration head as first parent and the exact worker task commit as second parent, with structured DevFlow task/branch/base/commit metadata.
-- Existing integration history can be recovered from Git evidence. Recovery replays first-parent history, revalidates ordering/dependencies/parents/task bases, recomputes `merge-tree`, and requires each stored integration commit tree to equal the deterministic merged tree.
-- Forged history with plausible parents/metadata but the wrong tree therefore fails closed.
-- `base_commit_for(task_id)` exposes the trusted current integration head only for a scheduler-`READY` dependent task whose dependencies are already integrated, satisfying the downstream-base handoff introduced in Step 2.4.
-- A real merge conflict does not advance the integration ref. It creates a separate `refs/devflow/integration-conflicts/<integration_id>` conflict marker rooted at the last successful integration head and records coarse `MERGE_CONFLICT` evidence.
-- Conflict state is recoverable after queue reconstruction: marker parent/tree/metadata/task history are validated and `merge-tree` is rerun; only a reproducible conflict restores terminal `stopped=True`.
-- External movement of either the integration ref or a worker task branch fails closed rather than being overwritten.
-- Added immutable `MergeQueueAttempt` and `MergeQueueSnapshot` evidence models.
+- Integration head lives under `refs/devflow/integration/<integration_id>` and starts at the frozen run base.
+- Worker results are validated at admission and immediately before integration, including exact branch/base/task commit identity.
+- Integration order follows validated DAG topology rather than caller result ordering.
+- Object-level `git merge-tree --write-tree` + `git commit-tree` + compare-and-swap `git update-ref` avoids using the base working tree/index as a merge workspace.
+- Integration history is recoverable and revalidated from Git parents, metadata, and recomputed deterministic merge trees.
+- A real conflict does not advance integration head. It creates a durable tree-neutral marker under `refs/devflow/integration-conflicts/<integration_id>` and stops the queue.
+- Conflict state recovers after process reconstruction.
+- External integration-ref/task-branch movement fails closed.
 
-Topological integration acceptance evidence:
+Acceptance evidence:
 
-- Reverse worker-result input integrates in deterministic DAG order.
-- Higher-topological successful tasks cannot jump ahead of an earlier unresolved or successful-but-unintegrated task.
-- A dependency chain can integrate its parent, hand the resulting integration commit to the downstream worker as trusted base, and later integrate the downstream task result.
-- Existing successful integration history recovers and rejects duplicate integration.
-- A forged two-parent integration commit with correct-looking metadata but an incorrect tree is rejected on recovery.
-- Task branch movement is detected before integration-ref advancement.
-- A dedicated TOCTOU test moves TASK-B's branch after batch prevalidation but before TASK-B integration; immediate evidence revalidation rejects it while preserving only TASK-A's completed integration.
-- A real same-line conflict integrates TASK-A, refuses TASK-B, preserves the last successful integration head, emits `MERGE_CONFLICT`, creates a conflict marker, and keeps the base working tree clean.
-- Reconstructing the queue from those Git refs restores TASK-A as integrated plus TASK-B as terminal conflict and still refuses further integration.
-- External integration-ref movement is detected.
-- Object-level integration does not invoke normal `post-commit` hooks.
-- Invalid integration ids fail before unsafe refs are created.
-- Initial CI candidate was stopped by Ruff before pytest; only static formatting was changed.
-- First behavior-complete candidate: `ruff check .` **PASS**, `pytest` **174 passed**.
-- Recovery hardening then added deterministic tree recomputation and durable conflict markers; a single Ruff line was fixed before behavior tests could run.
-- Hardened recovery candidate: **175 passed**.
-- Final TOCTOU revalidation regression increased the suite to **176 tests**.
-- Final `ruff check .`: **PASS**.
-- Final `pytest`: **176 passed in 11.12s**.
+- `ruff check .`: **PASS**.
+- `pytest`: **176 passed**.
+- Real Git refs, `merge-tree`, `commit-tree`, `update-ref`, conflict markers, and TOCTOU tests.
 - GitHub Actions `Backend Quality`: **SUCCESS**.
-- Tests use real Git linked worktrees, refs, `merge-tree`, `commit-tree`, and `update-ref`; merge behavior is not mocked.
-- All accepted V0.1 and Phase 2 Step 2.1–2.4 tests remained green.
-- No LLM conflict resolution, rich conflict diagnosis/repair, Integration/Human Gate policy, Redis/Dramatiq, or Docker behavior was introduced prematurely.
 
 ## Step 2.6 — Merge Conflict Classification — ACCEPTED
 
 Merged through PR #16: `Phase 2 Step 2.6: add merge conflict classification`.
 
-Delivered:
+Key accepted boundaries:
 
-- Added immutable structured conflict evidence models: `MergeConflictEvidence`, `MergeConflictFile`, `MergeConflictStage`, `MergeConflictMessage`, `MergeConflictStageSide`, and `MergeConflictStageShape`.
-- Added `GitMergeConflictClassifier` as a read-only classification boundary over a stopped Step 2.5 `MergeQueueSnapshot`.
-- Classification independently revalidates the integration ref, terminal conflict attempt, conflict marker parent/tree/metadata, exact conflicted task branch head, and exact task commit/base relation before trusting any diagnostic output.
-- The classifier replays `git merge-tree --write-tree -z --messages <integration-head> <task-commit>` and requires Git conflict exit code `1`; a stale or no-longer-reproducible conflict therefore fails closed.
-- Git NUL-delimited conflicted-file records are parsed into repository path, file mode, object id, and stage evidence without checking out a branch or writing the index/worktree.
-- Stage semantics are explicit: stage 1 is the merge base, stage 2 is the integration side, and stage 3 is the task side.
-- Per-path structural conflict shape is derived only from stage presence: `THREE_WAY`, `ADD_ADD`, `MODIFY_DELETE`, `DELETE_MODIFY`, or conservative `COMPLEX`.
-- Git's native machine-readable `conflict_type` is preserved independently from the stage-derived shape. Human-readable messages are retained only as bounded evidence and are not parsed to make control-flow decisions.
-- Evidence preserves the integration head, exact task commit, conflict ref, conflict marker commit, conflicted tree object, ordered conflicting paths, per-path stages/modes/object ids, machine conflict types, message records, bounded raw Git output, and an explicit truncation flag.
-- NUL-safe parsing preserves paths containing spaces and Unicode.
-- Reconstructing the stopped Step 2.5 queue and classifying again yields identical structured conflict evidence.
-- Integration-ref movement and conflicted task-branch movement after snapshot capture fail closed.
-- Classification does not advance refs, delete the conflict marker, edit files, touch the index, or continue the merge queue.
+- Added immutable `MergeConflictEvidence`, per-file conflict stages, native Git messages/types, and structural stage shapes.
+- `GitMergeConflictClassifier` consumes a stopped Step 2.5 snapshot and independently revalidates integration ref, conflict marker, exact task branch head, and task commit/base history.
+- Classification replays `git merge-tree --write-tree -z --messages` and requires conflict exit code `1`.
+- NUL-safe machine parsing preserves spaces and Unicode paths.
+- Git stage semantics are explicit: stage 1 = merge base, stage 2 = integration side, stage 3 = task side.
+- Structural shapes derive from stage facts only: `THREE_WAY`, `ADD_ADD`, `MODIFY_DELETE`, `DELETE_MODIFY`, `COMPLEX`.
+- Human-readable Git prose is bounded evidence, not a control-flow parser input.
+- Recovered queue classification is deterministic and identical.
+- Classifier remains read-only: no file edits, index writes, conflict resolution, marker deletion, or integration continuation.
 
-Conflict-classification acceptance evidence:
+Important acceptance discovery:
 
-- Same-file content conflict yields a three-stage `1/2/3` `THREE_WAY` record with native Git conflict type.
-- Add/add conflict yields stages `2/3` and structural `ADD_ADD` without parsing free-form Git prose.
-- Modify/delete yields stages `1/2`; the inverse delete/modify yields stages `1/3`.
-- Paths with spaces and Unicode survive machine-readable NUL parsing exactly.
-- Recovered queue classification is exactly equal to the original classification.
-- Stale task branch and moved integration ref are rejected before classification is accepted.
-- Non-conflict snapshots are rejected.
-- Raw Git evidence is bounded and marks truncation explicitly.
-- Pydantic validation rejects contradictory stage/side semantics.
-- First behavioral CI candidate: Ruff **PASS**, pytest **1 failed / 184 passed**. The failure exposed a real Git 2.54 nuance: an add/add content conflict uses machine `conflict-type = CONFLICT (contents)` even though human prose mentions `add/add`.
-- The implementation was hardened rather than loosening the test: structural `ADD_ADD` is derived from the machine stage set `{2,3}`, while the native machine conflict type remains unchanged.
-- Next candidate: **185 passed**.
-- Final architecture hardening added inverse `DELETE_MODIFY` coverage plus integration-ref movement fail-closed coverage.
-- Final `ruff check .`: **PASS**.
-- Final `pytest`: **187 passed in 14.92s**.
+- Git 2.54 reports an add/add content conflict with machine `conflict-type = CONFLICT (contents)` even though human prose mentions `add/add`.
+- DevFlow therefore derives structural `ADD_ADD` from stages `{2,3}` while preserving the native Git machine type unchanged.
+
+Acceptance evidence:
+
+- `ruff check .`: **PASS**.
+- `pytest`: **187 passed in 14.92s**.
+- Real Git conflict/recovery tests.
 - GitHub Actions `Backend Quality`: **SUCCESS**.
-- Tests use real repositories, linked task worktrees, the accepted Step 2.5 merge queue, real conflict refs/markers, and real `merge-tree -z` output.
-- All accepted V0.1 and Phase 2 Step 2.1–2.5 tests remained green.
-- No LLM conflict resolution, file edits, ours/theirs selection, automatic Repair, automatic queue continuation, or Human Gate policy was introduced prematurely.
 
-## Gate before Step 2.7 — Integration / Human Gate Strategy
+## Step 2.7 — Integration / Human Gate Strategy — ACCEPTED
 
-Step 2.7 may now consume the structured `MergeConflictEvidence` produced by Step 2.6 and decide what requires explicit human intervention versus any narrowly permitted deterministic continuation policy.
+Merged through PR #17: `Phase 2 Step 2.7: add integration human gate strategy`.
+
+Squash merge commit:
+
+`4d091949f1ba5a57465dc30edd4f5935f1a06fdd`
+
+### Delivered policy boundary
+
+- Added explicit integration-gate states: `AUTO_REPAIR_CANDIDATE`, `AWAITING_HUMAN`, `REPAIR_AUTHORIZED`, and `ABORTED`.
+- `IntegrationConflictPolicy` evaluates Step 2.6 structured evidence using the **trusted TaskContract stored in the scheduler DAG**. Callers cannot provide a wider same-id contract to expand Agent Repair scope.
+- Automatic merge-conflict Repair is **disabled by default**.
+- When explicitly enabled, automatic Repair eligibility is deliberately narrow: one conflict file, `THREE_WAY`, regular `100644` stages, only native `CONFLICT (contents)`, narrow text suffix allowlist, trusted writable scope, and no protected path.
+- Actual stage blobs are inspected with `git cat-file`; automatic eligibility requires each blob to be at most 512 KB, contain no NUL byte, and strictly decode as UTF-8. A binary blob merely named `*.py` cannot become an automatic Repair candidate.
+
+### Human Gate is not a privilege bypass
+
+Policy separates:
+
+- `route`: automatic Repair candidate versus Human Gate.
+- `human_repair_authorizable`: whether a human is allowed to delegate the conflict to Agent Repair at all.
+
+Hard boundaries remain non-bypassable even by explicit human approval:
+
+- out-of-scope paths;
+- protected tests/control/configuration paths;
+- non-regular stages;
+- unsafe, binary, oversized, or non-UTF-8 blobs.
+
+Those cases remain `HUMAN_REQUIRED` with `human_repair_authorizable=False`; Step 2.7 rejects `AUTHORIZE_REPAIR` and permits only `ABORT`.
+
+Protected-path policy covers DevFlow/GitHub/GitLab control directories, any `tests` directory component, `test_*.py`, `*_test.py`, `conftest.py`, `.env`, package manifests/lockfiles, `pyproject.toml`, `uv.lock`, and configured protected basenames.
+
+### Durable evidence-bound decisions
+
+- `conflict_evidence_fingerprint` hashes structured Git conflict facts and deliberately excludes raw/free-form Git prose.
+- `integration_policy_fingerprint` separately binds the policy facts that affect Repair authorization.
+- A durable human decision cannot be reused merely because a later policy still produces the same coarse `HUMAN_REQUIRED` route.
+- Human decisions are explicit `AUTHORIZE_REPAIR` / `ABORT` records stored under `refs/devflow/integration-decisions/<integration_id>`.
+- Decision commits are tree-neutral: their sole parent is the exact conflict marker and their tree equals the conflict-marker tree, so decision recording changes no repository code.
+- Decision metadata binds conflict marker/ref, integration head, task id/branch/commit, evidence fingerprint, policy fingerprint, actor, note, and decision.
+- Actor/note metadata is bounded, single-line, JSON encoded, and validated to prevent metadata injection.
+- A second human decision cannot overwrite the first decision audit record.
+
+### Live Gate validation and TOCTOU protection
+
+`IntegrationHumanGate.snapshot()` is not a cached boolean. Each read:
+
+1. re-runs Step 2.6 conflict classification;
+2. revalidates structured evidence fingerprint;
+3. recomputes policy and validates policy fingerprint;
+4. recovers/revalidates any durable human decision;
+5. rechecks integration ref, conflict ref, task branch, scheduler state, and base-workspace cleanliness.
+
+Human decision creation uses a single `git update-ref --stdin` transaction that atomically verifies:
+
+- integration ref == reviewed integration head;
+- conflict ref == reviewed conflict marker;
+- task branch == reviewed task commit;
+- decision ref does not already exist and is created only after those verifications succeed.
+
+This closes the human-click TOCTOU window across the three authoritative Git refs.
+
+### Critical semantic boundary
+
+> `repair_may_start=True` means only that a later bounded Repair stage is authorized to begin.
+
+Every Step 2.7 snapshot fixes:
+
+`integration_may_advance=False`
+
+Therefore human approval or policy eligibility is **never** interpreted as proof that a merge conflict has been resolved.
+
+Step 2.7 intentionally does **not**:
+
+- call an LLM conflict resolver;
+- edit conflicted files;
+- choose `ours` / `theirs`;
+- execute merge-conflict Repair itself;
+- delete conflict markers;
+- restart the merge queue;
+- advance the integration ref.
+
+Any future conflict Repair must create new repository-state evidence and pass the already accepted deterministic verification/review boundaries before integration can proceed.
+
+### Step 2.7 acceptance evidence
+
+Real-Git tests cover:
+
+- conservative default Human Gate;
+- narrow opt-in automatic Repair eligibility;
+- add/add and modify/delete routing;
+- trusted-DAG scope binding;
+- protected paths and non-bypassable human boundaries;
+- binary/NUL blob exclusion even with a `.py` filename;
+- durable tree-neutral `AUTHORIZE_REPAIR` and `ABORT` records;
+- reconstruction/recovery;
+- immutable one-decision semantics;
+- metadata injection rejection;
+- forged decision-tree rejection;
+- integration-ref race rejection;
+- task-branch race rejection;
+- stale policy authorization rejection through policy fingerprints;
+- evidence fingerprint independence from raw/free-form Git text.
+
+Final validation:
+
+- `ruff check .`: **PASS**.
+- `pytest`: **205 passed in 20.54s**.
+- GitHub Actions `Backend Quality`: **SUCCESS**.
+- All accepted V0.1 and Phase 2 Step 2.1–2.6 tests remained green.
+
+---
+
+## Phase 2 exit criterion — ACCEPTED
+
+V0.2 now satisfies the planned multi-agent runtime boundaries:
+
+- validated Task DAG and deterministic dependency state;
+- bounded parallel task execution;
+- one isolated Git worktree per task;
+- successful task output frozen as auditable task commits;
+- deterministic topological object-level integration;
+- recoverable merge-conflict markers;
+- structured, replayable conflict evidence;
+- durable policy + Human Gate authorization that cannot bypass hard Repair boundaries;
+- no LLM self-report can mark integration successful or bypass Git evidence.
+
+The runtime now has a complete evidence boundary from parallel task execution through integration conflict triage. **Phase 2 is frozen as ACCEPTED / COMPLETE.**
+
+---
+
+# Phase 3 — V0.3 Safety, Context and Reliability — NOT STARTED
+
+Planned order from `docs/DEVELOPMENT_PLAN.md`:
+
+1. Docker verification sandbox.
+2. CPU / memory / network / time limits.
+3. Context Packet Builder.
+4. AST/import-aware relevant-code extraction.
+5. PostgreSQL persistence.
+6. Redis + Dramatiq workers.
+7. Lease + heartbeat.
+8. `run_token` stale-write protection.
+9. Structured run/event logs.
+
+## Gate before Step 3.1 — Docker Verification Sandbox
+
+Step 3.1 may now isolate the **deterministic verification execution boundary** without changing the accepted Agent, scope, scheduler, worktree, merge, or Human Gate semantics.
 
 Required direction:
 
 ```text
-stopped Topological Merge Queue
+Task worktree
       ↓
-GitMergeConflictClassifier
+Git scope gate
       ↓
-MergeConflictEvidence
-      ├── exact refs/commits
-      ├── conflicting paths
-      ├── stage shapes
-      ├── native Git conflict types
-      └── bounded raw evidence
+Deterministic Verifier
       ↓
-Integration / Human Gate
+Docker Sandbox Runner
+      ├── isolated working directory / mount policy
+      ├── bounded wall-clock timeout
+      ├── bounded CPU / memory / process resources
+      ├── controlled network policy
+      └── captured exit/stdout/stderr/duration
       ↓
-explicit policy decision
+VerificationResult / FailureReport
 ```
 
-Step 2.7 should establish:
+Step 3.1 should establish:
 
-- an explicit policy layer rather than letting an Agent silently decide whether a conflicted integration may proceed;
-- deterministic routing from structured evidence into a small, auditable set of outcomes;
-- human-required cases must remain stopped until an explicit decision is recorded;
-- any future automatic path must be narrow, policy-authorized, independently verified, and unable to bypass the accepted Git/evidence boundaries;
-- the chosen decision and supporting evidence must be inspectable and recoverable.
+- deterministic verification commands execute inside a controlled container rather than unrestricted host execution;
+- repository/worktree identity and task scope remain authoritative outside the model;
+- sandbox startup failure, command failure, timeout, and resource-limit failure produce explicit bounded evidence and fail closed;
+- stdout/stderr/exit code/duration evidence remains compatible with the accepted verifier models;
+- the host must not expose Docker socket, GitHub credentials, SiliconFlow keys, or unrelated filesystem paths to the verification process;
+- container lifecycle and cleanup are deterministic and tested;
+- existing V0.1/Phase 2 verification behavior remains green when sandboxing is not selected by tests/configuration.
 
-Step 2.7 must not turn the classifier itself into an LLM resolver, erase conflict evidence, or allow successful integration to be inferred from a model claim. The runtime must continue to treat Git state and verification evidence as authoritative.
+Step 3.1 must **not** pull later Phase 3 work forward. In particular it must not introduce Context Packet construction, PostgreSQL, Redis/Dramatiq, distributed leases, frontend behavior, or automatic merge-conflict Repair.
+
+**Step 3.1 status: NOT STARTED.**
