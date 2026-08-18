@@ -76,5 +76,44 @@ The command emits one JSON evidence bundle containing:
 A model saying "done" never marks the task successful. The terminal `SUCCEEDED` state is reachable
 only after deterministic verification and independent semantic review both pass.
 
-See `../docs/DEVELOPMENT_PLAN.md` and `../docs/PROGRESS.md` for the staged roadmap and acceptance
-ledger.
+## Redis / Dramatiq queued workers
+
+Step 3.5 adds a process-external dispatch boundary. A Redis message contains only:
+
+```text
+dispatch_id
+run_id
+task_id
+```
+
+The queue does not carry repository source, `TaskContract` bodies, database credentials, provider
+keys, Git credentials, or model prompts. The worker reloads the persisted Run/Task from PostgreSQL
+and then resolves the already-materialized managed Git repository before invoking the existing
+SingleTask runtime inside an isolated task worktree.
+
+Configure:
+
+```text
+DEVFLOW_DATABASE_URL
+DEVFLOW_REDIS_URL
+DEVFLOW_DRAMATIQ_NAMESPACE
+DEVFLOW_DRAMATIQ_QUEUE_NAME
+```
+
+Start the production worker with:
+
+```bash
+cd backend
+dramatiq app.workers.tasks
+```
+
+`app.dispatch.DramatiqTaskDispatcher` is the application boundary used by an API/CLI layer to send a
+validated persisted task to the worker actor.
+
+The Step 3.5 actor explicitly uses `max_retries=0`. This is deliberate: Redis/Dramatiq delivery is
+not treated as execution ownership and DevFlow does not claim exactly-once task execution. Broker
+redelivery, worker-death recovery, lease/heartbeat ownership, and stale-writer fencing are completed
+only in later Phase 3 steps. A queue message is permission to attempt work, never a success signal.
+
+See `../docs/REDIS_DRAMATIQ_WORKERS.md`, `../docs/DEVELOPMENT_PLAN.md`, and
+`../docs/PROGRESS.md` for the architecture boundary and acceptance ledger.

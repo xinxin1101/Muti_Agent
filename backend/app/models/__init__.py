@@ -28,6 +28,14 @@ from app.models.context import (
 )
 from app.models.dag import TaskDAG, TaskNode
 from app.models.developer import DeveloperRunResult, DeveloperStopReason
+from app.models.dispatch import (
+    TaskDispatchEnvelope,
+    TaskDispatchReceipt,
+    WorkerDispatchEvent,
+    WorkerDispatchPhase,
+    WorkerExecutionEvidence,
+    WorkerExecutionStatus,
+)
 from app.models.failure import FailureReport, FailureSource, FailureType
 from app.models.integration_gate import (
     HumanGateDecision,
@@ -121,6 +129,8 @@ __all__ = [
     "SingleTaskRunResult",
     "TaskContract",
     "TaskDAG",
+    "TaskDispatchEnvelope",
+    "TaskDispatchReceipt",
     "TaskNode",
     "TaskRunState",
     "TaskScheduleRecord",
@@ -132,5 +142,9 @@ __all__ = [
     "ToolExecutionResult",
     "VerificationBackend",
     "VerificationResult",
+    "WorkerDispatchEvent",
+    "WorkerDispatchPhase",
+    "WorkerExecutionEvidence",
+    "WorkerExecutionStatus",
     "WorkerTaskResult",
 ]
