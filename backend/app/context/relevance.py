@@ -4,7 +4,7 @@ import ast
 import re
 from collections import defaultdict
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import PurePosixPath
 
