@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
 from pydantic import SecretStr
@@ -86,7 +86,8 @@ class PostgresTaskLeaseStore:
                     )
                 if existing.state is TaskLeaseState.RELEASED:
                     raise TaskLeaseConflictError(
-                        "released task generations are terminal ownership history and cannot be reused"
+                        "released task generations are terminal ownership history "
+                        "and cannot be reused"
                     )
                 if existing.state is not TaskLeaseState.EXPIRED:
                     raise TaskLeaseConflictError("task lease state cannot be safely acquired")
@@ -203,13 +204,14 @@ class PostgresTaskLeaseStore:
                 raise TaskLeaseConflictError("Git publication requires a RUNNING persisted run")
             task = await self._locked_task(session, run_id, task_name)
             observed_at = await database_time(session)
-            if task.lease_dispatch_id != dispatch_id:
-                raise TaskLeaseConflictError("Git publication dispatch does not own this task")
+            # Classify stale/expired generations before secondary human-readable dispatch checks.
             assert_live_current_run_token(
                 task,
                 run_token=run_token,
                 observed_at=observed_at,
             )
+            if task.lease_dispatch_id != dispatch_id:
+                raise TaskLeaseConflictError("Git publication dispatch does not own this task")
             yield self._snapshot(task, observed_at=observed_at)
 
     async def inspect_task_lease(self, *, run_id: UUID, task_id: str) -> TaskLeaseSnapshot:
@@ -292,7 +294,7 @@ class PostgresTaskLeaseStore:
             raise TaskLeaseConflictError("task lease is owned by a different worker or dispatch")
 
     @staticmethod
-    def _snapshot(task: TaskRow, *, observed_at) -> TaskLeaseSnapshot:
+    def _snapshot(task: TaskRow, *, observed_at: datetime) -> TaskLeaseSnapshot:
         if task.lease_owner is None:
             state = TaskLeaseState.UNOWNED
         elif task.lease_released_at is not None:
