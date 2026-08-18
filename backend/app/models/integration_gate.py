@@ -61,6 +61,7 @@ class HumanIntegrationDecision(BaseModel):
     decision_ref: str = Field(min_length=1, max_length=512)
     decision_commit: str = Field(pattern=_OID_PATTERN)
     evidence_fingerprint: str = Field(pattern=_SHA256_PATTERN)
+    policy_fingerprint: str = Field(pattern=_SHA256_PATTERN)
     conflict_marker_commit: str = Field(pattern=_OID_PATTERN)
 
     @field_validator("actor", "note")
@@ -84,6 +85,7 @@ class IntegrationGateSnapshot(BaseModel):
     conflict_ref: str = Field(min_length=1, max_length=512)
     conflict_marker_commit: str = Field(pattern=_OID_PATTERN)
     evidence_fingerprint: str = Field(pattern=_SHA256_PATTERN)
+    policy_fingerprint: str = Field(pattern=_SHA256_PATTERN)
     policy: IntegrationPolicyDecision
     state: IntegrationGateState
     human_decision: HumanIntegrationDecision | None = None
@@ -118,6 +120,8 @@ class IntegrationGateSnapshot(BaseModel):
             raise ValueError("terminal human gate states require a durable human decision")
         if self.human_decision.evidence_fingerprint != self.evidence_fingerprint:
             raise ValueError("human decision must reference the same conflict evidence")
+        if self.human_decision.policy_fingerprint != self.policy_fingerprint:
+            raise ValueError("human decision must reference the same integration policy")
         if self.human_decision.conflict_marker_commit != self.conflict_marker_commit:
             raise ValueError("human decision must reference the same conflict marker")
 
