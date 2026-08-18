@@ -1,0 +1,14 @@
+FROM python:3.11.15-slim-bookworm@sha256:721dc13fd1be0a771e54b72097634291d628d0007dee9da777e2ce676a9c998f
+
+ARG PYTEST_VERSION=9.1.1
+ARG RUFF_VERSION=0.16.3
+
+RUN python -m pip install --no-cache-dir \
+    "pytest==${PYTEST_VERSION}" \
+    "ruff==${RUFF_VERSION}"
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /workspace
