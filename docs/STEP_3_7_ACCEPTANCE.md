@@ -1,8 +1,8 @@
 # Step 3.7 Acceptance — `run_token` Stale-Write Protection
 
-Status: **CANDIDATE / NOT YET ACCEPTED**
+Status: **ACCEPTED / COMPLETE**
 
-Step 3.7 is accepted only when the branch demonstrates the following without expanding into Step 3.8.
+Step 3.7 is accepted with the following frozen guarantees and boundaries.
 
 - every initial task acquisition receives generation `1` and a fresh `run_token`;
 - EXPIRED ownership may be atomically replaced by a new owner with a strictly later generation and a
@@ -43,6 +43,22 @@ Step 3.7 is accepted only when the branch demonstrates the following without exp
 - no automatic worker-death redispatch/recovery controller is introduced;
 - no Step 3.8 structured logging, frontend/SSE, vector retrieval, Agent/AST/RAG expansion, scheduler
   rewrite, or generic LLM merge repair is introduced.
+
+## Acceptance history
+
+- The first candidate passed PostgreSQL migration and Docker verification, then Ruff stopped the gate
+  on five static-only issues. Those were repaired without weakening fencing semantics.
+- The next candidate passed migration, Docker, Ruff and **271 tests**.
+- Merge review then hardened three boundaries: fabricated tokens can no longer fall back to the legacy
+  non-fenced path; EXPIRED takeover requires a fresh dispatch namespace; and fencing was expanded from
+  final Git publication to all runtime-owned Git ref mutations, including `git worktree add -b`.
+- The first hardened run reached **272 / 273 tests**; its sole failure was an invalid one-event
+  `SingleTaskRunResult` test fixture, while the fabricated-token rejection assertion had already passed.
+- The fixture alone was repaired to use the existing schema-valid `PENDING → SUCCEEDED` event history.
+- Code head `56895eb38629190ae6defd4cf6981ec124f2bd6b` then passed PostgreSQL + Redis services,
+  Alembic `0001 → 0002 → 0003 → downgrade base → 0001 → 0002 → 0003`, Docker verifier, Ruff,
+  and **273 passed in 30.17s, 0 skipped** under GitHub Actions `Backend Quality`.
+- No paid SiliconFlow call is required by Step 3.7 acceptance tests.
 
 Frozen acceptance statement:
 
