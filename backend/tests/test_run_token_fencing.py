@@ -36,7 +36,7 @@ def _task() -> TaskContract:
         readable_files=["module.py"],
         writable_files=["module.py"],
         readonly_files=["tests/**"],
-        acceptance_criteria=["Only the current run_token may publish Git output."],
+        acceptance_criteria=["Only the current run_token may mutate runtime-owned Git state."],
         verification_commands=["pytest -q"],
         max_retries=1,
     )
@@ -101,13 +101,13 @@ def _init_repository(path: Path) -> LocalGitWorkspace:
     return LocalGitWorkspace(path)
 
 
-def test_stale_generation_cannot_publish_git_but_takeover_generation_can(
+def test_stale_generation_cannot_mutate_git_but_takeover_generation_can(
     tmp_path: Path,
 ) -> None:
-    asyncio.run(_stale_git_publication(tmp_path))
+    asyncio.run(_stale_git_mutation(tmp_path))
 
 
-async def _stale_git_publication(tmp_path: Path) -> None:
+async def _stale_git_mutation(tmp_path: Path) -> None:
     database_url = _database_url()
     base = _init_repository(tmp_path / "repo")
     task = _task()
@@ -143,11 +143,12 @@ async def _stale_git_publication(tmp_path: Path) -> None:
     )
     assert new_grant.snapshot.generation == old_grant.snapshot.generation + 1
 
+    refs_before_stale = _git(base.root, "for-each-ref", "--format=%(refname)", "refs/heads")
     stale_backend = LocalQueuedTaskExecutionBackend(
         workspace_resolver=_StaticWorkspaceResolver(base),
         worktree_root=tmp_path / "worktrees",
         runner_factory=lambda _task: _WritingRunner(2),
-        publication_fence=lease_store,
+        git_fence=lease_store,
     )
     stale = await stale_backend.execute(
         task=task,
@@ -157,17 +158,19 @@ async def _stale_git_publication(tmp_path: Path) -> None:
         run_token=old_grant.run_token,
         base_commit=base_commit,
     )
+    refs_after_stale = _git(base.root, "for-each-ref", "--format=%(refname)", "refs/heads")
+
     assert stale.status is WorkerExecutionStatus.FAILED
     assert stale.commit_sha is None
-    assert stale.branch_name is not None
+    assert stale.branch_name is None
     assert stale.failures
-    assert _git(base.root, "rev-parse", stale.branch_name) == base_commit
+    assert refs_after_stale == refs_before_stale
 
     current_backend = LocalQueuedTaskExecutionBackend(
         workspace_resolver=_StaticWorkspaceResolver(base),
         worktree_root=tmp_path / "worktrees",
         runner_factory=lambda _task: _WritingRunner(3),
-        publication_fence=lease_store,
+        git_fence=lease_store,
     )
     current = await current_backend.execute(
         task=task,
@@ -180,7 +183,6 @@ async def _stale_git_publication(tmp_path: Path) -> None:
     assert current.status is WorkerExecutionStatus.SUCCEEDED
     assert current.commit_sha is not None
     assert current.branch_name is not None
-    assert current.branch_name != stale.branch_name
     assert _git(base.root, "show", f"{current.commit_sha}:module.py") == "VALUE = 3"
     assert _git(base.root, "rev-parse", current.branch_name) == current.commit_sha
 
