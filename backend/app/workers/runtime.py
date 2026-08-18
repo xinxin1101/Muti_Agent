@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import socket
 from collections.abc import Callable
+from functools import lru_cache
 from uuid import uuid4
 
 from app.agents import DeveloperAgent, RepairAgent, ReviewerAgent
@@ -21,13 +22,18 @@ from app.workers.executor import (
 )
 from app.workers.lease import LeasedQueuedTaskWorker
 
-_PROCESS_WORKER_ID = f"{socket.gethostname()}:{os.getpid()}:{uuid4().hex[:12]}"
+
+@lru_cache(maxsize=32)
+def _generated_worker_id(process_id: int) -> str:
+    """Create one stable fallback identity per actual worker process id."""
+
+    return f"{socket.gethostname()}:{process_id}:{uuid4().hex[:12]}"
 
 
 def resolve_worker_id(settings: Settings) -> str:
-    """Return configured worker identity or one stable fallback for this worker process."""
+    """Return configured identity or one stable, fork-safe fallback per worker process."""
 
-    return settings.worker_id or _PROCESS_WORKER_ID
+    return settings.worker_id or _generated_worker_id(os.getpid())
 
 
 def build_single_task_runner(settings: Settings) -> SingleTaskOrchestrator:
