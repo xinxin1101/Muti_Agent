@@ -34,6 +34,7 @@ class IntegrationPolicyDecision(BaseModel):
     route: IntegrationPolicyRoute
     evidence_fingerprint: str = Field(pattern=_SHA256_PATTERN)
     automatic_repair_enabled: bool
+    human_repair_authorizable: bool
     conflicting_paths: tuple[str, ...] = Field(min_length=1)
     reasons: tuple[str, ...] = Field(min_length=1)
 
@@ -41,11 +42,11 @@ class IntegrationPolicyDecision(BaseModel):
     def validate_route(self) -> IntegrationPolicyDecision:
         if len(self.conflicting_paths) != len(set(self.conflicting_paths)):
             raise ValueError("policy conflicting paths must be unique")
-        if (
-            self.route is IntegrationPolicyRoute.AUTO_REPAIR_CANDIDATE
-            and not self.automatic_repair_enabled
-        ):
-            raise ValueError("automatic repair candidate requires the policy to be enabled")
+        if self.route is IntegrationPolicyRoute.AUTO_REPAIR_CANDIDATE:
+            if not self.automatic_repair_enabled:
+                raise ValueError("automatic repair candidate requires the policy to be enabled")
+            if not self.human_repair_authorizable:
+                raise ValueError("automatic repair candidate must satisfy hard repair boundaries")
         return self
 
 
@@ -128,4 +129,6 @@ class IntegrationGateSnapshot(BaseModel):
             raise ValueError("human decision is inconsistent with integration gate state")
         if self.repair_may_start != (expected is HumanGateDecision.AUTHORIZE_REPAIR):
             raise ValueError("repair permission must match the explicit human decision")
+        if self.repair_may_start and not self.policy.human_repair_authorizable:
+            raise ValueError("human authorization cannot bypass hard repair boundaries")
         return self
