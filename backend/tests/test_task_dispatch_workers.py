@@ -288,6 +288,44 @@ def test_local_queued_backend_fails_closed_on_duplicate_worktree_identity(
     assert "exception_type=TaskWorktreeCollisionError" in second.failures[0].evidence
 
 
+def test_local_queued_backend_scopes_same_task_identity_to_each_run(tmp_path: Path) -> None:
+    base = _init_repository(tmp_path / "repo")
+    task = _task("QUEUE-REUSED-ID")
+    backend = LocalQueuedTaskExecutionBackend(
+        workspace_resolver=_StaticWorkspaceResolver(base),
+        worktree_root=tmp_path / "worktrees",
+        runner_factory=lambda _task: _WritingRunner(2),
+    )
+    base_commit = base.head_commit()
+
+    first = asyncio.run(
+        backend.execute(
+            task=task,
+            project_id=uuid4(),
+            run_id=uuid4(),
+            dispatch_id=uuid4(),
+            base_commit=base_commit,
+        )
+    )
+    second = asyncio.run(
+        backend.execute(
+            task=task,
+            project_id=uuid4(),
+            run_id=uuid4(),
+            dispatch_id=uuid4(),
+            base_commit=base_commit,
+        )
+    )
+
+    assert first.status is WorkerExecutionStatus.SUCCEEDED
+    assert second.status is WorkerExecutionStatus.SUCCEEDED
+    assert first.branch_name != second.branch_name
+    assert first.commit_sha is not None
+    assert second.commit_sha is not None
+    assert _git(base.root, "show", f"{first.commit_sha}:module.py") == "VALUE = 2"
+    assert _git(base.root, "show", f"{second.commit_sha}:module.py") == "VALUE = 2"
+
+
 class _RecordingStore:
     def __init__(self, snapshot) -> None:
         self.snapshot = snapshot
