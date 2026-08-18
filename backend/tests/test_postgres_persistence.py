@@ -218,7 +218,11 @@ async def _full_result_round_trip() -> None:
         and "selected_files" not in item.payload
         for item in snapshot.evidence
     )
-    assert len(await reopened.list_evidence(run_id, kind=PersistenceEvidenceKind.REVIEW_DECISION)) == 1
+    review_evidence = await reopened.list_evidence(
+        run_id,
+        kind=PersistenceEvidenceKind.REVIEW_DECISION,
+    )
+    assert len(review_evidence) == 1
 
     with pytest.raises(PersistenceConflictError, match="append-closed"):
         await reopened.append_evidence(
