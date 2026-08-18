@@ -34,6 +34,7 @@ from app.models.review import (
     ReviewSeverity,
 )
 from app.models.run import AgentUsageSummary, RunEvent, SingleTaskRunResult, TaskRunState
+from app.models.sandbox import DockerSandboxPolicy
 from app.models.scheduler import (
     SchedulerEvent,
     SchedulerSnapshot,
@@ -47,7 +48,12 @@ from app.models.tools import (
     ToolErrorCode,
     ToolExecutionResult,
 )
-from app.models.verification import CheckResult, CheckType, VerificationResult
+from app.models.verification import (
+    CheckResult,
+    CheckType,
+    VerificationBackend,
+    VerificationResult,
+)
 from app.models.worker import ParallelWorkerWaveResult, WorkerTaskResult
 
 __all__ = [
@@ -60,6 +66,7 @@ __all__ = [
     "CheckType",
     "DeveloperRunResult",
     "DeveloperStopReason",
+    "DockerSandboxPolicy",
     "FailureReport",
     "FailureSource",
     "FailureType",
@@ -101,6 +108,7 @@ __all__ = [
     "ToolDefinition",
     "ToolErrorCode",
     "ToolExecutionResult",
+    "VerificationBackend",
     "VerificationResult",
     "WorkerTaskResult",
 ]
