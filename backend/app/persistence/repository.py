@@ -176,7 +176,11 @@ class PostgresEvidenceStore:
         decode_evidence(kind, payload)
 
         async with self._session_factory.begin() as session:
-            run = await session.get(RunRow, run_id)
+            run = (
+                await session.execute(
+                    select(RunRow).where(RunRow.id == run_id).with_for_update()
+                )
+            ).scalar_one_or_none()
             if run is None:
                 raise ValueError(f"unknown persistence run: {run_id}")
             if run.status != PersistedRunStatus.RUNNING.value:
