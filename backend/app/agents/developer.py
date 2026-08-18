@@ -243,7 +243,7 @@ class DeveloperAgent:
         if context_packet.objective != task.objective:
             raise ValueError("Developer ContextPacket objective does not match TaskContract")
         if context_packet.acceptance_criteria != task.acceptance_criteria:
-            raise ValueError("Developer ContextPacket acceptance criteria do not match TaskContract")
+            raise ValueError("Developer ContextPacket acceptance criteria mismatch")
         if context_packet.readable_files != task.readable_files:
             raise ValueError("Developer ContextPacket readable scope does not match TaskContract")
         if context_packet.writable_files != task.writable_files:
