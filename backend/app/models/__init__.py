@@ -11,6 +11,7 @@ from app.models.conflict import (
     MergeConflictFile,
     MergeConflictMessage,
     MergeConflictStage,
+    MergeConflictStageShape,
     MergeConflictStageSide,
 )
 from app.models.dag import TaskDAG, TaskNode
@@ -59,6 +60,7 @@ __all__ = [
     "MergeConflictFile",
     "MergeConflictMessage",
     "MergeConflictStage",
+    "MergeConflictStageShape",
     "MergeConflictStageSide",
     "MergeQueueAttempt",
     "MergeQueueSnapshot",
