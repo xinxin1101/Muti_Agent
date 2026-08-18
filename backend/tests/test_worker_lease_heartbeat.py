@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from app.core.settings import Settings
 from app.dispatch.errors import WorkerExecutionBoundaryError
 from app.models import (
     RunEvent,
@@ -19,6 +20,7 @@ from app.models import (
 )
 from app.persistence import TaskLeaseConflictError, TaskLeaseExpiredError
 from app.workers.lease import LeasedQueuedTaskWorker
+from app.workers.runtime import resolve_worker_id
 
 
 def _envelope(task_id: str = "LEASE-WORKER") -> TaskDispatchEnvelope:
@@ -268,3 +270,22 @@ def test_heartbeat_interval_must_be_shorter_than_lease() -> None:
             lease_seconds=1.0,
             heartbeat_interval_seconds=1.0,
         )
+
+
+def test_generated_worker_identity_is_stable_per_pid_and_changes_after_fork(monkeypatch) -> None:
+    settings = Settings(_env_file=None, worker_id=None)
+
+    monkeypatch.setattr("app.workers.runtime.os.getpid", lambda: 31001)
+    first = resolve_worker_id(settings)
+    repeated = resolve_worker_id(settings)
+
+    monkeypatch.setattr("app.workers.runtime.os.getpid", lambda: 31002)
+    child = resolve_worker_id(settings)
+
+    assert first == repeated
+    assert first != child
+    assert ":31001:" in first
+    assert ":31002:" in child
+
+    configured = Settings(_env_file=None, worker_id="configured-worker")
+    assert resolve_worker_id(configured) == "configured-worker"
