@@ -46,6 +46,7 @@ def upgrade() -> None:
         sa.Column("dispatch_id", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column("generation", sa.Integer(), nullable=True),
         sa.Column("message", sa.Text(), nullable=False),
+        sa.Column("schema_version", sa.Integer(), nullable=False, server_default=sa.text("1")),
         sa.Column("attributes", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column("attributes_sha256", sa.String(length=64), nullable=False),
         sa.Column(
@@ -57,6 +58,10 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "generation IS NULL OR generation >= 1",
             name="ck_runtime_events_generation",
+        ),
+        sa.CheckConstraint(
+            "schema_version >= 1",
+            name="ck_runtime_events_schema_version",
         ),
         sa.CheckConstraint(
             "task_id IS NOT NULL OR (dispatch_id IS NULL AND generation IS NULL)",
