@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from hashlib import sha256
-from pathlib import Path
 
 from app.models.context import (
     ContextBudget,
@@ -386,7 +385,9 @@ class ContextPacketBuilder:
                     ContextTruncation(
                         reason=ContextTruncationReason.TOTAL_CHAR_LIMIT,
                         path=candidate.path,
-                        detail="File content was truncated by the remaining total character budget.",
+                        detail=(
+                            "File content was truncated by the remaining total character budget."
+                        ),
                         omitted_chars=omitted_chars,
                     )
                 )
