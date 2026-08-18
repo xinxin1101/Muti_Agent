@@ -41,9 +41,11 @@ class IntegrationPolicyDecision(BaseModel):
     def validate_route(self) -> IntegrationPolicyDecision:
         if len(self.conflicting_paths) != len(set(self.conflicting_paths)):
             raise ValueError("policy conflicting paths must be unique")
-        if self.route is IntegrationPolicyRoute.AUTO_REPAIR_CANDIDATE:
-            if not self.automatic_repair_enabled:
-                raise ValueError("automatic repair candidate requires the policy to be enabled")
+        if (
+            self.route is IntegrationPolicyRoute.AUTO_REPAIR_CANDIDATE
+            and not self.automatic_repair_enabled
+        ):
+            raise ValueError("automatic repair candidate requires the policy to be enabled")
         return self
 
 
