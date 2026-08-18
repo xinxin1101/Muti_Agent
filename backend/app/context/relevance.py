@@ -147,7 +147,11 @@ class RelevantCodeExtractor:
             for candidate in candidates
         }
 
-        python_candidates = [candidate for candidate in candidates if candidate.path.endswith(".py")]
+        python_candidates = [
+            candidate
+            for candidate in candidates
+            if candidate.path.endswith(".py")
+        ]
         index_order = sorted(
             python_candidates,
             key=lambda candidate: (
@@ -356,10 +360,17 @@ class RelevantCodeExtractor:
         imports: list[_ImportRef] = []
 
         for index, node in enumerate(tree.body):
-            if index == 0 and isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
-                if isinstance(node.value.value, str):
-                    preamble_end = max(preamble_end, getattr(node, "end_lineno", node.lineno))
-                    continue
+            if (
+                index == 0
+                and isinstance(node, ast.Expr)
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)
+            ):
+                preamble_end = max(
+                    preamble_end,
+                    getattr(node, "end_lineno", node.lineno),
+                )
+                continue
             if isinstance(node, (ast.Import, ast.ImportFrom)):
                 preamble_end = max(preamble_end, getattr(node, "end_lineno", node.lineno))
 
@@ -423,7 +434,11 @@ class RelevantCodeExtractor:
         module = import_ref.module
         if import_ref.level:
             current_parts = index.module_name.split(".") if index.module_name else []
-            package_parts = current_parts if index.path.endswith("/__init__.py") else current_parts[:-1]
+            package_parts = (
+                current_parts
+                if index.path.endswith("/__init__.py")
+                else current_parts[:-1]
+            )
             levels_up = max(import_ref.level - 1, 0)
             if levels_up > len(package_parts):
                 return None
