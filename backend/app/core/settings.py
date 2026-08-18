@@ -1,6 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     )
 
     @model_validator(mode="after")
-    def validate_worker_lease_cadence(self) -> Settings:
+    def validate_worker_lease_cadence(self) -> Self:
         if self.worker_heartbeat_interval_seconds >= self.worker_lease_seconds:
             raise ValueError("worker heartbeat interval must be shorter than the lease duration")
         return self
