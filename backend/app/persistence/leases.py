@@ -9,9 +9,11 @@ from pydantic import SecretStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from app.models.events import RuntimeEventDraft, RuntimeEventKind, RuntimeEventSource
 from app.models.lease import TaskLeaseGrant, TaskLeaseSnapshot, TaskLeaseState
 from app.persistence.database import create_postgres_engine, create_session_factory
 from app.persistence.errors import TaskLeaseConflictError, TaskLeaseExpiredError
+from app.persistence.events import append_runtime_event
 from app.persistence.fencing import (
     assert_current_run_token,
     assert_live_current_run_token,
@@ -22,13 +24,7 @@ from app.persistence.types import PersistedRunStatus
 
 
 class PostgresTaskLeaseStore:
-    """PostgreSQL authority for task ownership, liveness, and fencing generations.
-
-    Every acquisition issues a fresh `run_token`. An EXPIRED generation may be replaced by a newer
-    generation, but ACTIVE and RELEASED generations are never silently reassigned. The token is a
-    capability used at mutable worker write boundaries; it is intentionally absent from ordinary
-    lease snapshots and Redis messages.
-    """
+    """PostgreSQL authority for task ownership, liveness, fencing, and lease timeline events."""
 
     def __init__(
         self,
@@ -74,6 +70,7 @@ class PostgresTaskLeaseStore:
                 raise TaskLeaseConflictError("task leases can be acquired only for RUNNING runs")
             task = await self._locked_task(session, run_id, task_name)
             observed_at = await database_time(session)
+            previous_generation: int | None = None
 
             if task.lease_owner is None:
                 next_generation = 1
@@ -95,6 +92,7 @@ class PostgresTaskLeaseStore:
                     raise TaskLeaseConflictError(
                         "expired-owner takeover requires a fresh dispatch_id"
                     )
+                previous_generation = task.lease_generation
                 next_generation = task.lease_generation + 1
 
             token = uuid4()
@@ -107,6 +105,32 @@ class PostgresTaskLeaseStore:
             task.lease_until = observed_at + duration
             task.lease_released_at = None
             await session.flush()
+            await append_runtime_event(
+                session,
+                run=run,
+                draft=RuntimeEventDraft(
+                    event_key=f"lease:{task_name}:generation:{next_generation}:acquired",
+                    kind=(
+                        RuntimeEventKind.LEASE_TAKEN_OVER
+                        if previous_generation is not None
+                        else RuntimeEventKind.LEASE_ACQUIRED
+                    ),
+                    source=RuntimeEventSource.LEASE,
+                    task_id=task_name,
+                    dispatch_id=dispatch_id,
+                    generation=next_generation,
+                    message=(
+                        "Expired task generation was replaced by a new fenced owner."
+                        if previous_generation is not None
+                        else "Task lease generation acquired."
+                    ),
+                    attributes={
+                        "owner_id": owner,
+                        "previous_generation": previous_generation,
+                        "lease_until": task.lease_until.isoformat(),
+                    },
+                ),
+            )
             return TaskLeaseGrant(
                 snapshot=self._snapshot(task, observed_at=observed_at),
                 run_token=token,
@@ -129,7 +153,7 @@ class PostgresTaskLeaseStore:
         async with self._session_factory.begin() as session:
             # Terminal Run cleanup remains valid only for the exact current generation. New
             # acquisition still requires RUNNING, so this does not authorize new terminal work.
-            await self._locked_run(session, run_id)
+            run = await self._locked_run(session, run_id)
             task = await self._locked_task(session, run_id, task_name)
             observed_at = await database_time(session)
             self._assert_identity(
@@ -149,6 +173,26 @@ class PostgresTaskLeaseStore:
             task.heartbeat_at = observed_at
             task.lease_until = observed_at + duration
             await session.flush()
+            await append_runtime_event(
+                session,
+                run=run,
+                draft=RuntimeEventDraft(
+                    event_key=(
+                        f"lease:{task_name}:generation:{task.lease_generation}:heartbeat:"
+                        f"{observed_at.isoformat()}"
+                    ),
+                    kind=RuntimeEventKind.LEASE_HEARTBEAT,
+                    source=RuntimeEventSource.LEASE,
+                    task_id=task_name,
+                    dispatch_id=dispatch_id,
+                    generation=task.lease_generation,
+                    message="Task lease heartbeat renewed.",
+                    attributes={
+                        "owner_id": owner,
+                        "lease_until": task.lease_until.isoformat(),
+                    },
+                ),
+            )
             return self._snapshot(task, observed_at=observed_at)
 
     async def release_task_lease(
@@ -164,7 +208,7 @@ class PostgresTaskLeaseStore:
         owner = self._required_text(owner_id, "owner_id", max_length=255)
 
         async with self._session_factory.begin() as session:
-            await self._locked_run(session, run_id)
+            run = await self._locked_run(session, run_id)
             task = await self._locked_task(session, run_id, task_name)
             observed_at = await database_time(session)
             self._assert_identity(
@@ -183,6 +227,23 @@ class PostgresTaskLeaseStore:
 
             task.lease_released_at = observed_at
             await session.flush()
+            await append_runtime_event(
+                session,
+                run=run,
+                draft=RuntimeEventDraft(
+                    event_key=f"lease:{task_name}:generation:{task.lease_generation}:released",
+                    kind=RuntimeEventKind.LEASE_RELEASED,
+                    source=RuntimeEventSource.LEASE,
+                    task_id=task_name,
+                    dispatch_id=dispatch_id,
+                    generation=task.lease_generation,
+                    message="Task lease generation released.",
+                    attributes={
+                        "owner_id": owner,
+                        "released_at": observed_at.isoformat(),
+                    },
+                ),
+            )
             return self._snapshot(task, observed_at=observed_at)
 
     @asynccontextmanager
