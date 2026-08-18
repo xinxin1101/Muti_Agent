@@ -126,8 +126,9 @@ class LocalQueuedTaskExecutionBackend:
             worktrees = TaskWorktreeManager(
                 base_workspace,
                 self._worktree_root / str(run_id),
+                frozen_base_commit=base_commit,
             )
-            record = worktrees.create(worktree_identity, base_commit=base_commit)
+            record = worktrees.create(worktree_identity)
             workspace = worktrees.open_workspace(worktree_identity)
 
             runner = self._runner_factory(task)
