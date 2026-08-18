@@ -122,6 +122,7 @@ class PersistedRuntimeEvent(BaseModel):
     dispatch_id: UUID | None = None
     generation: int | None = Field(default=None, ge=1)
     message: str = Field(min_length=1, max_length=1000)
+    schema_version: int = Field(ge=1)
     attributes: dict[str, Any]
     attributes_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     created_at: datetime
