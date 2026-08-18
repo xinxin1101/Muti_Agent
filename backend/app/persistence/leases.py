@@ -97,9 +97,12 @@ class PostgresTaskLeaseStore:
         duration = self._lease_duration(lease_seconds)
 
         async with self._session_factory.begin() as session:
-            run = await self._locked_run(session, run_id)
-            if run.status != PersistedRunStatus.RUNNING.value:
-                raise TaskLeaseConflictError("terminal runs cannot renew task leases")
+            # A single-task queued worker may finalize the Run immediately before the outer
+            # lease wrapper observes completion and stops its heartbeat. Keep the Run row lock
+            # for same-run serialization, but allow the already-established exact owner to renew
+            # during that deterministic terminal unwind. New lease acquisition still requires a
+            # persisted RUNNING Run, so this does not authorize new execution after terminalization.
+            await self._locked_run(session, run_id)
             task = await self._locked_task(session, run_id, task_name)
             observed_at = await self._database_time(session)
             self._assert_identity(task, owner_id=owner, dispatch_id=dispatch_id)
