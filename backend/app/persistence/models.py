@@ -45,6 +45,12 @@ class ProjectRow(PersistenceBase):
 
 class RunRow(PersistenceBase):
     __tablename__ = "runs"
+    __table_args__ = (
+        CheckConstraint(
+            "event_sequence >= 0",
+            name="ck_runs_event_sequence_nonnegative",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     project_id: Mapped[UUID] = mapped_column(
@@ -180,6 +186,10 @@ class RuntimeEventRow(PersistenceBase):
         CheckConstraint(
             "generation IS NULL OR generation >= 1",
             name="ck_runtime_events_generation",
+        ),
+        CheckConstraint(
+            "schema_version >= 1",
+            name="ck_runtime_events_schema_version",
         ),
         CheckConstraint(
             "task_id IS NOT NULL OR (dispatch_id IS NULL AND generation IS NULL)",
