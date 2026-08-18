@@ -4,12 +4,13 @@ This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The developmen
 
 ## Current position
 
-- Current phase: **Phase 3 — V0.3 Safety, Context and Reliability**
-- Completed item: **Step 3.7 — `run_token` stale-write protection**
-- Next item: **Step 3.8 — Structured run/event logs**
+- Current phase: **Phase 4 — V1.0 Productization**
+- Completed item: **Step 3.8 — Structured run/event logs**
+- Next item: **Step 4.1 — React / TypeScript UI**
 - Phase 2 status: **ACCEPTED / COMPLETE**
-- Phase 3 status: **IN PROGRESS**
-- Step 3.8 status: **NOT STARTED**
+- Phase 3 status: **ACCEPTED / COMPLETE**
+- Phase 4 status: **NOT STARTED**
+- Step 4.1 status: **NOT STARTED**
 - V0.1 status: **ACCEPTED / COMPLETE**
 
 ---
@@ -67,7 +68,9 @@ Frozen Phase 2 boundary:
 
 ---
 
-# Phase 3 — V0.3 Safety, Context and Reliability — IN PROGRESS
+# Phase 3 — V0.3 Safety, Context and Reliability — ACCEPTED / COMPLETE
+
+Phase 3 was completed through PR #18–#25.
 
 | Step | Capability | Status | Merge commit | Final acceptance snapshot |
 | --- | --- | --- | --- | --- |
@@ -78,7 +81,11 @@ Frozen Phase 2 boundary:
 | 3.5 | Redis + Dramatiq Workers | **ACCEPTED** | `51048e4818478c07e2c024d78215a43959a56465` | 258 tests passed |
 | 3.6 | Lease + Heartbeat | **ACCEPTED** | `c7732d3ad832ff4abd159b322c8f39381159ed83` | 270 tests passed |
 | 3.7 | `run_token` stale-write protection | **ACCEPTED** | `31a71bc45b58f8c865a54a972e96678e696f5c66` | 273 tests passed |
-| 3.8 | Structured run/event logs | **NEXT / NOT STARTED** | — | — |
+| 3.8 | Structured run/event logs | **ACCEPTED** | `774ac16bfedcc8d02690ef803fd8f1eee6593158` | 281 tests passed |
+
+Phase 3 completion commit:
+
+`774ac16bfedcc8d02690ef803fd8f1eee6593158`
 
 Detailed accepted design/acceptance documents:
 
@@ -88,206 +95,169 @@ Detailed accepted design/acceptance documents:
 - Step 3.4: `docs/POSTGRESQL_PERSISTENCE.md` and PR #21;
 - Step 3.5: `docs/REDIS_DRAMATIQ_WORKERS.md`, `docs/STEP_3_5_ACCEPTANCE.md`;
 - Step 3.6: `docs/LEASE_HEARTBEAT.md`, `docs/STEP_3_6_ACCEPTANCE.md`;
-- Step 3.7: `docs/RUN_TOKEN_FENCING.md`, `docs/STEP_3_7_ACCEPTANCE.md`.
+- Step 3.7: `docs/RUN_TOKEN_FENCING.md`, `docs/STEP_3_7_ACCEPTANCE.md`;
+- Step 3.8: `docs/STRUCTURED_RUNTIME_EVENTS.md`, `docs/STEP_3_8_ACCEPTANCE.md`.
 
----
+### Frozen Phase 3 boundary
 
-## Step 3.1–3.6 frozen baseline
-
-The accepted baseline entering Step 3.7 already guarantees:
+Phase 3 now guarantees:
 
 1. deterministic project verification executes inside a bounded Docker sandbox;
-2. `ContextPacketBuilder` owns readable scope, context budgets, provenance and truncation evidence;
-3. AST/import relevance may select code regions but cannot widen TaskContract scope;
-4. PostgreSQL stores typed/hash-validated runtime evidence while Git remains repository truth;
-5. `(run_id, evidence_key)` remains the persistence idempotency boundary;
-6. Redis/Dramatiq messages contain only `dispatch_id`, `run_id`, `task_id`;
-7. workers reload Run/Task truth from PostgreSQL rather than trusting queue-carried task bodies;
-8. queued success still requires validated runtime evidence plus actual Git evidence;
-9. per-task PostgreSQL leases provide explicit ownership and heartbeat liveness;
-10. PostgreSQL `clock_timestamp()` is authoritative for lease expiry;
-11. Step 3.6 can classify an execution as EXPIRED/abandoned but deliberately cannot fence its later writes.
+2. context construction is bounded, provenance-aware, and cannot widen TaskContract scope;
+3. AST/import relevance can select useful code regions without becoming a filesystem authority;
+4. PostgreSQL durably stores typed/hash-validated runtime evidence;
+5. Redis/Dramatiq provides process-external delivery while workers reload truth from PostgreSQL;
+6. per-task lease + heartbeat establishes explicit owner/liveness state using PostgreSQL database time;
+7. `run_token` generations fence stale worker writes and make EXPIRED-owner takeover safe;
+8. runtime-owned Git mutations are fenced against stale generations;
+9. accepted Run/Task/Dispatch/Generation/Agent/Verification facts are projected into a compact, append-only structured event timeline;
+10. event logging remains observability only and cannot authorize success or bypass deterministic evidence gates.
 
-Frozen Step 3.6 principle:
+Frozen Phase 3 principles:
 
-> **Lease expiry can prove that ownership is no longer live from the coordinator's point of view; it cannot by itself prove that the old process has lost the technical ability to write.**
+> **Lease establishes liveness; `run_token` establishes write authority.**
+
+> **Typed evidence decides what happened; structured events make that accepted history queryable.**
 
 ---
 
-## Step 3.7 — `run_token` Stale-Write Protection — ACCEPTED
+## Step 3.8 — Structured Run/Event Logs — ACCEPTED
 
-Merged through PR #24: `Phase 3 Step 3.7: add run token stale-write fencing`.
+Merged through PR #25: `Phase 3 Step 3.8: add structured runtime event timeline`.
 
 Squash merge commit:
 
-`31a71bc45b58f8c865a54a972e96678e696f5c66`
+`774ac16bfedcc8d02690ef803fd8f1eee6593158`
 
 Design / acceptance documents:
 
-- `docs/RUN_TOKEN_FENCING.md`
-- `docs/STEP_3_7_ACCEPTANCE.md`
+- `docs/STRUCTURED_RUNTIME_EVENTS.md`
+- `docs/STEP_3_8_ACCEPTANCE.md`
 
-### Accepted fencing architecture
-
-```text
-Redis / Dramatiq delivery
-(dispatch_id, run_id, task_id only)
-        ↓
-PostgreSQL lease acquisition
-        ↓
-TaskLeaseGrant
-  generation = N
-  run_token = T_N
-        ↓
-LeasedQueuedTaskWorker
-        ↓
-current token + ACTIVE DB-time lease required
-        ├── heartbeat / release
-        ├── task-scoped PostgreSQL evidence
-        ├── single-task finalization
-        ├── generation worktree / branch creation
-        └── final Git commit / ref publication
-
-lease expires
-        ↓
-T_N loses write authority
-        ↓
-EXPIRED takeover with fresh dispatch
-        ↓
-generation = N + 1
-run_token = fresh T_(N+1)
-        ↓
-T_N permanently stale
-```
-
-### Ownership-generation guarantees
-
-- an UNOWNED task begins at generation `0` with no token;
-- first acquisition issues generation `1` and a fresh UUID token;
-- an ACTIVE generation remains exclusive;
-- RELEASED ownership remains durable, non-reacquirable history;
-- an EXPIRED generation may be atomically replaced with generation `N+1` and a fresh token;
-- takeover requires a fresh `dispatch_id`, preventing a replacement generation from reusing the abandoned generation's dispatch-scoped evidence namespace;
-- `worker_id` remains auditable owner metadata and is not the fencing credential.
-
-`run_token` is returned directly from PostgreSQL acquisition to the worker process through `TaskLeaseGrant`. It is intentionally excluded from ordinary `TaskLeaseSnapshot` serialization/repr, queue messages, routine logs and branch names.
-
-### PostgreSQL stale-write fencing
-
-Token equality alone is insufficient. Worker-owned writes require both:
-
-1. the exact current task `run_token`; and
-2. an ACTIVE lease according to PostgreSQL database time.
-
-This means lease expiry revokes the old generation's worker-write authority **before** another worker performs takeover.
-
-Accepted fenced worker boundaries include:
-
-- dispatch / worker execution evidence;
-- runtime state-transition evidence;
-- Developer, verification, Reviewer, Repair and failure evidence;
-- leased-task context references;
-- single-task terminal finalization;
-- heartbeat and release.
-
-Fencing occurs before evidence-key idempotency lookup, so a stale generation cannot make a late retry look accepted merely because an identical persistence key already exists.
-
-The Step 3.4 local/non-leased persistence path remains available only when both persisted task state and caller are explicitly token-free. A caller-supplied fabricated token for an UNOWNED task fails closed rather than bypassing fencing through legacy behavior.
-
-### Runtime-owned Git mutation fencing
-
-Step 3.7 fences both Git mutation points owned by the queued runtime:
+### Accepted event architecture
 
 ```text
-git worktree add -b
-        +
-final task commit / branch ref publication
+accepted typed evidence / lease mutation
+        ↓
+same PostgreSQL transaction
+        ↓
+structured runtime event
+        ↓
+Run-scoped monotonic sequence
+        ↓
+queryable timeline
 ```
 
-`PostgresTaskLeaseStore.guard_task_git_mutation()` locks the persisted Run/task, validates current token + live lease + dispatch, and keeps that lock across the bounded Git mutation.
+The timeline is a projection, not a second truth source. Git/worktree still owns code-state truth, typed PostgreSQL evidence owns durable runtime facts, deterministic verification + Reviewer + Git evidence own success decisions, Redis/Dramatiq remains transport, and `run_token` remains a fencing capability.
 
-This closes the ownership check/use race:
+Persisted event correlation includes:
 
-- if generation N enters the guard while live, that Git mutation linearizes before any later takeover;
-- takeover cannot install generation N+1 in the middle of the protected mutation;
-- if N is already expired or stale when it reaches the guard, the Git mutation is rejected.
+```text
+run_id
+task_id
+dispatch_id
+generation
+kind
+source
+level
+sequence
+schema_version
+bounded attributes + SHA-256
+```
 
-A real PostgreSQL + real Git regression proves that after Worker B takeover, stale Worker A cannot even create a new runtime-owned branch ref; the Git ref set remains unchanged by A, while B's current generation can create its workspace and publish its result.
+`run_token` is intentionally excluded from event fields and generated event payloads.
 
-### Generation-scoped worktrees
+### Ordering, idempotency, and integrity
 
-Queued execution identity now incorporates generation identity derived from the token without exposing the token itself in the branch name.
+- `runs.event_sequence` is incremented while the existing Run row lock is held;
+- same-Run accepted facts therefore receive a unique monotonic observable order;
+- `(run_id, event_key)` is the event idempotency boundary;
+- conflicting event-key reuse fails closed;
+- attributes are capped at 16 KiB of canonical JSON;
+- structured sensitive attribute keys are rejected before persistence;
+- event attributes are SHA-256 validated when read;
+- corrupted event rows fail closed as persistence corruption;
+- this ordering is an audit/observability primitive and does **not** claim exactly-once execution.
 
-This lets a valid replacement worker start from the persisted Run base even when an abandoned older generation left a registered/dirty worktree behind. Old-generation artifacts may remain inspectable evidence, but stale generations cannot create new runtime-owned refs or publish accepted result commits after losing the fence.
+### Transactional projection
 
-### Migration boundary
+Newly accepted typed evidence is projected as `EVIDENCE_RECORDED` in the same transaction. The event stores compact metadata and the typed-evidence hash instead of duplicating raw prompts, model outputs, verification stdout/stderr, or source context.
+
+Structured `source` classification distinguishes Developer, Verification, Reviewer, Repair, Dispatch, Worker, Runtime, and Integration facts.
+
+Run lifecycle records `RUN_STARTED` and `RUN_FINALIZED`. Lease lifecycle records `LEASE_ACQUIRED`, `LEASE_HEARTBEAT`, `LEASE_TAKEN_OVER`, and `LEASE_RELEASED` with task/dispatch/generation correlation.
+
+The Step 3.7 terminal-unwind boundary is preserved: after `RUN_FINALIZED`, typed evidence remains append-closed, while the exact current live owner may still persist the outer `LEASE_RELEASED` cleanup event.
+
+### Query boundary
+
+`PostgresEvidenceStore.list_runtime_events()` supports bounded timeline reads by:
+
+- task;
+- dispatch;
+- event kind;
+- event source;
+- `after_sequence` cursor;
+- bounded limit.
+
+This makes the persistence layer ready for later API/SSE consumption without implementing frontend streaming in Step 3.8.
 
 Migration:
 
-`0003_run_token_fencing`
+`0004_structured_runtime_events`
 
-It adds `lease_generation` and `run_token` and tightens the task lease-shape constraint.
-
-Existing Step 3.6-owned rows are upgraded to generation `1` with a database-generated fresh token. A pre-upgrade worker never received that token, so the migration does not create a compatibility path that lets the old process keep writing under the new fencing API.
+The migration does not synthesize historical events for evidence written before Step 3.8.
 
 ### Final acceptance
 
-Final exact-head CI for PR #24:
+Final exact-head CI for PR #25:
 
 - PostgreSQL service: **PASS**;
 - Redis service: **PASS**;
-- Alembic `0001 → 0002 → 0003 → downgrade base → 0001 → 0002 → 0003`: **PASS**;
+- Alembic `0001 → 0002 → 0003 → 0004 → downgrade base → 0001 → 0002 → 0003 → 0004`: **PASS**;
 - verification Docker image build: **PASS**;
 - `ruff check .`: **PASS**;
-- initial/concurrent lease-generation tests: **PASS**;
-- expired-owner takeover + fresh-dispatch regression: **PASS**;
-- stale heartbeat/evidence/finalization regressions: **PASS**;
-- fabricated-token fail-closed regression: **PASS**;
-- real stale Git-mutation fencing regression: **PASS**;
-- real Redis/Dramatiq → worker-internal token propagation: **PASS**;
-- `pytest`: **273 passed in 44.35s, 0 skipped**;
+- structured sensitive-key and 16 KiB bound regressions: **PASS**;
+- evidence-kind → structured-source projection regressions: **PASS**;
+- same-Run concurrent monotonic-sequence regression: **PASS**;
+- lease generation/takeover/no-token-leakage regression: **PASS**;
+- terminal `RUN_FINALIZED → LEASE_RELEASED` cleanup regression with typed evidence append-closed: **PASS**;
+- event attribute corruption detection: **PASS**;
+- `pytest`: **281 passed in 31.34s**;
 - GitHub Actions `Backend Quality`: **SUCCESS**;
-- no paid SiliconFlow API call was required by Step 3.7 acceptance tests.
+- no paid SiliconFlow API call was required by Step 3.8 acceptance tests.
 
-Step 3.7 does **not** claim exactly-once execution. A failed generation may have performed computation or left local artifacts before losing ownership. The accepted guarantee is narrower:
+Frozen Step 3.8 principle:
 
-> **Only the current live execution generation may mutate DevFlow's accepted worker-owned PostgreSQL and runtime-owned Git boundaries.**
-
-Step 3.7 also does not introduce an automatic worker-death redispatch/recovery controller.
-
-Frozen Step 3.7 principle:
-
-> **Lease expiry revokes the old generation's write authority; a fresh token fences the replacement generation so only the current live owner can mutate DevFlow worker state.**
+> **Typed evidence decides what happened; a monotonic structured event projection makes the accepted Run / Task / Dispatch / Generation history queryable without becoming a second success authority.**
 
 ---
 
-## Gate before Step 3.8 — Structured run/event logs
+# Phase 4 — V1.0 Productization — NOT STARTED
 
-Step 3.8 may now build structured observability on top of the accepted persistence, dispatch, ownership and fencing boundaries. It must observe existing truth rather than becoming a second source of lifecycle truth.
+The next roadmap item is **Step 4.1 — React / TypeScript UI**.
 
-Required direction:
+Phase 4 target order from `docs/DEVELOPMENT_PLAN.md`:
 
-```text
-validated runtime / worker / lease / fencing events
-        ↓
-structured event schema
-        ↓
-correlation by run / task / dispatch / generation / stage
-        ↓
-queryable chronological evidence
-        ↓
-future API / SSE / UI consumption
-```
+1. React / TypeScript UI.
+2. Project / New Run / Dashboard / Task Detail pages.
+3. SSE live status/log updates.
+4. DAG visualization.
+5. Diff viewer.
+6. Run metrics.
+7. GitHub branch + Draft PR integration.
+8. Benchmark/demo suite.
 
-Step 3.8 should preserve:
+## Gate before Step 4.1 — React / TypeScript UI
 
-- deterministic runtime state machines as lifecycle authority;
-- PostgreSQL as durable evidence/ownership/fencing authority;
-- Redis/Dramatiq as delivery transport;
-- Git/worktree as code-state truth;
-- current `run_token` as a write fence rather than a logging or success signal;
-- explicit separation between operational telemetry and evidence that can authorize success.
+Step 4.1 should establish the frontend project and quality baseline only. It should consume existing backend concepts without rewriting the accepted runtime, persistence, scheduling, fencing, verification, or event semantics.
 
-Step 3.8 should focus on structured run/event observability and correlation. It must not use logging records to bypass deterministic verification, Reviewer decisions, Git evidence, lease ownership, or token fencing.
+The first productization step should preserve these boundaries:
 
-**Step 3.8 status: NOT STARTED.**
+- frontend state is presentation/client state, never scheduler truth;
+- structured runtime events are observable data, never task-success authority;
+- browser code never receives provider secrets, GitHub credentials, database credentials, or `run_token`;
+- SSE belongs to the later Phase 4 streaming step rather than being smuggled into the initial UI scaffold;
+- GitHub Draft PR publication remains a later dedicated Phase 4 boundary.
+
+**Step 4.1 status: NOT STARTED.**
