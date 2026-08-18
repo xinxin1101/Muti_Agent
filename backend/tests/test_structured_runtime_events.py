@@ -9,6 +9,17 @@ from pydantic import ValidationError
 from sqlalchemy import update
 
 from app.models import (
+    CheckResult,
+    CheckType,
+    DeveloperRunResult,
+    DeveloperStopReason,
+    FailureReport,
+    FailureSource,
+    FailureType,
+    RepairRunResult,
+    RepairStopReason,
+    ReviewDecision,
+    ReviewOutcome,
     RunEvent,
     RuntimeEventDraft,
     RuntimeEventKind,
@@ -16,6 +27,11 @@ from app.models import (
     SingleTaskRunResult,
     TaskContract,
     TaskRunState,
+    VerificationResult,
+    WorkerDispatchEvent,
+    WorkerDispatchPhase,
+    WorkerExecutionEvidence,
+    WorkerExecutionStatus,
 )
 from app.persistence import (
     PersistenceCorruptionError,
@@ -60,7 +76,10 @@ def _success_result(task_id: str) -> SingleTaskRunResult:
     )
 
 
-async def _new_run(store: PostgresEvidenceStore, task_id: str) -> tuple[object, TaskContract]:
+async def _new_run(
+    store: PostgresEvidenceStore,
+    task_id: str,
+) -> tuple[object, TaskContract]:
     task = _task(task_id)
     project_id = await store.ensure_project(
         repository_url=f"https://example.test/{uuid4()}/events.git",
@@ -82,6 +101,17 @@ def test_runtime_event_draft_rejects_sensitive_nested_attributes() -> None:
             source=RuntimeEventSource.RUNTIME,
             message="Do not persist fencing capabilities.",
             attributes={"nested": {"run_token": str(uuid4())}},
+        )
+
+
+def test_runtime_event_draft_rejects_oversized_attributes() -> None:
+    with pytest.raises(ValidationError, match="exceed"):
+        RuntimeEventDraft(
+            event_key="too-large",
+            kind=RuntimeEventKind.EVIDENCE_RECORDED,
+            source=RuntimeEventSource.RUNTIME,
+            message="Keep event metadata bounded.",
+            attributes={"blob": "x" * 17_000},
         )
 
 
@@ -144,6 +174,125 @@ async def _run_evidence_projection() -> None:
         source=RuntimeEventSource.RUNTIME,
     )
     assert len(runtime_only) == 1
+    await store.dispose()
+
+
+def test_evidence_kinds_project_to_distinct_runtime_sources() -> None:
+    asyncio.run(_evidence_source_projection())
+
+
+async def _evidence_source_projection() -> None:
+    store = PostgresEvidenceStore.from_url(_database_url())
+    run_id, task = await _new_run(store, "EVENT-SOURCES")
+    dispatch_id = uuid4()
+
+    developer = DeveloperRunResult(
+        stop_reason=DeveloperStopReason.MODEL_STOP,
+        iterations=1,
+        tool_calls=0,
+    )
+    verification = VerificationResult(
+        passed=True,
+        checks=[
+            CheckResult(
+                check_type=CheckType.TEST,
+                name="pytest",
+                passed=True,
+                exit_code=0,
+            )
+        ],
+    )
+    review = ReviewDecision(decision=ReviewOutcome.PASS, summary="Accepted.")
+    repair = RepairRunResult(
+        attempt=1,
+        failure_types=[FailureType.TEST_FAILURE],
+        stop_reason=RepairStopReason.MODEL_STOP,
+        iterations=1,
+        tool_calls=0,
+    )
+    dispatch = WorkerDispatchEvent(
+        dispatch_id=dispatch_id,
+        run_id=run_id,
+        task_id=task.task_id,
+        phase=WorkerDispatchPhase.RECEIVED,
+    )
+    failure = FailureReport(
+        failure_type=FailureType.TOOL_FAILURE,
+        source=FailureSource.RUNTIME,
+        message="Worker execution failed for source-mapping coverage.",
+        retryable=False,
+    )
+    worker = WorkerExecutionEvidence(
+        dispatch_id=dispatch_id,
+        run_id=run_id,
+        task_id=task.task_id,
+        status=WorkerExecutionStatus.FAILED,
+        base_commit="a" * 40,
+        failures=(failure,),
+        duration_ms=1,
+    )
+
+    fixtures = (
+        (
+            "developer:source",
+            PersistenceEvidenceKind.DEVELOPER_RUN,
+            developer,
+            RuntimeEventSource.AGENT,
+        ),
+        (
+            "verification:source",
+            PersistenceEvidenceKind.VERIFICATION_RESULT,
+            verification,
+            RuntimeEventSource.VERIFICATION,
+        ),
+        (
+            "review:source",
+            PersistenceEvidenceKind.REVIEW_DECISION,
+            review,
+            RuntimeEventSource.REVIEW,
+        ),
+        (
+            "repair:source",
+            PersistenceEvidenceKind.REPAIR_RUN,
+            repair,
+            RuntimeEventSource.REPAIR,
+        ),
+        (
+            "dispatch:source",
+            PersistenceEvidenceKind.DISPATCH_EVENT,
+            dispatch,
+            RuntimeEventSource.DISPATCH,
+        ),
+        (
+            "worker:source",
+            PersistenceEvidenceKind.WORKER_EXECUTION,
+            worker,
+            RuntimeEventSource.WORKER,
+        ),
+    )
+
+    for sequence, (key, kind, payload, _) in enumerate(fixtures):
+        await store.append_evidence(
+            run_id=run_id,
+            task_id=task.task_id,
+            evidence_key=key,
+            kind=kind,
+            payload_model=payload,
+            stage="source-test",
+            sequence=sequence,
+        )
+
+    evidence_events = await store.list_runtime_events(
+        run_id,
+        task_id=task.task_id,
+        kind=RuntimeEventKind.EVIDENCE_RECORDED,
+    )
+    assert [event.source for event in evidence_events] == [
+        expected_source for _, _, _, expected_source in fixtures
+    ]
+    assert [event.attributes["evidence_kind"] for event in evidence_events] == [
+        kind.value for _, kind, _, _ in fixtures
+    ]
     await store.dispose()
 
 
