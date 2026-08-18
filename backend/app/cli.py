@@ -9,11 +9,11 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from app.agents import DeveloperAgent, RepairAgent, ReviewerAgent
-from app.core.settings import get_settings
-from app.models import TaskContract, TaskRunState
+from app.core.settings import Settings, get_settings
+from app.models import DockerSandboxPolicy, TaskContract, TaskRunState
 from app.providers.siliconflow import SiliconFlowDriver
 from app.runtime.orchestrator import SingleTaskOrchestrator
-from app.verification import DeterministicVerifier
+from app.verification import DeterministicVerifier, DockerSandboxRunner
 from app.workspace import LocalGitWorkspace
 
 
@@ -48,6 +48,21 @@ def load_task(path: Path) -> TaskContract:
     return TaskContract.model_validate(payload)
 
 
+def build_verifier(settings: Settings) -> DeterministicVerifier:
+    policy = DockerSandboxPolicy(
+        image=settings.verification_sandbox_image,
+        cpus=settings.verification_sandbox_cpus,
+        memory_mb=settings.verification_sandbox_memory_mb,
+        pids_limit=settings.verification_sandbox_pids_limit,
+        tmpfs_mb=settings.verification_sandbox_tmpfs_mb,
+        shm_mb=settings.verification_sandbox_shm_mb,
+    )
+    return DeterministicVerifier(
+        command_timeout_seconds=settings.verification_sandbox_timeout_seconds,
+        command_runner=DockerSandboxRunner(policy),
+    )
+
+
 async def run_single_task(*, workspace_path: Path, task_path: Path):
     task = load_task(task_path)
     workspace = LocalGitWorkspace(workspace_path)
@@ -57,7 +72,7 @@ async def run_single_task(*, workspace_path: Path, task_path: Path):
     developer = DeveloperAgent(driver=driver, model=settings.developer_model)
     reviewer = ReviewerAgent(driver=driver, model=settings.reviewer_model)
     repair = RepairAgent(driver=driver, model=settings.repair_model)
-    verifier = DeterministicVerifier()
+    verifier = build_verifier(settings)
     orchestrator = SingleTaskOrchestrator(
         developer=developer,
         verifier=verifier,
