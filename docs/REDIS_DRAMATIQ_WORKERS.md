@@ -78,6 +78,11 @@ The production resolver uses:
 <DEVFLOW_WORKSPACE_ROOT>/worktrees/<run_id>/...
 ```
 
+Queued worktree/branch identity is derived from both the persisted `run_id` and the TaskContract
+`task_id`. This preserves the Phase 2 rule that a duplicate execution attempt inside the same run
+collides fail-closed, while allowing a later independent run to reuse the same logical task id
+without colliding with the deliberately retained Git branch from an earlier run.
+
 A successful queued execution is not complete merely because the actor returned. The accepted
 runtime must succeed and the task worktree must be frozen as an actual Git commit.
 
@@ -152,7 +157,8 @@ Step 3.5 acceptance requires both isolated and real-service tests:
 - `StubBroker` dispatcher/actor tests for minimal payload and `max_retries=0`;
 - real Git worktree test proving queued execution leaves the base workspace unchanged and commits
   the successful task branch;
-- duplicate worktree identity test proving replay fails closed;
+- duplicate worktree identity test proving replay in the same run fails closed;
+- distinct-run test proving the same logical `task_id` receives a distinct retained Git identity;
 - real Redis + Dramatiq Worker + PostgreSQL round trip with a fake execution backend, proving the
   process/thread queue boundary without paid model calls;
 - all earlier PostgreSQL, sandbox, Context, Agent, DAG, worktree, merge/conflict, and Human Gate
