@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 from pydantic import SecretStr
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from app.persistence.errors import PersistenceConfigurationError
 
