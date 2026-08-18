@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable
 from pathlib import Path
 from time import perf_counter
@@ -119,14 +120,15 @@ class LocalQueuedTaskExecutionBackend:
         started_at = perf_counter()
         record: TaskWorktreeRecord | None = None
         run_result: SingleTaskRunResult | None = None
+        worktree_identity = self._worktree_identity(run_id, task.task_id)
         try:
             base_workspace = self._workspace_resolver.resolve(project_id)
             worktrees = TaskWorktreeManager(
                 base_workspace,
                 self._worktree_root / str(run_id),
             )
-            record = worktrees.create(task.task_id, base_commit=base_commit)
-            workspace = worktrees.open_workspace(task.task_id)
+            record = worktrees.create(worktree_identity, base_commit=base_commit)
+            workspace = worktrees.open_workspace(worktree_identity)
 
             runner = self._runner_factory(task)
             run_result = await runner.run(task, workspace=workspace)
@@ -144,7 +146,7 @@ class LocalQueuedTaskExecutionBackend:
             if run_result.status is not TaskRunState.SUCCEEDED:
                 raise RuntimeError("single-task runtime returned a non-terminal status")
 
-            commit_sha = worktrees.commit_task_changes(task.task_id)
+            commit_sha = worktrees.commit_task_changes(worktree_identity)
             return WorkerExecutionEvidence(
                 dispatch_id=dispatch_id,
                 run_id=run_id,
@@ -172,6 +174,11 @@ class LocalQueuedTaskExecutionBackend:
                 run_result=run_result,
                 failures=(failure,),
             )
+
+    @staticmethod
+    def _worktree_identity(run_id: UUID, task_id: str) -> str:
+        task_digest = hashlib.sha256(task_id.encode("utf-8")).hexdigest()[:16]
+        return f"run-{run_id.hex}-task-{task_digest}"
 
     def _failure_evidence(
         self,
