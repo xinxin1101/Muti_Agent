@@ -43,11 +43,12 @@ replace it with:
 ```text
 generation = 2
 run_token = fresh UUID
-new worker_id / dispatch_id / timestamps
+new worker_id / fresh dispatch_id / timestamps
 ```
 
 The old token is never reused. ACTIVE ownership is exclusive and RELEASED ownership remains terminal
-history; neither can be silently taken over.
+history; neither can be silently taken over. EXPIRED takeover also requires a fresh `dispatch_id` so
+new-generation evidence cannot reuse the old generation's dispatch-scoped idempotency namespace.
 
 The token is returned directly from PostgreSQL acquisition to the worker process as a
 `TaskLeaseGrant`. It is deliberately excluded from `TaskLeaseSnapshot` and from normal model
@@ -87,17 +88,24 @@ The following operations require the current live token:
 Fencing happens before persistence idempotency lookup. Consequently a stale worker cannot turn a late
 retry into an accepted idempotent write merely because the same evidence key already exists.
 
-Step 3.4 local/non-leased persistence remains compatible: a task that has never acquired a lease has
-no `run_token` and continues to use the existing persistence API without one. Once ownership is
-acquired, the task switches permanently onto the fenced worker-write path.
+Step 3.4 local/non-leased persistence remains compatible only when both sides are explicitly
+non-fenced: a task that has never acquired a lease may use the legacy persistence path when the caller
+provides no `run_token`. Supplying any token for an unowned task fails closed rather than falling back
+to legacy behavior. Once ownership is acquired, the task switches permanently onto the fenced
+worker-write path.
 
-## Git publication fencing
+## Runtime-owned Git mutation fencing
 
-A stale process can also be dangerous if it can publish a late Git task branch after its lease expires.
-Step 3.7 therefore fences the runtime-owned Git publication boundary, not only PostgreSQL writes.
+A stale process can also be dangerous if it can create or publish Git refs after its lease expires.
+`TaskWorktreeManager.create()` performs `git worktree add -b`, so worktree creation is already a Git
+mutation even before a task result is committed. Step 3.7 therefore fences both runtime-owned Git
+mutation points:
 
-Before `TaskWorktreeManager.commit_task_changes()` publishes its branch ref, the backend enters
-`PostgresTaskLeaseStore.guard_task_publication()`.
+1. generation worktree/branch creation; and
+2. final task commit / branch-ref publication.
+
+Before either operation, the backend enters
+`PostgresTaskLeaseStore.guard_task_git_mutation()`.
 
 The guard:
 
@@ -105,15 +113,17 @@ The guard:
 2. requires the Run to remain RUNNING;
 3. locks the task row;
 4. validates the current live token and dispatch;
-5. keeps those PostgreSQL locks while the bounded Git commit/ref publication runs.
+5. keeps those PostgreSQL locks while the bounded Git mutation runs.
 
-Holding the task-row lock across `git update-ref` closes the token-check/use race: an expired-owner
-takeover cannot install generation N+1 between generation N's final ownership check and its Git ref
-publication. If N enters the guard while still live, its publication linearizes before any later
-takeover. If N is already expired/stale when it reaches the guard, publication is rejected.
+Holding the task-row lock across the Git mutation closes the token-check/use race: an expired-owner
+takeover cannot install generation N+1 between generation N's final ownership check and its
+worktree/ref mutation. If N enters the guard while still live, that mutation linearizes before any
+later takeover. If N is already expired/stale when it reaches the guard, the mutation is rejected.
 
-Agents still do not receive unrestricted Git publication capability; this fence protects the
-runtime-owned publication path.
+The accepted real-Git regression requires Git branch refs to remain unchanged when an old generation
+tries to enter the backend after a replacement generation has taken ownership. Agents still do not
+receive unrestricted Git publication capability; this fence protects the runtime-owned Git mutation
+path.
 
 ## Generation-scoped worktrees
 
@@ -128,8 +138,9 @@ run_id + task_id + run_token generation identity
 
 The token itself is not placed in the branch name; only a deterministic digest is used. A new owner
 can therefore create a clean generation-specific worktree even if an abandoned worker left its old
-worktree registered and dirty. Old generation artifacts remain distinguishable evidence but cannot be
-accepted by current-token persistence/publication gates.
+worktree registered and dirty. Old generation artifacts created while that generation was live remain
+distinguishable evidence, but stale generations cannot create new refs or publish result commits after
+they lose the fence.
 
 ## Migration safety
 
@@ -151,10 +162,12 @@ Step 3.7 does not claim exactly-once execution. Work may still be computed more 
 worker failure. The guarantee is narrower and more useful:
 
 > **Only the current live execution generation may publish worker-owned mutable state through DevFlow's
-> accepted PostgreSQL and Git publication boundaries.**
+> accepted PostgreSQL and runtime-owned Git mutation boundaries.**
 
-This step does not add structured streaming/observability, frontend/SSE, embeddings/vector retrieval,
-Agent/AST/RAG expansion, generic automatic merge repair, or a new scheduler.
+Step 3.7 provides the safe takeover primitive, but it does not add an automatic worker-death recovery
+policy or task redispatch controller. This step also does not add structured streaming/observability,
+frontend/SSE, embeddings/vector retrieval, Agent/AST/RAG expansion, generic automatic merge repair,
+or a new scheduler.
 
 ## Frozen source-of-truth boundary
 
