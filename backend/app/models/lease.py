@@ -56,7 +56,9 @@ class TaskLeaseSnapshot(BaseModel):
             return self
 
         if any(value is None for value in owned_values):
-            raise ValueError("owned lease states require owner, dispatch, acquire, heartbeat and expiry")
+            raise ValueError(
+                "owned lease states require owner, dispatch, acquire, heartbeat and expiry"
+            )
         assert self.lease_until is not None
         assert self.heartbeat_at is not None
         assert self.acquired_at is not None
