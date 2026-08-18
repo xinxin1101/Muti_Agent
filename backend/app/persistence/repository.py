@@ -185,7 +185,7 @@ class PostgresEvidenceStore:
 
             if normalized_task is not None:
                 task = await self._locked_task(session, run_id, normalized_task)
-                if task.run_token is not None:
+                if run_token is not None or task.run_token is not None:
                     observed_at = await database_time(session)
                     assert_live_current_run_token(
                         task,
@@ -361,7 +361,7 @@ class PostgresEvidenceStore:
                 )
 
             task = tasks[0]
-            if task.run_token is not None:
+            if run_token is not None or task.run_token is not None:
                 observed_at = await database_time(session)
                 assert_live_current_run_token(
                     task,
