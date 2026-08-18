@@ -84,6 +84,7 @@ class IntegrationGateSnapshot(BaseModel):
     policy: IntegrationPolicyDecision
     state: IntegrationGateState
     human_decision: HumanIntegrationDecision | None = None
+    repair_may_start: bool = False
     integration_may_advance: Literal[False] = False
 
     @model_validator(mode="after")
@@ -96,6 +97,8 @@ class IntegrationGateSnapshot(BaseModel):
                 raise ValueError("auto-repair candidate state requires matching policy route")
             if self.human_decision is not None:
                 raise ValueError("auto-repair candidate state must not contain a human decision")
+            if not self.repair_may_start:
+                raise ValueError("auto-repair candidate state must permit a later repair attempt")
             return self
 
         if self.policy.route is not IntegrationPolicyRoute.HUMAN_REQUIRED:
@@ -104,6 +107,8 @@ class IntegrationGateSnapshot(BaseModel):
         if self.state is IntegrationGateState.AWAITING_HUMAN:
             if self.human_decision is not None:
                 raise ValueError("awaiting-human state must not contain a human decision")
+            if self.repair_may_start:
+                raise ValueError("repair must remain blocked while awaiting a human decision")
             return self
 
         if self.human_decision is None:
@@ -119,4 +124,6 @@ class IntegrationGateSnapshot(BaseModel):
         }[self.state]
         if self.human_decision.decision is not expected:
             raise ValueError("human decision is inconsistent with integration gate state")
+        if self.repair_may_start != (expected is HumanGateDecision.AUTHORIZE_REPAIR):
+            raise ValueError("repair permission must match the explicit human decision")
         return self
