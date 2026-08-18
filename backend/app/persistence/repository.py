@@ -14,11 +14,7 @@ from sqlalchemy.sql import func
 from app.models.run import SingleTaskRunResult
 from app.models.task import TaskContract
 from app.persistence.database import create_postgres_engine, create_session_factory
-from app.persistence.errors import (
-    PersistenceConflictError,
-    PersistenceCorruptionError,
-    PersistenceError,
-)
+from app.persistence.errors import PersistenceConflictError, PersistenceCorruptionError
 from app.persistence.models import EvidenceRow, ProjectRow, RunRow, TaskRow
 from app.persistence.serialization import (
     canonical_payload,
@@ -154,7 +150,8 @@ class PostgresEvidenceStore:
                     )
         except IntegrityError as exc:
             raise PersistenceConflictError(
-                f"run identity already exists or violates persistence constraints: {candidate_run_id}"
+                "run identity already exists or violates persistence constraints: "
+                f"{candidate_run_id}"
             ) from exc
         return candidate_run_id
 
