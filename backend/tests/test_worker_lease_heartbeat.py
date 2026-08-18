@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -30,7 +30,7 @@ def _envelope(task_id: str = "LEASE-WORKER") -> TaskDispatchEnvelope:
 
 
 def _active_snapshot(envelope: TaskDispatchEnvelope, owner_id: str) -> TaskLeaseSnapshot:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return TaskLeaseSnapshot(
         run_id=envelope.run_id,
         task_id=envelope.task_id,
@@ -45,7 +45,7 @@ def _active_snapshot(envelope: TaskDispatchEnvelope, owner_id: str) -> TaskLease
 
 
 def _released_snapshot(envelope: TaskDispatchEnvelope, owner_id: str) -> TaskLeaseSnapshot:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return TaskLeaseSnapshot(
         run_id=envelope.run_id,
         task_id=envelope.task_id,
