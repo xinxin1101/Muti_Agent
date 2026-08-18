@@ -4,6 +4,7 @@ from app.persistence.errors import (
     PersistenceConflictError,
     PersistenceCorruptionError,
     PersistenceError,
+    StaleRunTokenError,
     TaskLeaseConflictError,
     TaskLeaseExpiredError,
 )
@@ -31,6 +32,7 @@ __all__ = [
     "PersistenceEvidenceKind",
     "PostgresEvidenceStore",
     "PostgresTaskLeaseStore",
+    "StaleRunTokenError",
     "TaskLeaseConflictError",
     "TaskLeaseExpiredError",
     "create_postgres_engine",
