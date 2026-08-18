@@ -10,6 +10,7 @@ from sqlalchemy import update
 from app.models import (
     CheckResult,
     CheckType,
+    ContextUsage,
     DeveloperRunResult,
     DeveloperStopReason,
     MergeQueueSnapshot,
@@ -32,7 +33,6 @@ from app.persistence import (
 from app.persistence.database import create_postgres_engine, create_session_factory
 from app.persistence.models import EvidenceRow
 from app.persistence.serialization import decode_terminal_result
-from app.models.context import ContextUsage
 
 
 def _database_url() -> str:
