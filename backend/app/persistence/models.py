@@ -80,14 +80,17 @@ class TaskRow(PersistenceBase):
             "("
             "lease_owner IS NULL AND lease_dispatch_id IS NULL "
             "AND lease_acquired_at IS NULL AND heartbeat_at IS NULL "
-            "AND lease_until IS NULL AND lease_released_at IS NULL"
+            "AND lease_until IS NULL AND lease_released_at IS NULL "
+            "AND run_token IS NULL AND lease_generation = 0"
             ") OR ("
             "lease_owner IS NOT NULL AND lease_dispatch_id IS NOT NULL "
             "AND lease_acquired_at IS NOT NULL AND heartbeat_at IS NOT NULL "
-            "AND lease_until IS NOT NULL"
+            "AND lease_until IS NOT NULL AND run_token IS NOT NULL "
+            "AND lease_generation >= 1"
             ")",
             name="ck_tasks_lease_shape",
         ),
+        UniqueConstraint("run_token", name="uq_tasks_run_token"),
         Index("ix_tasks_lease_until", "lease_until"),
     )
 
@@ -101,6 +104,8 @@ class TaskRow(PersistenceBase):
     contract_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     lease_owner: Mapped[str | None] = mapped_column(String(255), nullable=True)
     lease_dispatch_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    lease_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    run_token: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     lease_acquired_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

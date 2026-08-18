@@ -45,7 +45,7 @@ from app.models.integration_gate import (
     IntegrationPolicyDecision,
     IntegrationPolicyRoute,
 )
-from app.models.lease import TaskLeaseSnapshot, TaskLeaseState
+from app.models.lease import TaskLeaseGrant, TaskLeaseSnapshot, TaskLeaseState
 from app.models.merge import MergeAttemptOutcome, MergeQueueAttempt, MergeQueueSnapshot
 from app.models.repair import RepairRunResult, RepairStopReason
 from app.models.review import (
@@ -132,6 +132,7 @@ __all__ = [
     "TaskDAG",
     "TaskDispatchEnvelope",
     "TaskDispatchReceipt",
+    "TaskLeaseGrant",
     "TaskLeaseSnapshot",
     "TaskLeaseState",
     "TaskNode",

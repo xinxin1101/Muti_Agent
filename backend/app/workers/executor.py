@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from time import perf_counter
 from typing import Protocol
@@ -18,6 +20,7 @@ from app.models.dispatch import (
     WorkerExecutionStatus,
 )
 from app.models.failure import FailureReport, FailureSource, FailureType
+from app.models.lease import TaskLeaseSnapshot
 from app.models.run import SingleTaskRunResult, TaskRunState
 from app.models.task import TaskContract
 from app.persistence import PersistenceEvidenceKind
@@ -38,6 +41,17 @@ class ProjectWorkspaceResolver(Protocol):
     def resolve(self, project_id: UUID) -> LocalGitWorkspace: ...
 
 
+class TaskGitMutationFence(Protocol):
+    def guard_task_git_mutation(
+        self,
+        *,
+        run_id: UUID,
+        task_id: str,
+        dispatch_id: UUID,
+        run_token: UUID,
+    ) -> AbstractAsyncContextManager[TaskLeaseSnapshot]: ...
+
+
 class QueuedTaskExecutionBackend(Protocol):
     async def execute(
         self,
@@ -46,6 +60,7 @@ class QueuedTaskExecutionBackend(Protocol):
         project_id: UUID,
         run_id: UUID,
         dispatch_id: UUID,
+        run_token: UUID,
         base_commit: str,
     ) -> WorkerExecutionEvidence: ...
 
@@ -63,6 +78,7 @@ class WorkerEvidenceStore(Protocol):
         task_id: str | None = None,
         stage: str | None = None,
         sequence: int | None = None,
+        run_token: UUID | None = None,
     ) -> int: ...
 
     async def finalize_single_task_run(
@@ -70,6 +86,7 @@ class WorkerEvidenceStore(Protocol):
         *,
         run_id: UUID,
         result: SingleTaskRunResult,
+        run_token: UUID | None = None,
     ) -> None: ...
 
 
@@ -91,7 +108,7 @@ class ManagedProjectWorkspaceResolver:
 
 
 class LocalQueuedTaskExecutionBackend:
-    """Execute one persisted task through the accepted worktree + single-task runtime."""
+    """Execute one fenced persisted generation through worktree + single-task runtime."""
 
     def __init__(
         self,
@@ -99,6 +116,7 @@ class LocalQueuedTaskExecutionBackend:
         workspace_resolver: ProjectWorkspaceResolver,
         worktree_root: str | Path,
         runner_factory: Callable[[TaskContract], SingleTaskRunner],
+        git_fence: TaskGitMutationFence,
     ) -> None:
         root = Path(worktree_root).expanduser()
         if root.exists() and root.is_symlink():
@@ -107,6 +125,7 @@ class LocalQueuedTaskExecutionBackend:
         self._workspace_resolver = workspace_resolver
         self._worktree_root = root.resolve()
         self._runner_factory = runner_factory
+        self._git_fence = git_fence
 
     async def execute(
         self,
@@ -115,12 +134,13 @@ class LocalQueuedTaskExecutionBackend:
         project_id: UUID,
         run_id: UUID,
         dispatch_id: UUID,
+        run_token: UUID,
         base_commit: str,
     ) -> WorkerExecutionEvidence:
         started_at = perf_counter()
         record: TaskWorktreeRecord | None = None
         run_result: SingleTaskRunResult | None = None
-        worktree_identity = self._worktree_identity(run_id, task.task_id)
+        worktree_identity = self._worktree_identity(run_id, task.task_id, run_token)
         try:
             base_workspace = self._workspace_resolver.resolve(project_id)
             worktrees = TaskWorktreeManager(
@@ -128,7 +148,16 @@ class LocalQueuedTaskExecutionBackend:
                 self._worktree_root / str(run_id),
                 frozen_base_commit=base_commit,
             )
-            record = worktrees.create(worktree_identity)
+
+            # `git worktree add -b` creates a branch ref, so workspace creation is itself a
+            # runtime-owned Git mutation and must be fenced against stale generations.
+            async with self._git_fence.guard_task_git_mutation(
+                run_id=run_id,
+                task_id=task.task_id,
+                dispatch_id=dispatch_id,
+                run_token=run_token,
+            ):
+                record = await asyncio.to_thread(worktrees.create, worktree_identity)
             workspace = worktrees.open_workspace(worktree_identity)
 
             runner = self._runner_factory(task)
@@ -147,7 +176,18 @@ class LocalQueuedTaskExecutionBackend:
             if run_result.status is not TaskRunState.SUCCEEDED:
                 raise RuntimeError("single-task runtime returned a non-terminal status")
 
-            commit_sha = worktrees.commit_task_changes(worktree_identity)
+            # The database task-row lock is held while Git publishes the generation result.
+            # Takeover therefore cannot replace the token between validation and update-ref.
+            async with self._git_fence.guard_task_git_mutation(
+                run_id=run_id,
+                task_id=task.task_id,
+                dispatch_id=dispatch_id,
+                run_token=run_token,
+            ):
+                commit_sha = await asyncio.to_thread(
+                    worktrees.commit_task_changes,
+                    worktree_identity,
+                )
             return WorkerExecutionEvidence(
                 dispatch_id=dispatch_id,
                 run_id=run_id,
@@ -162,7 +202,7 @@ class LocalQueuedTaskExecutionBackend:
             )
         except Exception as exc:
             failure = self._runtime_failure(
-                "Queued worker execution failed before successful task-branch finalization.",
+                "Queued worker execution failed before fenced task-branch finalization.",
                 evidence=[f"exception_type={type(exc).__name__}"],
             )
             return self._failure_evidence(
@@ -177,9 +217,11 @@ class LocalQueuedTaskExecutionBackend:
             )
 
     @staticmethod
-    def _worktree_identity(run_id: UUID, task_id: str) -> str:
-        task_digest = hashlib.sha256(task_id.encode("utf-8")).hexdigest()[:16]
-        return f"run-{run_id.hex}-task-{task_digest}"
+    def _worktree_identity(run_id: UUID, task_id: str, run_token: UUID) -> str:
+        generation_digest = hashlib.sha256(
+            f"{task_id}:{run_token.hex}".encode()
+        ).hexdigest()[:16]
+        return f"run-{run_id.hex}-generation-{generation_digest}"
 
     def _failure_evidence(
         self,
@@ -222,7 +264,7 @@ class LocalQueuedTaskExecutionBackend:
 
 
 class QueuedTaskWorker:
-    """Reload persisted identity, execute existing runtime, and persist typed worker evidence."""
+    """Reload persisted identity and persist only writes authorized by the current token."""
 
     def __init__(
         self,
@@ -233,7 +275,12 @@ class QueuedTaskWorker:
         self._store = store
         self._backend = backend
 
-    async def execute(self, envelope: TaskDispatchEnvelope) -> WorkerExecutionEvidence:
+    async def execute(
+        self,
+        envelope: TaskDispatchEnvelope,
+        *,
+        run_token: UUID,
+    ) -> WorkerExecutionEvidence:
         snapshot = await self._store.load_run(envelope.run_id)
         if snapshot.status is not PersistedRunStatus.RUNNING:
             raise WorkerExecutionBoundaryError("worker may execute only persisted RUNNING runs")
@@ -241,6 +288,7 @@ class QueuedTaskWorker:
         task = self._task_from_snapshot(snapshot, envelope.task_id)
         await self._record_dispatch_event(
             envelope,
+            run_token=run_token,
             phase=WorkerDispatchPhase.RECEIVED,
         )
 
@@ -249,10 +297,11 @@ class QueuedTaskWorker:
             project_id=snapshot.project_id,
             run_id=snapshot.run_id,
             dispatch_id=envelope.dispatch_id,
+            run_token=run_token,
             base_commit=snapshot.base_commit,
         )
         execution = raw_execution
-        await self._persist_runtime_result(envelope, execution.run_result)
+        await self._persist_runtime_result(envelope, execution.run_result, run_token=run_token)
         await self._store.append_evidence(
             run_id=envelope.run_id,
             task_id=envelope.task_id,
@@ -260,9 +309,11 @@ class QueuedTaskWorker:
             kind=PersistenceEvidenceKind.WORKER_EXECUTION,
             payload_model=execution,
             stage="worker",
+            run_token=run_token,
         )
         await self._record_dispatch_event(
             envelope,
+            run_token=run_token,
             phase=WorkerDispatchPhase.COMPLETED,
             outcome=execution.status,
         )
@@ -284,6 +335,7 @@ class QueuedTaskWorker:
             await self._store.finalize_single_task_run(
                 run_id=envelope.run_id,
                 result=execution.run_result,
+                run_token=run_token,
             )
         return execution
 
@@ -300,6 +352,7 @@ class QueuedTaskWorker:
         self,
         envelope: TaskDispatchEnvelope,
         *,
+        run_token: UUID,
         phase: WorkerDispatchPhase,
         outcome: WorkerExecutionStatus | None = None,
     ) -> None:
@@ -317,12 +370,15 @@ class QueuedTaskWorker:
             kind=PersistenceEvidenceKind.DISPATCH_EVENT,
             payload_model=event,
             stage="worker",
+            run_token=run_token,
         )
 
     async def _persist_runtime_result(
         self,
         envelope: TaskDispatchEnvelope,
         result: SingleTaskRunResult | None,
+        *,
+        run_token: UUID,
     ) -> None:
         if result is None:
             return
@@ -337,6 +393,7 @@ class QueuedTaskWorker:
                 payload_model=event,
                 stage="runtime",
                 sequence=event.sequence,
+                run_token=run_token,
             )
 
         if result.developer is not None:
@@ -347,6 +404,7 @@ class QueuedTaskWorker:
                 kind=PersistenceEvidenceKind.DEVELOPER_RUN,
                 payload_model=result.developer,
                 stage="developer",
+                run_token=run_token,
             )
 
         for index, verification in enumerate(result.verifications):
@@ -358,6 +416,7 @@ class QueuedTaskWorker:
                 payload_model=verification,
                 stage="verification",
                 sequence=index,
+                run_token=run_token,
             )
 
         for index, review in enumerate(result.reviews):
@@ -369,6 +428,7 @@ class QueuedTaskWorker:
                 payload_model=review,
                 stage="review",
                 sequence=index,
+                run_token=run_token,
             )
 
         for repair in result.repairs:
@@ -380,6 +440,7 @@ class QueuedTaskWorker:
                 payload_model=repair,
                 stage="repair",
                 sequence=repair.attempt,
+                run_token=run_token,
             )
 
         for index, failure in enumerate(result.failures):
@@ -391,4 +452,5 @@ class QueuedTaskWorker:
                 payload_model=failure,
                 stage="runtime",
                 sequence=index,
+                run_token=run_token,
             )

@@ -10,7 +10,7 @@ from app.models import (
     RunEvent,
     SingleTaskRunResult,
     TaskContract,
-    TaskLeaseSnapshot,
+    TaskLeaseGrant,
     TaskLeaseState,
     TaskRunState,
 )
@@ -18,8 +18,8 @@ from app.persistence import (
     PersistenceEvidenceKind,
     PostgresEvidenceStore,
     PostgresTaskLeaseStore,
+    StaleRunTokenError,
     TaskLeaseConflictError,
-    TaskLeaseExpiredError,
 )
 
 
@@ -35,13 +35,24 @@ def _database_url() -> str:
 def _task(task_id: str) -> TaskContract:
     return TaskContract(
         task_id=task_id,
-        objective="Exercise durable task execution ownership.",
+        objective="Exercise durable fenced task execution ownership.",
         readable_files=["src/**"],
         writable_files=["src/service.py"],
         readonly_files=["tests/**"],
-        acceptance_criteria=["Lease behavior remains deterministic."],
+        acceptance_criteria=["Lease and fencing behavior remains deterministic."],
         verification_commands=["pytest -q"],
         max_retries=1,
+    )
+
+
+def _terminal_result(task_id: str, *, status: TaskRunState) -> SingleTaskRunResult:
+    return SingleTaskRunResult(
+        task_id=task_id,
+        status=status,
+        events=[
+            RunEvent(sequence=0, state=TaskRunState.PENDING, detail="Created."),
+            RunEvent(sequence=1, state=status, detail="Completed."),
+        ],
     )
 
 
@@ -76,25 +87,29 @@ async def _lease_lifecycle() -> None:
 
     initial = await lease_store.inspect_task_lease(run_id=run_id, task_id=task.task_id)
     assert initial.state is TaskLeaseState.UNOWNED
+    assert initial.generation == 0
     assert initial.owner_id is None
     assert initial.abandoned is False
 
-    acquired = await lease_store.acquire_task_lease(
+    grant = await lease_store.acquire_task_lease(
         run_id=run_id,
         task_id=task.task_id,
         owner_id="worker-a",
         dispatch_id=dispatch_id,
         lease_seconds=1.0,
     )
+    acquired = grant.snapshot
     assert acquired.state is TaskLeaseState.ACTIVE
+    assert acquired.generation == 1
     assert acquired.owner_id == "worker-a"
     assert acquired.dispatch_id == dispatch_id
     assert acquired.heartbeat_at == acquired.acquired_at
     assert acquired.lease_until is not None
     assert acquired.heartbeat_at is not None
     assert acquired.lease_until > acquired.heartbeat_at
+    assert "run_token" not in grant.model_dump()
 
-    with pytest.raises(TaskLeaseConflictError, match="already has lease history"):
+    with pytest.raises(TaskLeaseConflictError, match="ACTIVE"):
         await lease_store.acquire_task_lease(
             run_id=run_id,
             task_id=task.task_id,
@@ -109,9 +124,11 @@ async def _lease_lifecycle() -> None:
         task_id=task.task_id,
         owner_id="worker-a",
         dispatch_id=dispatch_id,
+        run_token=grant.run_token,
         lease_seconds=1.0,
     )
     assert renewed.state is TaskLeaseState.ACTIVE
+    assert renewed.generation == 1
     assert renewed.heartbeat_at is not None
     assert acquired.heartbeat_at is not None
     assert renewed.heartbeat_at > acquired.heartbeat_at
@@ -125,6 +142,7 @@ async def _lease_lifecycle() -> None:
             task_id=task.task_id,
             owner_id="worker-b",
             dispatch_id=dispatch_id,
+            run_token=grant.run_token,
             lease_seconds=1.0,
         )
     with pytest.raises(TaskLeaseConflictError, match="different worker or dispatch"):
@@ -133,6 +151,7 @@ async def _lease_lifecycle() -> None:
             task_id=task.task_id,
             owner_id="worker-a",
             dispatch_id=uuid4(),
+            run_token=grant.run_token,
         )
 
     released = await lease_store.release_task_lease(
@@ -140,8 +159,10 @@ async def _lease_lifecycle() -> None:
         task_id=task.task_id,
         owner_id="worker-a",
         dispatch_id=dispatch_id,
+        run_token=grant.run_token,
     )
     assert released.state is TaskLeaseState.RELEASED
+    assert released.generation == 1
     assert released.released_at is not None
 
     repeated_release = await lease_store.release_task_lease(
@@ -149,6 +170,7 @@ async def _lease_lifecycle() -> None:
         task_id=task.task_id,
         owner_id="worker-a",
         dispatch_id=dispatch_id,
+        run_token=grant.run_token,
     )
     expected_repeat = released.model_copy(update={"observed_at": repeated_release.observed_at})
     assert repeated_release == expected_repeat
@@ -159,9 +181,10 @@ async def _lease_lifecycle() -> None:
             task_id=task.task_id,
             owner_id="worker-a",
             dispatch_id=dispatch_id,
+            run_token=grant.run_token,
             lease_seconds=1.0,
         )
-    with pytest.raises(TaskLeaseConflictError, match="already has lease history"):
+    with pytest.raises(TaskLeaseConflictError, match="released"):
         await lease_store.acquire_task_lease(
             run_id=run_id,
             task_id=task.task_id,
@@ -176,12 +199,13 @@ async def _lease_lifecycle() -> None:
         TaskLeaseState.RELEASED,
         TaskLeaseState.UNOWNED,
     ]
+    assert [item.generation for item in all_leases] == [1, 0]
 
     await lease_store.dispose()
     await evidence_store.dispose()
 
 
-def test_concurrent_task_lease_acquisition_has_exactly_one_owner() -> None:
+def test_concurrent_initial_acquisition_has_exactly_one_generation_one_owner() -> None:
     asyncio.run(_concurrent_acquisition())
 
 
@@ -200,7 +224,7 @@ async def _concurrent_acquisition() -> None:
         *,
         owner_id: str,
         dispatch_id: UUID,
-    ) -> TaskLeaseSnapshot | TaskLeaseConflictError:
+    ) -> TaskLeaseGrant | TaskLeaseConflictError:
         try:
             return await store.acquire_task_lease(
                 run_id=run_id,
@@ -216,102 +240,158 @@ async def _concurrent_acquisition() -> None:
         attempt(first_store, owner_id="worker-race-a", dispatch_id=first_dispatch),
         attempt(second_store, owner_id="worker-race-b", dispatch_id=second_dispatch),
     )
-    winners = [item for item in outcomes if isinstance(item, TaskLeaseSnapshot)]
+    winners = [item for item in outcomes if isinstance(item, TaskLeaseGrant)]
     conflicts = [item for item in outcomes if isinstance(item, TaskLeaseConflictError)]
 
     assert len(winners) == 1
     assert len(conflicts) == 1
     winner = winners[0]
-    assert winner.state is TaskLeaseState.ACTIVE
+    assert winner.snapshot.state is TaskLeaseState.ACTIVE
+    assert winner.snapshot.generation == 1
 
     observed = await first_store.inspect_task_lease(run_id=run_id, task_id=task.task_id)
     assert observed.state is TaskLeaseState.ACTIVE
-    assert observed.owner_id == winner.owner_id
-    assert observed.dispatch_id == winner.dispatch_id
+    assert observed.generation == 1
+    assert observed.owner_id == winner.snapshot.owner_id
+    assert observed.dispatch_id == winner.snapshot.dispatch_id
 
     await second_store.dispose()
     await first_store.dispose()
     await evidence_store.dispose()
 
 
-def test_expired_lease_is_abandoned_but_not_reassigned_or_resurrected() -> None:
-    asyncio.run(_expired_lease_boundary())
+def test_expired_generation_is_fenced_then_safely_taken_over() -> None:
+    asyncio.run(_expired_takeover_fencing())
 
 
-async def _expired_lease_boundary() -> None:
+async def _expired_takeover_fencing() -> None:
     database_url = _database_url()
     evidence_store = PostgresEvidenceStore.from_url(database_url)
     lease_store = PostgresTaskLeaseStore.from_url(database_url)
-    run_id, tasks = await _new_run(evidence_store, "LEASE-EXPIRED")
+    run_id, tasks = await _new_run(evidence_store, "LEASE-TAKEOVER")
     task = tasks[0]
-    dispatch_id = uuid4()
+    old_dispatch = uuid4()
 
-    await lease_store.acquire_task_lease(
+    old_grant = await lease_store.acquire_task_lease(
         run_id=run_id,
         task_id=task.task_id,
         owner_id="worker-old",
-        dispatch_id=dispatch_id,
+        dispatch_id=old_dispatch,
         lease_seconds=0.05,
     )
+    assert old_grant.snapshot.generation == 1
     await asyncio.sleep(0.08)
 
     expired = await lease_store.inspect_task_lease(run_id=run_id, task_id=task.task_id)
     assert expired.state is TaskLeaseState.EXPIRED
+    assert expired.generation == 1
     assert expired.abandoned is True
-    assert expired.owner_id == "worker-old"
-    assert expired.dispatch_id == dispatch_id
 
-    expired_rows = await lease_store.list_expired_task_leases(run_id=run_id)
-    assert len(expired_rows) == 1
-    assert expired_rows[0].task_id == task.task_id
-    assert expired_rows[0].state is TaskLeaseState.EXPIRED
+    # Expiry itself removes write authority, even before another worker takes over.
+    with pytest.raises(StaleRunTokenError, match="expired"):
+        await evidence_store.append_evidence(
+            run_id=run_id,
+            task_id=task.task_id,
+            evidence_key="old:expired-before-takeover",
+            kind=PersistenceEvidenceKind.STATE_TRANSITION,
+            payload_model=RunEvent(
+                sequence=0,
+                state=TaskRunState.RUNNING,
+                detail="Old generation must be fenced after lease expiry.",
+            ),
+            stage="fencing",
+            sequence=0,
+            run_token=old_grant.run_token,
+        )
 
-    with pytest.raises(TaskLeaseExpiredError, match="cannot be resurrected"):
+    new_dispatch = uuid4()
+    new_grant = await lease_store.acquire_task_lease(
+        run_id=run_id,
+        task_id=task.task_id,
+        owner_id="worker-new",
+        dispatch_id=new_dispatch,
+        lease_seconds=1.0,
+    )
+    assert new_grant.snapshot.state is TaskLeaseState.ACTIVE
+    assert new_grant.snapshot.generation == 2
+    assert new_grant.run_token != old_grant.run_token
+
+    with pytest.raises(StaleRunTokenError, match="stale"):
         await lease_store.renew_task_lease(
             run_id=run_id,
             task_id=task.task_id,
             owner_id="worker-old",
-            dispatch_id=dispatch_id,
-            lease_seconds=1.0,
-        )
-    with pytest.raises(TaskLeaseExpiredError, match="remain EXPIRED"):
-        await lease_store.release_task_lease(
-            run_id=run_id,
-            task_id=task.task_id,
-            owner_id="worker-old",
-            dispatch_id=dispatch_id,
-        )
-    with pytest.raises(TaskLeaseConflictError, match="already has lease history"):
-        await lease_store.acquire_task_lease(
-            run_id=run_id,
-            task_id=task.task_id,
-            owner_id="worker-new",
-            dispatch_id=uuid4(),
+            dispatch_id=old_dispatch,
+            run_token=old_grant.run_token,
             lease_seconds=1.0,
         )
 
-    # Step 3.6 deliberately proves only ownership/liveness. Existing evidence writes are not
-    # run_token-fenced yet, so an old caller can still append after its lease expired.
-    evidence_id = await evidence_store.append_evidence(
+    stale_event = RunEvent(
+        sequence=1,
+        state=TaskRunState.RUNNING,
+        detail="Stale generation must not persist evidence after takeover.",
+    )
+    with pytest.raises(StaleRunTokenError, match="stale"):
+        await evidence_store.append_evidence(
+            run_id=run_id,
+            task_id=task.task_id,
+            evidence_key="old:after-takeover",
+            kind=PersistenceEvidenceKind.STATE_TRANSITION,
+            payload_model=stale_event,
+            stage="fencing",
+            sequence=1,
+            run_token=old_grant.run_token,
+        )
+
+    with pytest.raises(StaleRunTokenError, match="stale"):
+        await evidence_store.finalize_single_task_run(
+            run_id=run_id,
+            result=_terminal_result(task.task_id, status=TaskRunState.SUCCEEDED),
+            run_token=old_grant.run_token,
+        )
+
+    current_event = RunEvent(
+        sequence=2,
+        state=TaskRunState.RUNNING,
+        detail="Current generation may persist evidence.",
+    )
+    current_id = await evidence_store.append_evidence(
         run_id=run_id,
         task_id=task.task_id,
-        evidence_key="step-3-7-boundary:stale-write-still-possible",
+        evidence_key="new:current-token",
         kind=PersistenceEvidenceKind.STATE_TRANSITION,
-        payload_model=RunEvent(
-            sequence=0,
-            state=TaskRunState.RUNNING,
-            detail="Step 3.6 does not yet fence stale writers.",
-        ),
-        stage="step-3-7-boundary",
-        sequence=0,
+        payload_model=current_event,
+        stage="fencing",
+        sequence=2,
+        run_token=new_grant.run_token,
     )
-    assert evidence_id >= 1
+    repeated_id = await evidence_store.append_evidence(
+        run_id=run_id,
+        task_id=task.task_id,
+        evidence_key="new:current-token",
+        kind=PersistenceEvidenceKind.STATE_TRANSITION,
+        payload_model=current_event,
+        stage="fencing",
+        sequence=2,
+        run_token=new_grant.run_token,
+    )
+    assert repeated_id == current_id
+
+    renewed = await lease_store.renew_task_lease(
+        run_id=run_id,
+        task_id=task.task_id,
+        owner_id="worker-new",
+        dispatch_id=new_dispatch,
+        run_token=new_grant.run_token,
+        lease_seconds=1.0,
+    )
+    assert renewed.generation == 2
 
     await lease_store.dispose()
     await evidence_store.dispose()
 
 
-def test_terminal_run_rejects_new_lease_but_allows_owned_lease_cleanup() -> None:
+def test_terminal_run_rejects_new_generation_but_allows_current_generation_cleanup() -> None:
     asyncio.run(_terminal_run_lease_boundary())
 
 
@@ -323,40 +403,37 @@ async def _terminal_run_lease_boundary() -> None:
     task = tasks[0]
     dispatch_id = uuid4()
 
-    acquired = await lease_store.acquire_task_lease(
+    grant = await lease_store.acquire_task_lease(
         run_id=run_id,
         task_id=task.task_id,
         owner_id="worker-terminal",
         dispatch_id=dispatch_id,
         lease_seconds=1.0,
     )
-    result = SingleTaskRunResult(
-        task_id=task.task_id,
-        status=TaskRunState.SUCCEEDED,
-        events=[
-            RunEvent(sequence=0, state=TaskRunState.PENDING, detail="Created."),
-            RunEvent(sequence=1, state=TaskRunState.SUCCEEDED, detail="Completed."),
-        ],
+    result = _terminal_result(task.task_id, status=TaskRunState.SUCCEEDED)
+    await evidence_store.finalize_single_task_run(
+        run_id=run_id,
+        result=result,
+        run_token=grant.run_token,
     )
-    await evidence_store.finalize_single_task_run(run_id=run_id, result=result)
 
     renewed = await lease_store.renew_task_lease(
         run_id=run_id,
         task_id=task.task_id,
         owner_id="worker-terminal",
         dispatch_id=dispatch_id,
+        run_token=grant.run_token,
         lease_seconds=1.0,
     )
     assert renewed.state is TaskLeaseState.ACTIVE
-    assert renewed.heartbeat_at is not None
-    assert acquired.heartbeat_at is not None
-    assert renewed.heartbeat_at >= acquired.heartbeat_at
+    assert renewed.generation == 1
 
     released = await lease_store.release_task_lease(
         run_id=run_id,
         task_id=task.task_id,
         owner_id="worker-terminal",
         dispatch_id=dispatch_id,
+        run_token=grant.run_token,
     )
     assert released.state is TaskLeaseState.RELEASED
 

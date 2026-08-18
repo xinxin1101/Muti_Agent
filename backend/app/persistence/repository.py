@@ -15,6 +15,7 @@ from app.models.run import SingleTaskRunResult
 from app.models.task import TaskContract
 from app.persistence.database import create_postgres_engine, create_session_factory
 from app.persistence.errors import PersistenceConflictError, PersistenceCorruptionError
+from app.persistence.fencing import assert_live_current_run_token, database_time
 from app.persistence.models import EvidenceRow, ProjectRow, RunRow, TaskRow
 from app.persistence.serialization import (
     canonical_payload,
@@ -38,8 +39,9 @@ _SCHEMA_VERSION = 1
 class PostgresEvidenceStore:
     """Transactional durability boundary for runtime evidence.
 
-    Git and validated runtime models remain authoritative. This store persists and verifies
-    structured evidence; it does not manufacture success states from database fields.
+    Git and validated runtime models remain authoritative. Task-scoped worker writes become fenced
+    automatically after that task has acquired a `run_token`; non-leased/local persistence paths
+    keep the Step 3.4 behavior and do not require a token.
     """
 
     def __init__(
@@ -165,6 +167,7 @@ class PostgresEvidenceStore:
         task_id: str | None = None,
         stage: str | None = None,
         sequence: int | None = None,
+        run_token: UUID | None = None,
     ) -> int:
         key = self._required_text(evidence_key, "evidence_key", max_length=255)
         normalized_task = self._optional_text(task_id, "task_id", max_length=128)
@@ -176,21 +179,18 @@ class PostgresEvidenceStore:
         decode_evidence(kind, payload)
 
         async with self._session_factory.begin() as session:
-            run = (
-                await session.execute(
-                    select(RunRow).where(RunRow.id == run_id).with_for_update()
-                )
-            ).scalar_one_or_none()
-            if run is None:
-                raise ValueError(f"unknown persistence run: {run_id}")
+            run = await self._locked_run(session, run_id)
             if run.status != PersistedRunStatus.RUNNING.value:
                 raise PersistenceConflictError("terminal persisted runs are append-closed")
 
             if normalized_task is not None:
-                task = await session.get(TaskRow, (run_id, normalized_task))
-                if task is None:
-                    raise ValueError(
-                        f"evidence task {normalized_task!r} does not belong to run {run_id}"
+                task = await self._locked_task(session, run_id, normalized_task)
+                if run_token is not None or task.run_token is not None:
+                    observed_at = await database_time(session)
+                    assert_live_current_run_token(
+                        task,
+                        run_token=run_token,
+                        observed_at=observed_at,
                     )
 
             existing = (
@@ -237,6 +237,7 @@ class PostgresEvidenceStore:
         reference: ContextFingerprintReference,
         evidence_key: str,
         sequence: int | None = None,
+        run_token: UUID | None = None,
     ) -> int:
         return await self.append_evidence(
             run_id=run_id,
@@ -246,6 +247,7 @@ class PostgresEvidenceStore:
             payload_model=reference,
             stage=reference.stage,
             sequence=sequence,
+            run_token=run_token,
         )
 
     async def record_single_task_result_evidence(
@@ -253,6 +255,7 @@ class PostgresEvidenceStore:
         *,
         run_id: UUID,
         result: SingleTaskRunResult,
+        run_token: UUID | None = None,
     ) -> None:
         for event in result.events:
             await self.append_evidence(
@@ -263,6 +266,7 @@ class PostgresEvidenceStore:
                 payload_model=event,
                 stage="runtime",
                 sequence=event.sequence,
+                run_token=run_token,
             )
 
         if result.developer is not None:
@@ -274,6 +278,7 @@ class PostgresEvidenceStore:
                 payload_model=result.developer,
                 stage="developer",
                 sequence=0,
+                run_token=run_token,
             )
 
         for index, verification in enumerate(result.verifications):
@@ -285,6 +290,7 @@ class PostgresEvidenceStore:
                 payload_model=verification,
                 stage="verification",
                 sequence=index,
+                run_token=run_token,
             )
 
         for index, review in enumerate(result.reviews):
@@ -296,6 +302,7 @@ class PostgresEvidenceStore:
                 payload_model=review,
                 stage="review",
                 sequence=index,
+                run_token=run_token,
             )
 
         for repair in result.repairs:
@@ -307,6 +314,7 @@ class PostgresEvidenceStore:
                 payload_model=repair,
                 stage="repair",
                 sequence=repair.attempt,
+                run_token=run_token,
             )
 
         for index, failure in enumerate(result.failures):
@@ -318,36 +326,47 @@ class PostgresEvidenceStore:
                 payload_model=failure,
                 stage="terminal",
                 sequence=index,
+                run_token=run_token,
             )
 
-        await self.finalize_single_task_run(run_id=run_id, result=result)
+        await self.finalize_single_task_run(
+            run_id=run_id,
+            result=result,
+            run_token=run_token,
+        )
 
     async def finalize_single_task_run(
         self,
         *,
         run_id: UUID,
         result: SingleTaskRunResult,
+        run_token: UUID | None = None,
     ) -> None:
         payload, digest = canonical_payload(result)
         persisted_status = PersistedRunStatus.from_task_state(result.status)
 
         async with self._session_factory.begin() as session:
-            run = (
-                await session.execute(
-                    select(RunRow).where(RunRow.id == run_id).with_for_update()
-                )
-            ).scalar_one_or_none()
-            if run is None:
-                raise ValueError(f"unknown persistence run: {run_id}")
-
+            run = await self._locked_run(session, run_id)
             tasks = (
                 await session.execute(
-                    select(TaskRow).where(TaskRow.run_id == run_id).order_by(TaskRow.task_id)
+                    select(TaskRow)
+                    .where(TaskRow.run_id == run_id)
+                    .order_by(TaskRow.task_id)
+                    .with_for_update()
                 )
             ).scalars().all()
             if len(tasks) != 1 or tasks[0].task_id != result.task_id:
                 raise PersistenceConflictError(
                     "SingleTaskRunResult can finalize only a run containing exactly that task"
+                )
+
+            task = tasks[0]
+            if run_token is not None or task.run_token is not None:
+                observed_at = await database_time(session)
+                assert_live_current_run_token(
+                    task,
+                    run_token=run_token,
+                    observed_at=observed_at,
                 )
 
             if run.status != PersistedRunStatus.RUNNING.value:
@@ -442,6 +461,26 @@ class PostgresEvidenceStore:
                 await session.execute(statement.order_by(EvidenceRow.id))
             ).scalars().all()
         return tuple(self._decode_evidence_row(row) for row in rows)
+
+    async def _locked_run(self, session: AsyncSession, run_id: UUID) -> RunRow:
+        run = (
+            await session.execute(select(RunRow).where(RunRow.id == run_id).with_for_update())
+        ).scalar_one_or_none()
+        if run is None:
+            raise ValueError(f"unknown persistence run: {run_id}")
+        return run
+
+    async def _locked_task(self, session: AsyncSession, run_id: UUID, task_id: str) -> TaskRow:
+        task = (
+            await session.execute(
+                select(TaskRow)
+                .where(TaskRow.run_id == run_id, TaskRow.task_id == task_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if task is None:
+            raise ValueError(f"evidence task {task_id!r} does not belong to run {run_id}")
+        return task
 
     @staticmethod
     def _decode_task(row: TaskRow) -> PersistedTask:
