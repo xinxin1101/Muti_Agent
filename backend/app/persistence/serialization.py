@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from app.models.conflict import MergeConflictEvidence
 from app.models.developer import DeveloperRunResult
+from app.models.dispatch import WorkerDispatchEvent, WorkerExecutionEvidence
 from app.models.failure import FailureReport
 from app.models.integration_gate import HumanIntegrationDecision, IntegrationGateSnapshot
 from app.models.merge import MergeQueueSnapshot
@@ -30,6 +31,8 @@ EvidenceModel: TypeAlias = (
     | IntegrationGateSnapshot
     | HumanIntegrationDecision
     | ContextFingerprintReference
+    | WorkerDispatchEvent
+    | WorkerExecutionEvidence
 )
 
 _EVIDENCE_MODELS: dict[PersistenceEvidenceKind, type[BaseModel]] = {
@@ -44,6 +47,8 @@ _EVIDENCE_MODELS: dict[PersistenceEvidenceKind, type[BaseModel]] = {
     PersistenceEvidenceKind.INTEGRATION_GATE: IntegrationGateSnapshot,
     PersistenceEvidenceKind.HUMAN_DECISION: HumanIntegrationDecision,
     PersistenceEvidenceKind.CONTEXT_REFERENCE: ContextFingerprintReference,
+    PersistenceEvidenceKind.DISPATCH_EVENT: WorkerDispatchEvent,
+    PersistenceEvidenceKind.WORKER_EXECUTION: WorkerExecutionEvidence,
 }
 
 

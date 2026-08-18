@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     database_url: SecretStr | None = None
     database_echo: bool = False
 
+    redis_url: SecretStr = SecretStr("redis://localhost:6379/0")
+    dramatiq_namespace: str = Field(default="devflow", min_length=1, max_length=64)
+    dramatiq_queue_name: str = Field(default="devflow_tasks", min_length=1, max_length=128)
+
     siliconflow_api_key: SecretStr | None = Field(
         default=None,
         validation_alias="SILICONFLOW_API_KEY",

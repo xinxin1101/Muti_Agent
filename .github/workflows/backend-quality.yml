@@ -23,6 +23,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DEVFLOW_DATABASE_URL: postgresql+psycopg://devflow:devflow@localhost:5432/devflow_test
+      DEVFLOW_REDIS_URL: redis://localhost:6379/15
+      DEVFLOW_DRAMATIQ_NAMESPACE: devflow-ci
+      DEVFLOW_DRAMATIQ_QUEUE_NAME: devflow_tasks
 
     services:
       postgres:
@@ -35,6 +38,16 @@ jobs:
           - 5432:5432
         options: >-
           --health-cmd "pg_isready -U devflow -d devflow_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
