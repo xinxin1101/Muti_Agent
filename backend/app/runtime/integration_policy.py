@@ -68,6 +68,19 @@ def conflict_evidence_fingerprint(evidence: MergeConflictEvidence) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
+def integration_policy_fingerprint(decision: IntegrationPolicyDecision) -> str:
+    """Hash the policy facts that affect repair authorization, excluding explanation prose."""
+
+    payload = {
+        "route": decision.route.value,
+        "automatic_repair_enabled": decision.automatic_repair_enabled,
+        "human_repair_authorizable": decision.human_repair_authorizable,
+        "conflicting_paths": list(decision.conflicting_paths),
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
 class IntegrationConflictPolicy:
     """Conservative deterministic router for merge conflicts.
 
