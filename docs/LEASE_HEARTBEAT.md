@@ -107,6 +107,16 @@ It explicitly does **not** mean:
 
 That second guarantee requires Step 3.7 stale-write fencing.
 
+## Acquisition and concurrency
+
+New lease acquisition is allowed only while the persisted Run is `RUNNING`. The Run row and Task row
+are locked inside the acquisition transaction, and a task with any existing lease history is not
+acquired again in Step 3.6.
+
+Two independent PostgreSQL clients racing to acquire the same `(run_id, task_id)` are therefore
+serialized by the database. Exactly one can create the initial ACTIVE ownership record; the other
+observes the committed lease history and fails closed.
+
 ## No takeover in Step 3.6
 
 Step 3.6 deliberately does not reassign an `EXPIRED` lease to a new worker. It also does not reuse a
@@ -146,6 +156,24 @@ The existing runtime already offloads deterministic verification and ContextPack
 
 Cooperative cancellation is still not fencing. Synchronous Git work already in progress, another
 thread, a stuck process, or a stale worker process may continue writing after heartbeat loss.
+
+## Terminal-run unwind
+
+For a single-task persisted Run, the inner accepted `QueuedTaskWorker` may finalize the Run to a
+terminal result immediately before control returns to the outer lease wrapper. A heartbeat can race
+with this very small cleanup window.
+
+Step 3.6 therefore distinguishes **new execution authorization** from **cleanup of ownership that was
+already acquired while the Run was RUNNING**:
+
+- terminal Runs always reject new lease acquisition;
+- the exact still-live `(owner_id, dispatch_id)` may renew its already-established lease during the
+  terminal unwind;
+- the exact owner may release that still-live lease after terminalization;
+- expired or released leases still cannot be renewed.
+
+This prevents a persisted terminal success from being incorrectly converted into a heartbeat failure
+solely because the outer wrapper had not yet stopped its heartbeat/released ownership.
 
 ## Production worker identity
 
