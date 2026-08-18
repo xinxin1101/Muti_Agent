@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -10,15 +11,14 @@ from app.verification import DeterministicVerifier, DockerSandboxRunner
 from app.workspace import LocalGitWorkspace
 
 
-def _docker_sandbox_available() -> bool:
-    runner = DockerSandboxRunner()
-    return runner._preflight(2.0) == ""
-
-
-pytestmark = pytest.mark.skipif(
-    not _docker_sandbox_available(),
-    reason="trusted devflow-verifier:py311 Docker sandbox is not available",
-)
+@pytest.fixture(autouse=True)
+def require_real_docker_sandbox() -> None:
+    error = DockerSandboxRunner()._preflight(5.0)
+    if not error:
+        return
+    if os.environ.get("CI", "").lower() == "true":
+        pytest.fail(f"CI must provide the real trusted Docker verification sandbox: {error}")
+    pytest.skip(f"trusted Docker verification sandbox is unavailable locally: {error}")
 
 
 def _git(root: Path, *arguments: str) -> None:
