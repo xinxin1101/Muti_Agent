@@ -186,7 +186,7 @@ class PostgresTaskLeaseStore:
             return self._snapshot(task, observed_at=observed_at)
 
     @asynccontextmanager
-    async def guard_task_publication(
+    async def guard_task_git_mutation(
         self,
         *,
         run_id: UUID,
@@ -194,18 +194,18 @@ class PostgresTaskLeaseStore:
         dispatch_id: UUID,
         run_token: UUID,
     ) -> AsyncIterator[TaskLeaseSnapshot]:
-        """Serialize Git ref publication against ownership transfer.
+        """Serialize one runtime-owned Git mutation against ownership transfer.
 
-        The task row lock is held across the caller's bounded Git ref publication. Therefore a
-        takeover cannot install generation N+1 between the final token check and generation N's Git
-        `update-ref`. A publication that enters this guard linearizes before any later takeover.
+        The task row lock is held across the caller's bounded Git mutation. Therefore a takeover
+        cannot install generation N+1 between the final token check and a generation N worktree/ref
+        mutation. A mutation that enters this guard linearizes before any later takeover.
         """
 
         task_name = self._required_text(task_id, "task_id", max_length=128)
         async with self._session_factory.begin() as session:
             run = await self._locked_run(session, run_id)
             if run.status != PersistedRunStatus.RUNNING.value:
-                raise TaskLeaseConflictError("Git publication requires a RUNNING persisted run")
+                raise TaskLeaseConflictError("Git mutation requires a RUNNING persisted run")
             task = await self._locked_task(session, run_id, task_name)
             observed_at = await database_time(session)
             # Classify stale/expired generations before secondary human-readable dispatch checks.
@@ -215,7 +215,7 @@ class PostgresTaskLeaseStore:
                 observed_at=observed_at,
             )
             if task.lease_dispatch_id != dispatch_id:
-                raise TaskLeaseConflictError("Git publication dispatch does not own this task")
+                raise TaskLeaseConflictError("Git mutation dispatch does not own this task")
             yield self._snapshot(task, observed_at=observed_at)
 
     async def inspect_task_lease(self, *, run_id: UUID, task_id: str) -> TaskLeaseSnapshot:
