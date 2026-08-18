@@ -108,12 +108,7 @@ _CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 
 
 class RelevantCodeExtractor:
-    """Deterministically rank Python code regions using AST and local imports.
-
-    The extractor is intentionally provider-neutral and does not mutate repository state. It emits
-    internal selection evidence; ContextPacketBuilder remains responsible for trusted path reads,
-    budgets, provenance, snippets, and canonical packet integrity.
-    """
+    """Deterministically rank Python regions using AST and visible local imports."""
 
     def __init__(
         self,
@@ -147,38 +142,20 @@ class RelevantCodeExtractor:
             for candidate in candidates
         }
 
-        python_candidates = [
-            candidate
-            for candidate in candidates
-            if candidate.path.endswith(".py")
-        ]
-        index_order = sorted(
-            python_candidates,
-            key=lambda candidate: (
-                -self._seed_priority(candidate, task_terms),
-                candidate.path,
-            ),
-        )[: self._max_index_files]
-
-        indexes: dict[str, _PythonIndex] = {}
-        for candidate in index_order:
-            source = load_source(candidate.path)
-            if source is None:
-                continue
-            index = self._index_python(candidate.path, source)
-            if index is not None:
-                indexes[candidate.path] = index
-
+        indexes = self._initial_indexes(
+            candidates,
+            task_terms=task_terms,
+            load_source=load_source,
+        )
         dependency_symbols: dict[str, set[str]] = defaultdict(set)
         dependency_parents: dict[str, set[str]] = defaultdict(set)
         local_dependencies: dict[str, set[str]] = defaultdict(set)
-        dependency_queue: list[str] = []
+        dependency_queue: set[str] = set()
 
         for path in sorted(indexes):
-            index = indexes[path]
-            for import_ref in index.imports:
+            for import_ref in indexes[path].imports:
                 dependency_path = self._resolve_local_import(
-                    index,
+                    indexes[path],
                     import_ref,
                     module_paths=module_paths,
                 )
@@ -188,41 +165,25 @@ class RelevantCodeExtractor:
                 dependency_parents[dependency_path].add(path)
                 dependency_symbols[dependency_path].update(import_ref.names)
                 if dependency_path not in indexes:
-                    dependency_queue.append(dependency_path)
+                    dependency_queue.add(dependency_path)
 
-        dependency_budget = self._max_dependency_files
-        for path in sorted(set(dependency_queue)):
-            if dependency_budget <= 0:
-                break
-            source = load_source(path)
-            if source is None:
-                continue
-            index = self._index_python(path, source)
-            if index is None:
-                continue
-            indexes[path] = index
-            dependency_budget -= 1
+        self._index_dependencies(
+            dependency_queue,
+            indexes=indexes,
+            load_source=load_source,
+        )
 
         scores = dict(base_scores)
         file_evidence: dict[str, list[str]] = {
             candidate.path: list(self._base_evidence(candidate, task_terms))
             for candidate in candidates
         }
-
-        for dependency_path, parents in sorted(dependency_parents.items()):
-            if dependency_path not in scores:
-                continue
-            strongest_parent = max(scores.get(parent, 0) for parent in parents)
-            dependency_score = max(0, strongest_parent - 1_500)
-            if dependency_score > scores[dependency_path]:
-                scores[dependency_path] = dependency_score
-            parent_text = ",".join(sorted(parents))
-            file_evidence[dependency_path].append(f"local_import_from={parent_text}")
-            names = sorted(name for name in dependency_symbols[dependency_path] if name != "*")
-            if names:
-                file_evidence[dependency_path].append(
-                    f"imported_symbols={','.join(names)}"
-                )
+        self._apply_dependency_scores(
+            scores,
+            file_evidence=file_evidence,
+            dependency_parents=dependency_parents,
+            dependency_symbols=dependency_symbols,
+        )
 
         selections: list[RelevantFileSelection] = []
         for candidate in candidates:
@@ -251,6 +212,81 @@ class RelevantCodeExtractor:
             )
 
         return sorted(selections, key=lambda item: (-item.score, item.path))
+
+    def _initial_indexes(
+        self,
+        candidates: Sequence[RelevanceCandidate],
+        *,
+        task_terms: frozenset[str],
+        load_source: Callable[[str], str | None],
+    ) -> dict[str, _PythonIndex]:
+        python_candidates = [
+            candidate for candidate in candidates if candidate.path.endswith(".py")
+        ]
+        index_order = sorted(
+            python_candidates,
+            key=lambda candidate: (
+                -self._seed_priority(candidate, task_terms),
+                candidate.path,
+            ),
+        )[: self._max_index_files]
+
+        indexes: dict[str, _PythonIndex] = {}
+        for candidate in index_order:
+            source = load_source(candidate.path)
+            if source is None:
+                continue
+            index = self._index_python(candidate.path, source)
+            if index is not None:
+                indexes[candidate.path] = index
+        return indexes
+
+    def _index_dependencies(
+        self,
+        paths: set[str],
+        *,
+        indexes: dict[str, _PythonIndex],
+        load_source: Callable[[str], str | None],
+    ) -> None:
+        remaining = self._max_dependency_files
+        for path in sorted(paths):
+            if remaining <= 0:
+                return
+            source = load_source(path)
+            if source is None:
+                continue
+            index = self._index_python(path, source)
+            if index is None:
+                continue
+            indexes[path] = index
+            remaining -= 1
+
+    @staticmethod
+    def _apply_dependency_scores(
+        scores: dict[str, int],
+        *,
+        file_evidence: dict[str, list[str]],
+        dependency_parents: dict[str, set[str]],
+        dependency_symbols: dict[str, set[str]],
+    ) -> None:
+        for dependency_path, parents in sorted(dependency_parents.items()):
+            if dependency_path not in scores:
+                continue
+            strongest_parent = max(scores.get(parent, 0) for parent in parents)
+            scores[dependency_path] = max(
+                scores[dependency_path],
+                max(0, strongest_parent - 1_500),
+            )
+            file_evidence[dependency_path].append(
+                f"local_import_from={','.join(sorted(parents))}"
+            )
+            names = sorted(
+                name for name in dependency_symbols[dependency_path] if name != "*"
+            )
+            if names:
+                file_evidence[dependency_path].append(
+                    f"imported_symbols={','.join(names)}"
+                )
 
     def _regions_for_index(
         self,
@@ -283,30 +319,44 @@ class RelevantCodeExtractor:
             symbol_terms = self._identifier_terms(symbol.qualname)
             task_overlap = sorted(symbol_terms & task_terms)
             import_overlap = sorted(symbol_terms & imported_terms)
-            score = len(task_overlap) * 240 + len(import_overlap) * 360
+            relevance_score = len(task_overlap) * 240 + len(import_overlap) * 360
+            if relevance_score <= 0:
+                continue
+
             evidence: list[str] = []
             if task_overlap:
                 evidence.append(f"task_terms={','.join(task_overlap)}")
             if import_overlap:
                 evidence.append(f"import_terms={','.join(import_overlap)}")
-            if symbol.top_level:
-                score += 20
-            if score > 0:
-                scored_symbols.append((score, symbol, tuple(evidence)))
+            score = relevance_score + (20 if symbol.top_level else 0)
+            scored_symbols.append((score, symbol, tuple(evidence)))
 
         if not scored_symbols and (
             candidate.changed or ContextScopeKind.WRITABLE in candidate.scope_kinds
         ):
-            fallback_symbols = [symbol for symbol in index.symbols if symbol.top_level][
+            for symbol in [item for item in index.symbols if item.top_level][
                 : self._max_regions_per_file
-            ]
-            for symbol in fallback_symbols:
+            ]:
                 scored_symbols.append(
                     (40, symbol, ("writable_or_changed_top_level_fallback",))
                 )
 
-        scored_symbols.sort(key=lambda item: (-item[0], item[1].start_line, item[1].qualname))
-        for score, symbol, evidence in scored_symbols[: self._max_regions_per_file]:
+        scored_symbols.sort(
+            key=lambda item: (-item[0], item[1].start_line, item[1].qualname)
+        )
+        selected_symbols: list[tuple[int, _Symbol, tuple[str, ...]]] = []
+        for item in scored_symbols:
+            _, symbol, _ = item
+            if any(
+                self._ranges_overlap(symbol, selected_symbol)
+                for _, selected_symbol, _ in selected_symbols
+            ):
+                continue
+            selected_symbols.append(item)
+            if len(selected_symbols) >= self._max_regions_per_file:
+                break
+
+        for score, symbol, evidence in selected_symbols:
             regions.append(
                 RelevantCodeRegion(
                     start_line=symbol.start_line,
@@ -317,11 +367,16 @@ class RelevantCodeExtractor:
                     evidence=evidence,
                 )
             )
-
-        return self._merge_overlapping_regions(regions)
+        return self._merge_adjacent_regions(regions)
 
     @staticmethod
-    def _merge_overlapping_regions(
+    def _ranges_overlap(left: _Symbol, right: _Symbol) -> bool:
+        return not (
+            left.end_line < right.start_line or right.end_line < left.start_line
+        )
+
+    @staticmethod
+    def _merge_adjacent_regions(
         regions: Sequence[RelevantCodeRegion],
     ) -> tuple[RelevantCodeRegion, ...]:
         if not regions:
@@ -333,19 +388,17 @@ class RelevantCodeExtractor:
             if region.start_line > previous.end_line + 1:
                 merged.append(region)
                 continue
-            evidence = tuple(sorted(set(previous.evidence + region.evidence)))
-            symbols = [value for value in (previous.symbol, region.symbol) if value]
             merged[-1] = RelevantCodeRegion(
                 start_line=previous.start_line,
                 end_line=max(previous.end_line, region.end_line),
                 kind=(
                     RelevantRegionKind.SYMBOL
-                    if symbols
+                    if previous.symbol or region.symbol
                     else RelevantRegionKind.MODULE_PREAMBLE
                 ),
-                symbol="|".join(symbols) if symbols else None,
+                symbol=previous.symbol or region.symbol,
                 score=max(previous.score, region.score),
-                evidence=evidence,
+                evidence=tuple(sorted(set(previous.evidence + region.evidence))),
             )
         return tuple(merged)
 
@@ -356,12 +409,10 @@ class RelevantCodeExtractor:
             return None
 
         preamble_end = 0
-        symbols: list[_Symbol] = []
         imports: list[_ImportRef] = []
-
-        for index, node in enumerate(tree.body):
+        for position, node in enumerate(tree.body):
             if (
-                index == 0
+                position == 0
                 and isinstance(node, ast.Expr)
                 and isinstance(node.value, ast.Constant)
                 and isinstance(node.value.value, str)
@@ -372,12 +423,17 @@ class RelevantCodeExtractor:
                 )
                 continue
             if isinstance(node, (ast.Import, ast.ImportFrom)):
-                preamble_end = max(preamble_end, getattr(node, "end_lineno", node.lineno))
+                preamble_end = max(
+                    preamble_end,
+                    getattr(node, "end_lineno", node.lineno),
+                )
 
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
-                for alias in node.names:
-                    imports.append(_ImportRef(module=alias.name, names=(), level=0))
+                imports.extend(
+                    _ImportRef(module=alias.name, names=(), level=0)
+                    for alias in node.names
+                )
             elif isinstance(node, ast.ImportFrom):
                 imports.append(
                     _ImportRef(
@@ -387,19 +443,20 @@ class RelevantCodeExtractor:
                     )
                 )
 
+        symbols: list[_Symbol] = []
         for node in tree.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 symbols.append(self._symbol(node, qualname=node.name, top_level=True))
             if isinstance(node, ast.ClassDef):
-                for child in node.body:
-                    if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        symbols.append(
-                            self._symbol(
-                                child,
-                                qualname=f"{node.name}.{child.name}",
-                                top_level=False,
-                            )
-                        )
+                symbols.extend(
+                    self._symbol(
+                        child,
+                        qualname=f"{node.name}.{child.name}",
+                        top_level=False,
+                    )
+                    for child in node.body
+                    if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+                )
 
         return _PythonIndex(
             path=path,
@@ -431,34 +488,39 @@ class RelevantCodeExtractor:
         *,
         module_paths: dict[str, tuple[str, ...]],
     ) -> str | None:
-        module = import_ref.module
-        if import_ref.level:
-            current_parts = index.module_name.split(".") if index.module_name else []
-            package_parts = (
-                current_parts
-                if index.path.endswith("/__init__.py")
-                else current_parts[:-1]
-            )
-            levels_up = max(import_ref.level - 1, 0)
-            if levels_up > len(package_parts):
-                return None
-            if levels_up:
-                package_parts = package_parts[: len(package_parts) - levels_up]
-            module_parts = module.split(".") if module else []
-            module = ".".join([*package_parts, *module_parts])
-
+        module = self._absolute_import_module(index, import_ref)
         candidate_modules = [module] if module else []
         for name in import_ref.names:
-            if name != "*" and module:
+            if module and name != "*":
                 candidate_modules.append(f"{module}.{name}")
 
-        matches: set[str] = set()
         for candidate_module in candidate_modules:
             for alias in self._module_suffixes(candidate_module):
-                matches.update(module_paths.get(alias, ()))
-        if not matches:
-            return None
-        return sorted(matches)[0]
+                matches = module_paths.get(alias, ())
+                if len(matches) == 1:
+                    return matches[0]
+                if len(matches) > 1:
+                    return None
+        return None
+
+    @staticmethod
+    def _absolute_import_module(index: _PythonIndex, import_ref: _ImportRef) -> str:
+        if not import_ref.level:
+            return import_ref.module
+
+        current_parts = index.module_name.split(".") if index.module_name else []
+        package_parts = (
+            current_parts
+            if index.path.endswith("/__init__.py")
+            else current_parts[:-1]
+        )
+        levels_up = max(import_ref.level - 1, 0)
+        if levels_up > len(package_parts):
+            return ""
+        if levels_up:
+            package_parts = package_parts[: len(package_parts) - levels_up]
+        module_parts = import_ref.module.split(".") if import_ref.module else []
+        return ".".join([*package_parts, *module_parts])
 
     def _module_path_index(
         self,
@@ -468,12 +530,10 @@ class RelevantCodeExtractor:
         for path in sorted(candidates):
             if not path.endswith(".py"):
                 continue
-            canonical = self._canonical_module(path)
-            for alias in self._module_suffixes(canonical):
+            for alias in self._module_suffixes(self._canonical_module(path)):
                 paths_by_module[alias].add(path)
         return {
-            module: tuple(sorted(paths))
-            for module, paths in paths_by_module.items()
+            module: tuple(sorted(paths)) for module, paths in paths_by_module.items()
         }
 
     @staticmethod
@@ -493,7 +553,9 @@ class RelevantCodeExtractor:
         terms = set(self._text_terms(text))
         for pattern in [*task.writable_files, *task.readable_files, *task.readonly_files]:
             terms.update(self._text_terms(pattern))
-        return frozenset(term for term in terms if term not in _STOP_WORDS and len(term) > 1)
+        return frozenset(
+            term for term in terms if term not in _STOP_WORDS and len(term) > 1
+        )
 
     def _base_score(
         self,
