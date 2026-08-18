@@ -240,7 +240,8 @@ class IntegrationHumanGate:
             )
 
     def _assert_current_evidence(self) -> MergeConflictEvidence:
-        if self._scheduler.state(self._terminal_attempt().task_id) is not TaskScheduleState.SUCCEEDED:
+        current_state = self._scheduler.state(self._terminal_attempt().task_id)
+        if current_state is not TaskScheduleState.SUCCEEDED:
             raise IntegrationHumanGateError(
                 "conflicted task scheduler state changed after gate construction"
             )
