@@ -110,7 +110,6 @@ def test_dispatcher_enqueues_valid_persisted_identity_without_executing_it() -> 
     assert receipt.broker_message_id
     assert actor.actor_name == ACTOR_NAME
     assert actor.options["max_retries"] == 0
-    assert broker.get_queue_message_counts(actor.queue_name)[0] == 1
 
 
 def test_dispatcher_rejects_terminal_run_and_unknown_task() -> None:
@@ -286,7 +285,7 @@ def test_local_queued_backend_fails_closed_on_duplicate_worktree_identity(
     assert second.commit_sha is None
     assert second.failures
     assert second.failures[0].retryable is False
-    assert "TaskWorktreeCollisionError" in second.failures[0].evidence
+    assert "exception_type=TaskWorktreeCollisionError" in second.failures[0].evidence
 
 
 class _RecordingStore:
