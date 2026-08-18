@@ -70,6 +70,14 @@ class ContextFingerprintReference(BaseModel):
         )
 
 
+class PersistedTask(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    task: TaskContract
+    contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    created_at: datetime
+
+
 class PersistedEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -97,8 +105,7 @@ class PersistedRunSnapshot(BaseModel):
     default_branch: str = Field(min_length=1, max_length=255)
     base_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
     status: PersistedRunStatus
-    task: TaskContract
-    task_contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    tasks: tuple[PersistedTask, ...] = Field(min_length=1)
     evidence: tuple[PersistedEvidence, ...] = ()
     terminal_result: dict[str, Any] | None = None
     terminal_result_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
@@ -107,6 +114,10 @@ class PersistedRunSnapshot(BaseModel):
 
     @model_validator(mode="after")
     def validate_terminal_shape(self) -> PersistedRunSnapshot:
+        task_ids = [item.task.task_id for item in self.tasks]
+        if len(task_ids) != len(set(task_ids)):
+            raise ValueError("persisted run tasks must have unique task ids")
+
         if self.status is PersistedRunStatus.RUNNING:
             if self.terminal_result is not None or self.terminal_result_sha256 is not None:
                 raise ValueError("running persisted runs must not contain terminal result evidence")
