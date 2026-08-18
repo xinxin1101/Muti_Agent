@@ -205,7 +205,7 @@ class DeterministicVerifier:
             DeterministicVerifier._assert_workspace_bound_arguments(arguments)
             DeterministicVerifier._assert_non_mutating_ruff(arguments)
             return _CommandSpec(
-                argv=["python", "-m", "ruff", *arguments],
+                argv=["python", "-m", "ruff", "check", "--no-cache", *arguments[1:]],
                 check_type=CheckType.LINT,
                 failure_type=FailureType.LINT_FAILURE,
                 name="ruff",
@@ -227,7 +227,7 @@ class DeterministicVerifier:
                 DeterministicVerifier._assert_workspace_bound_arguments(arguments)
                 DeterministicVerifier._assert_non_mutating_ruff(arguments)
                 return _CommandSpec(
-                    argv=["python", "-m", "ruff", *arguments],
+                    argv=["python", "-m", "ruff", "check", "--no-cache", *arguments[1:]],
                     check_type=CheckType.LINT,
                     failure_type=FailureType.LINT_FAILURE,
                     name="ruff",
