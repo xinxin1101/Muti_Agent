@@ -240,6 +240,10 @@ class ReviewerAgent:
             raise ValueError("Reviewer ContextPacket task_id does not match TaskContract")
         if context_packet.objective != task.objective:
             raise ValueError("Reviewer ContextPacket objective does not match TaskContract")
+        if context_packet.acceptance_criteria != task.acceptance_criteria:
+            raise ValueError("Reviewer ContextPacket acceptance criteria do not match TaskContract")
+        if context_packet.readable_files != task.readable_files:
+            raise ValueError("Reviewer ContextPacket readable scope does not match TaskContract")
         if context_packet.writable_files != task.writable_files:
             raise ValueError("Reviewer ContextPacket writable scope does not match TaskContract")
         if context_packet.readonly_files != task.readonly_files:
