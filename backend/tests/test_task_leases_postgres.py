@@ -10,6 +10,7 @@ from app.models import (
     RunEvent,
     SingleTaskRunResult,
     TaskContract,
+    TaskLeaseSnapshot,
     TaskLeaseState,
     TaskRunState,
 )
@@ -180,6 +181,59 @@ async def _lease_lifecycle() -> None:
     await evidence_store.dispose()
 
 
+def test_concurrent_task_lease_acquisition_has_exactly_one_owner() -> None:
+    asyncio.run(_concurrent_acquisition())
+
+
+async def _concurrent_acquisition() -> None:
+    database_url = _database_url()
+    evidence_store = PostgresEvidenceStore.from_url(database_url)
+    first_store = PostgresTaskLeaseStore.from_url(database_url)
+    second_store = PostgresTaskLeaseStore.from_url(database_url)
+    run_id, tasks = await _new_run(evidence_store, "LEASE-RACE")
+    task = tasks[0]
+    first_dispatch = uuid4()
+    second_dispatch = uuid4()
+
+    async def attempt(
+        store: PostgresTaskLeaseStore,
+        *,
+        owner_id: str,
+        dispatch_id: UUID,
+    ) -> TaskLeaseSnapshot | TaskLeaseConflictError:
+        try:
+            return await store.acquire_task_lease(
+                run_id=run_id,
+                task_id=task.task_id,
+                owner_id=owner_id,
+                dispatch_id=dispatch_id,
+                lease_seconds=1.0,
+            )
+        except TaskLeaseConflictError as exc:
+            return exc
+
+    outcomes = await asyncio.gather(
+        attempt(first_store, owner_id="worker-race-a", dispatch_id=first_dispatch),
+        attempt(second_store, owner_id="worker-race-b", dispatch_id=second_dispatch),
+    )
+    winners = [item for item in outcomes if isinstance(item, TaskLeaseSnapshot)]
+    conflicts = [item for item in outcomes if isinstance(item, TaskLeaseConflictError)]
+
+    assert len(winners) == 1
+    assert len(conflicts) == 1
+    winner = winners[0]
+    assert winner.state is TaskLeaseState.ACTIVE
+
+    observed = await first_store.inspect_task_lease(run_id=run_id, task_id=task.task_id)
+    assert observed.state is TaskLeaseState.ACTIVE
+    assert observed.owner_id == winner.owner_id
+    assert observed.dispatch_id == winner.dispatch_id
+
+    await second_store.dispose()
+    await first_store.dispose()
+    await evidence_store.dispose()
+
+
 def test_expired_lease_is_abandoned_but_not_reassigned_or_resurrected() -> None:
     asyncio.run(_expired_lease_boundary())
 
@@ -257,7 +311,7 @@ async def _expired_lease_boundary() -> None:
     await evidence_store.dispose()
 
 
-def test_terminal_run_rejects_new_lease_but_allows_active_owner_to_release() -> None:
+def test_terminal_run_rejects_new_lease_but_allows_owned_lease_cleanup() -> None:
     asyncio.run(_terminal_run_lease_boundary())
 
 
@@ -269,7 +323,7 @@ async def _terminal_run_lease_boundary() -> None:
     task = tasks[0]
     dispatch_id = uuid4()
 
-    await lease_store.acquire_task_lease(
+    acquired = await lease_store.acquire_task_lease(
         run_id=run_id,
         task_id=task.task_id,
         owner_id="worker-terminal",
@@ -285,6 +339,18 @@ async def _terminal_run_lease_boundary() -> None:
         ],
     )
     await evidence_store.finalize_single_task_run(run_id=run_id, result=result)
+
+    renewed = await lease_store.renew_task_lease(
+        run_id=run_id,
+        task_id=task.task_id,
+        owner_id="worker-terminal",
+        dispatch_id=dispatch_id,
+        lease_seconds=1.0,
+    )
+    assert renewed.state is TaskLeaseState.ACTIVE
+    assert renewed.heartbeat_at is not None
+    assert acquired.heartbeat_at is not None
+    assert renewed.heartbeat_at >= acquired.heartbeat_at
 
     released = await lease_store.release_task_lease(
         run_id=run_id,
