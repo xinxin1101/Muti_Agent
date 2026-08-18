@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -25,6 +26,7 @@ from app.workspace import LocalGitWorkspace
 _OID_PATTERN = re.compile(r"^[0-9a-fA-F]{40,64}$")
 _INTEGRATION_PREFIX = "refs/devflow/integration/"
 _DECISION_PREFIX = "refs/devflow/integration-decisions/"
+_MAX_AUTO_REPAIR_BLOB_BYTES = 512_000
 
 
 class IntegrationHumanGateError(RuntimeError):
@@ -75,9 +77,11 @@ class IntegrationHumanGate:
                 "provided conflict evidence does not match current reproducible Git evidence"
             )
 
-        self._policy_decision = self._policy.evaluate(evidence, self._task)
+        self._policy_decision = self._evaluate_policy(evidence)
         if self._policy_decision.evidence_fingerprint != self._fingerprint:
-            raise IntegrationHumanGateError("integration policy returned a mismatched evidence hash")
+            raise IntegrationHumanGateError(
+                "integration policy returned a mismatched evidence hash"
+            )
         self._human_decision = self._recover_human_decision()
         self._assert_authoritative_refs()
         self._assert_base_clean()
@@ -142,7 +146,7 @@ class IntegrationHumanGate:
             raise IntegrationHumanGateError(
                 "conflict evidence changed before the human decision could be recorded"
             )
-        current_policy = self._policy.evaluate(current, self._task)
+        current_policy = self._evaluate_policy(current)
         if current_policy != self._policy_decision:
             raise IntegrationHumanGateError(
                 "integration policy changed before the human decision could be recorded"
@@ -168,6 +172,13 @@ class IntegrationHumanGate:
         self._assert_authoritative_refs()
         self._assert_base_clean()
         return self.snapshot()
+
+    def _evaluate_policy(self, evidence: MergeConflictEvidence):
+        return self._policy.evaluate(
+            evidence,
+            self._task,
+            blob_is_safe_text=self._blob_is_safe_text,
+        )
 
     def _validate_snapshot_binding(self) -> None:
         if not self._queue_snapshot.stopped or not self._queue_snapshot.attempts:
@@ -197,9 +208,13 @@ class IntegrationHumanGate:
             )
         if self._evidence.task_commit != attempt.task_commit:
             raise IntegrationHumanGateError("conflict evidence references a different task commit")
-        expected_conflict_ref = self._derive_conflict_ref(self._queue_snapshot.integration_ref)
+        expected_conflict_ref = self._derive_conflict_ref(
+            self._queue_snapshot.integration_ref
+        )
         if self._evidence.conflict_ref != expected_conflict_ref:
-            raise IntegrationHumanGateError("conflict evidence references an unexpected conflict ref")
+            raise IntegrationHumanGateError(
+                "conflict evidence references an unexpected conflict ref"
+            )
 
     def _reproduce_current_evidence(self) -> MergeConflictEvidence:
         return GitMergeConflictClassifier(
@@ -260,11 +275,13 @@ class IntegrationHumanGate:
             raise IntegrationHumanGateError(
                 "human decision marker contains an unsupported decision"
             ) from exc
+        actor = self._decode_json_text(metadata["actor_json"], label="decision actor")
+        note = self._decode_json_text(metadata["note_json"], label="decision note")
 
         record = HumanIntegrationDecision(
             decision=decision,
-            actor=metadata["actor"],
-            note=metadata["note"],
+            actor=actor,
+            note=note,
             decision_ref=self._decision_ref,
             decision_commit=decision_commit,
             evidence_fingerprint=self._fingerprint,
@@ -302,11 +319,13 @@ class IntegrationHumanGate:
         note: str,
     ) -> str:
         attempt = self._terminal_attempt()
+        actor_json = json.dumps(actor, ensure_ascii=False)
+        note_json = json.dumps(note, ensure_ascii=False)
         return (
             f"DevFlow human integration decision: {decision.value}\n\n"
             f"DevFlow-Human-Decision: {decision.value}\n"
-            f"DevFlow-Decision-Actor: {actor}\n"
-            f"DevFlow-Decision-Note: {note}\n"
+            f"DevFlow-Decision-Actor-JSON: {actor_json}\n"
+            f"DevFlow-Decision-Note-JSON: {note_json}\n"
             f"DevFlow-Evidence-Fingerprint: {self._fingerprint}\n"
             f"DevFlow-Policy-Route: {self._policy_decision.route.value}\n"
             f"DevFlow-Conflict-Marker: {self._evidence.marker_commit}\n"
@@ -321,8 +340,8 @@ class IntegrationHumanGate:
         message = self._git(["show", "-s", "--format=%B", commit]).stdout
         prefixes = {
             "DevFlow-Human-Decision: ": "decision",
-            "DevFlow-Decision-Actor: ": "actor",
-            "DevFlow-Decision-Note: ": "note",
+            "DevFlow-Decision-Actor-JSON: ": "actor_json",
+            "DevFlow-Decision-Note-JSON: ": "note_json",
             "DevFlow-Evidence-Fingerprint: ": "evidence_fingerprint",
             "DevFlow-Policy-Route: ": "policy_route",
             "DevFlow-Conflict-Marker: ": "conflict_marker",
@@ -352,6 +371,16 @@ class IntegrationHumanGate:
         if re.fullmatch(r"[0-9a-f]{64}", metadata["evidence_fingerprint"]) is None:
             raise IntegrationHumanGateError("recorded evidence fingerprint is malformed")
         return metadata
+
+    @staticmethod
+    def _decode_json_text(value: str, *, label: str) -> str:
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise IntegrationHumanGateError(f"{label} metadata is not valid JSON") from exc
+        if not isinstance(decoded, str):
+            raise IntegrationHumanGateError(f"{label} metadata must decode to a string")
+        return decoded
 
     def _assert_decision_ref_absent(self) -> None:
         existing = self._git(
@@ -385,6 +414,28 @@ class IntegrationHumanGate:
             raise ValueError("note must contain at most 512 characters")
         if any(value in actor or value in note for value in ("\n", "\r")):
             raise ValueError("human decision metadata must be single-line")
+
+    def _blob_is_safe_text(self, object_id: str) -> bool:
+        size_result = self._git(["cat-file", "-s", object_id], check=False)
+        if size_result.returncode != 0:
+            return False
+        try:
+            size = int(size_result.stdout.strip())
+        except ValueError:
+            return False
+        if size < 0 or size > _MAX_AUTO_REPAIR_BLOB_BYTES:
+            return False
+
+        blob = self._git_bytes(["cat-file", "blob", object_id], check=False)
+        if blob.returncode != 0 or len(blob.stdout) != size:
+            return False
+        if b"\0" in blob.stdout:
+            return False
+        try:
+            blob.stdout.decode("utf-8")
+        except UnicodeDecodeError:
+            return False
+        return True
 
     @staticmethod
     def _derive_decision_ref(integration_ref: str) -> str:
@@ -481,6 +532,34 @@ class IntegrationHumanGate:
         if check and completed.returncode != 0:
             raise IntegrationHumanGateError(
                 "git integration-gate command failed: "
+                f"exit_code={completed.returncode}, operation={arguments[0]}"
+            )
+        return completed
+
+    def _git_bytes(
+        self,
+        arguments: list[str],
+        *,
+        check: bool = True,
+    ) -> subprocess.CompletedProcess[bytes]:
+        command = ["git", "-C", str(self._workspace.root), *arguments]
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=False,
+                timeout=self._git_timeout_seconds,
+                check=False,
+            )
+        except FileNotFoundError as exc:
+            raise IntegrationHumanGateError("git executable is not available") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise IntegrationHumanGateError(
+                "git blob inspection exceeded the configured timeout"
+            ) from exc
+        if check and completed.returncode != 0:
+            raise IntegrationHumanGateError(
+                "git blob inspection failed: "
                 f"exit_code={completed.returncode}, operation={arguments[0]}"
             )
         return completed
