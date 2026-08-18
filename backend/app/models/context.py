@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from enum import StrEnum
+from hashlib import sha256
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -41,6 +43,17 @@ def _normalize_repository_path(value: str) -> str:
     if normalized == ".git" or normalized.startswith(".git/"):
         raise ValueError("repository path must not expose .git internals")
     return normalized
+
+
+def _canonical_fingerprint(payload: dict[str, object]) -> str:
+    return sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 class ContextScopeMatch(BaseModel):
@@ -183,7 +196,7 @@ class ContextPacket(BaseModel):
         return normalized
 
     @model_validator(mode="after")
-    def validate_packet_usage(self) -> ContextPacket:
+    def validate_packet_usage_and_fingerprint(self) -> ContextPacket:
         paths = [item.path for item in self.selected_files]
         if len(paths) != len(set(paths)):
             raise ValueError("selected_files must not contain duplicate paths")
@@ -203,4 +216,9 @@ class ContextPacket(BaseModel):
             raise ValueError("packet exceeds max_estimated_tokens")
         if self.usage.selected_files > self.budget.max_files:
             raise ValueError("packet exceeds max_files")
+
+        canonical_payload = self.model_dump(mode="json", exclude={"fingerprint"})
+        expected_fingerprint = _canonical_fingerprint(canonical_payload)
+        if self.fingerprint != expected_fingerprint:
+            raise ValueError("ContextPacket fingerprint does not match its canonical payload")
         return self
