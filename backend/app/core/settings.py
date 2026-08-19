@@ -34,7 +34,7 @@ class Settings(BaseSettings):
 
     github_token: SecretStr | None = None
     github_api_base_url: str = "https://api.github.com"
-    github_publication_timeout_seconds: float = Field(default=30.0, gt=0.0, le=120.0)
+    github_publication_timeout_seconds: float = Field(default=30.0, gt=0.0, le=30.0)
 
     planner_model: str = "Pro/zai-org/GLM-4.7"
     developer_model: str = "deepseek-ai/DeepSeek-V3.2"
