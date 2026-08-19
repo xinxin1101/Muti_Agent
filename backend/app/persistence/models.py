@@ -114,6 +114,7 @@ class TaskRow(PersistenceBase):
     task_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     contract: Mapped[dict] = mapped_column(JSONB, nullable=False)
     contract_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    depends_on: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     lease_owner: Mapped[str | None] = mapped_column(String(255), nullable=True)
     lease_dispatch_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     lease_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
