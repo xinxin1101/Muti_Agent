@@ -372,7 +372,9 @@ class ProductRuntimeService:
                     )
             else:
                 if pair.task_commit is None or pair.task_base_commit is None:
-                    raise PersistenceCorruptionError("integration diff lacks task commit provenance")
+                    raise PersistenceCorruptionError(
+                        "integration diff lacks task commit provenance"
+                    )
                 task_parents = await asyncio.to_thread(reader.commit_parents, pair.task_commit)
                 if task_parents != (pair.task_base_commit,):
                     raise PersistenceCorruptionError(
@@ -511,7 +513,8 @@ class ProductRuntimeService:
             )
         if not candidates:
             raise ProductDiffUnavailableError(
-                f"task diff is not available until task {task_id!r} has accepted successful worker evidence"
+                "task diff is not available until task "
+                f"{task_id!r} has accepted successful worker evidence"
             )
         unique = {(item.base_commit, item.head_commit) for item in candidates}
         if len(unique) != 1:
@@ -540,7 +543,10 @@ class ProductRuntimeService:
                     "persisted merge queue snapshot does not match the Run base commit"
                 )
             for attempt in merge_snapshot.attempts:
-                if attempt.task_id != task_id or attempt.outcome is not MergeAttemptOutcome.INTEGRATED:
+                if (
+                    attempt.task_id != task_id
+                    or attempt.outcome is not MergeAttemptOutcome.INTEGRATED
+                ):
                     continue
                 if attempt.integration_commit is None:
                     raise PersistenceCorruptionError(
