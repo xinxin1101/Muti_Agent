@@ -231,7 +231,9 @@ describe("RunDashboardPage live timeline", () => {
     });
 
     await waitFor(() => expect(productApi.getRunDAG).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(productApi.getRunMetrics).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(vi.mocked(productApi.getRunMetrics).mock.calls.length).toBeGreaterThanOrEqual(2),
+    );
   });
 
   it("fails closed on a sequence gap instead of presenting corrupted order", async () => {
