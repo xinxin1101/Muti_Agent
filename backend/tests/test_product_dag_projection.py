@@ -109,7 +109,6 @@ def _snapshot(
     persisted_tasks = tuple(
         PersistedTask(
             task=dag.node(task_id).task,
-            depends_on=dag.node(task_id).depends_on,
             contract_sha256=canonical_payload(dag.node(task_id).task)[1],
             created_at=datetime(2026, 8, 19, tzinfo=UTC),
         )
