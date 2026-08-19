@@ -11,8 +11,12 @@ from pydantic import ValidationError
 from app.api import create_app
 from app.api.models import (
     DispatchStatus,
+    ProductDAGNode,
+    ProductDAGNodeState,
+    ProductDAGStateBasis,
     ProductProject,
     ProductRun,
+    ProductRunDAG,
     ProductRunDetail,
     ProductTaskDetail,
     ProductTaskSummary,
@@ -120,6 +124,27 @@ class FakeProductService:
             ),
         )
 
+    async def get_run_dag(self, run_id: UUID):
+        if run_id != self.run_id:
+            raise ValueError("unknown run")
+        return ProductRunDAG(
+            run_id=self.run_id,
+            dag_sha256="d" * 64,
+            topology_source="PERSISTED",
+            topological_order=("api-task",),
+            nodes=(
+                ProductDAGNode(
+                    task_id="api-task",
+                    objective="Expose a validated product API.",
+                    topological_index=0,
+                    layer=0,
+                    presentation_state=ProductDAGNodeState.READY,
+                    state_basis=ProductDAGStateBasis.DERIVED_DAG,
+                ),
+            ),
+            edges=(),
+        )
+
     async def get_task(self, run_id: UUID, task_id: str):
         if run_id != self.run_id or task_id != "api-task":
             raise ValueError("unknown task")
@@ -157,6 +182,13 @@ def test_product_routes_expose_typed_browser_contracts() -> None:
     dashboard = asyncio.run(_request("GET", f"/api/v1/runs/{service.run_id}", service=service))
     assert dashboard.status_code == 200
     assert dashboard.json()["tasks"][0]["task_id"] == "api-task"
+
+    dag = asyncio.run(
+        _request("GET", f"/api/v1/runs/{service.run_id}/dag", service=service)
+    )
+    assert dag.status_code == 200
+    assert dag.json()["nodes"][0]["presentation_state"] == "READY"
+    assert dag.json()["edges"] == []
 
     task = asyncio.run(
         _request("GET", f"/api/v1/runs/{service.run_id}/tasks/api-task", service=service)
@@ -216,6 +248,11 @@ def test_unknown_product_resources_map_to_404() -> None:
     service = FakeProductService()
     missing = asyncio.run(_request("GET", f"/api/v1/runs/{uuid4()}", service=service))
     assert missing.status_code == 404
+
+    missing_dag = asyncio.run(
+        _request("GET", f"/api/v1/runs/{uuid4()}/dag", service=service)
+    )
+    assert missing_dag.status_code == 404
 
     missing_task = asyncio.run(
         _request("GET", f"/api/v1/runs/{service.run_id}/tasks/missing", service=service)
