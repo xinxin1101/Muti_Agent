@@ -7,7 +7,7 @@ Phase 4 Step 4.4 makes the already validated Task DAG visible in the product wit
 ```text
 validated TaskDAG
         ↓
-immutable PostgreSQL DAG snapshot
+atomic PostgreSQL Run + DAG snapshot
         ↓
 canonical DAG SHA-256
         ↓
@@ -37,7 +37,17 @@ Migration `0005_task_dag_dependencies` adds:
 
 NULL is intentional for legacy Runs. It means authoritative topology was not persisted under the Step 4.4 contract.
 
-`PostgresDAGStore.persist_dag()` accepts only an already validated `TaskDAG`. It verifies that the DAG task ids and TaskContract hashes exactly match the persisted Run, normalizes topology deterministically, persists dependency lists, and freezes the canonical DAG SHA-256. Re-recording the same DAG is idempotent; changing task identity, contracts, or edges fails closed.
+For new Product Runs, `PostgresDAGStore.start_run()` performs one PostgreSQL transaction containing:
+
+```text
+RunRow + dag_sha256
+TaskRow + TaskContract hash + depends_on
+RUN_STARTED structured event
+```
+
+Only after that transaction commits may Dramatiq dispatch occur. A failure while freezing Run/DAG identity therefore rolls back the whole Run instead of leaving a RUNNING, undispatched half-record.
+
+`PostgresDAGStore.start_run()` and `persist_dag()` accept only an already validated `TaskDAG`. Topology is normalized deterministically before hashing. The persisted task identities/contracts must agree with the DAG, and a previously frozen DAG cannot be changed. `persist_dag()` remains a bounded compatibility path for an existing still-running Run that has no accepted topology; same-DAG replay is idempotent and conflicting topology fails closed.
 
 `PostgresDAGStore.load_dag()` reconstructs `TaskDAG`, re-runs its unknown-dependency/self-dependency/cycle validation, and verifies the canonical hash. Corrupted topology therefore cannot become browser data.
 
@@ -56,7 +66,7 @@ A legacy single-task Run is safely representable as one node with zero possible 
 
 No API in Step 4.4 accepts DAG mutations.
 
-Presentation state is built on the server. The latest accepted typed `STATE_TRANSITION` evidence is used for active/terminal task states. For tasks that have not advanced beyond PENDING, the validated DAG derives READY or BLOCKED from completed/failed upstream evidence. This is a UI projection; the deterministic scheduler remains the execution authority.
+Presentation state is built on the server. The latest accepted typed `STATE_TRANSITION` evidence is used for active/terminal task states. For tasks that have not advanced beyond PENDING, the validated DAG derives READY or BLOCKED from completed/failed upstream evidence. Contradictory evidence such as an advanced task downstream of a failed dependency fails closed as persistence corruption. This is a UI projection; the deterministic scheduler remains the execution authority.
 
 ## SSE boundary
 
