@@ -1,8 +1,8 @@
 # Step 4.5 Acceptance — Diff Viewer
 
-Status: **CANDIDATE / PENDING CI**
+Status: **ACCEPTED / COMPLETE**
 
-Step 4.5 is ready for acceptance when the exact PR head proves:
+Step 4.5 is accepted with the following frozen guarantees and boundaries:
 
 - `TASK` commit pairs come only from validated successful `WORKER_EXECUTION` evidence;
 - `INTEGRATION` commit pairs come only from validated `MERGE_QUEUE_SNAPSHOT` integrated attempts;
@@ -21,9 +21,43 @@ Step 4.5 is ready for acceptance when the exact PR head proves:
 - binary patch bodies are omitted explicitly;
 - bounded patches/files carry explicit truncation/omission metadata;
 - React renders the typed diff as text and exposes no edit/stage/commit/reset/merge/ref controls;
-- Backend Quality and Frontend Quality remain green on the same exact head;
 - no Run Metrics, GitHub publication, benchmark/demo, or new scheduler authority is introduced.
 
-Frozen candidate principle:
+## Final exact-head acceptance
+
+Accepted code head before ledger advancement:
+
+`6eb3b9437d6b51f1e6bdcbb112f98a22da6af347`
+
+Backend Quality on that exact head:
+
+- PostgreSQL + Redis service startup: **PASS**;
+- existing Alembic `0001 → 0002 → 0003 → 0004 → 0005 → downgrade base → 0001 → 0002 → 0003 → 0004 → 0005`: **PASS**;
+- no Step 4.5 database migration was introduced;
+- verification Docker image build: **PASS**;
+- `ruff check .`: **PASS**;
+- successful Worker evidence → Task commit pair regression: **PASS**;
+- successful Merge Queue evidence → two-parent Integration commit pair regression: **PASS**;
+- wrong Task direct-parent evidence fails closed: **PASS**;
+- reversed Integration parent order fails closed: **PASS**;
+- arbitrary SHA/query-selector injection regressions: **PASS**;
+- external diff/textconv execution fencing regression: **PASS**;
+- binary/large/blob/file-count/patch-byte bound regressions: **PASS**;
+- complete backend `pytest`: **317 passed in 34.18s**.
+
+Frontend Quality on the same exact head:
+
+- locked `npm ci`: **PASS**;
+- strict TypeScript typecheck: **PASS**;
+- lint: **PASS**;
+- Vitest: **20 passed across 5 test files**;
+- Task Diff rendering without Git mutation controls: **PASS**;
+- `TASK → INTEGRATION` evidence-view switching while leaving commit selection backend-owned: **PASS**;
+- existing DAG/SSE/product-page regressions: **PASS**;
+- Vite production build: **PASS**.
+
+Both `docs/DIFF_VIEWER.md`, this acceptance document, and `docs/PROGRESS.md` are covered by Backend Quality and Frontend Quality path gates. The acceptance/progress ledger update therefore must pass both workflows again before merge.
+
+Frozen Step 4.5 principle:
 
 > **Persisted typed evidence chooses the commit pair; Git proves the code delta; the browser only renders the bounded result.**
