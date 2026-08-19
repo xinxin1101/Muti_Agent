@@ -5,13 +5,14 @@ This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The developmen
 ## Current position
 
 - Current phase: **Phase 4 — V1.0 Productization**
-- Completed item: **Step 4.1 — React / TypeScript UI Foundation**
-- Next item: **Step 4.2 — Project / New Run / Dashboard / Task Detail pages**
+- Completed item: **Step 4.2 — Project / New Run / Dashboard / Task Detail pages**
+- Next item: **Step 4.3 — SSE live status/log updates**
 - Phase 2 status: **ACCEPTED / COMPLETE**
 - Phase 3 status: **ACCEPTED / COMPLETE**
 - Phase 4 status: **IN PROGRESS**
 - Step 4.1 status: **ACCEPTED / COMPLETE**
-- Step 4.2 status: **NOT STARTED**
+- Step 4.2 status: **ACCEPTED / COMPLETE**
+- Step 4.3 status: **NOT STARTED**
 - V0.1 status: **ACCEPTED / COMPLETE**
 
 ---
@@ -241,8 +242,8 @@ Phase 4 turns the accepted runtime into an operable, observable, and evaluable p
 | Step | Capability | Status | Acceptance snapshot |
 | --- | --- | --- | --- |
 | 4.1 | React / TypeScript UI Foundation | **ACCEPTED** | locked install + typecheck + lint + 3 UI tests + production build |
-| 4.2 | Project / New Run / Dashboard / Task Detail pages | **NEXT / NOT STARTED** | — |
-| 4.3 | SSE live status/log updates | **NOT STARTED** | — |
+| 4.2 | Project / New Run / Dashboard / Task Detail pages | **ACCEPTED** | Backend Quality: 293 passed; Frontend Quality: typecheck + lint + tests + build |
+| 4.3 | SSE live status/log updates | **NEXT / NOT STARTED** | — |
 | 4.4 | DAG visualization | **NOT STARTED** | — |
 | 4.5 | Diff viewer | **NOT STARTED** | — |
 | 4.6 | Run metrics | **NOT STARTED** | — |
@@ -305,18 +306,122 @@ Frozen Step 4.1 principle:
 
 ---
 
-## Gate before Step 4.2 — Product Pages
+## Step 4.2 — Project / New Run / Dashboard / Task Detail Pages — ACCEPTED
 
-The next roadmap item is **Step 4.2 — Project / New Run / Dashboard / Task Detail pages**.
+Accepted through PR #27 candidate: `Phase 4 Step 4.2: add product pages and browser API`.
 
-Step 4.2 may introduce real browser-facing product pages and the minimal backend HTTP read/write contracts required by those pages, but it must preserve these boundaries:
+Design / acceptance documents:
 
-- browser state remains presentation/client state, never scheduler truth;
-- backend APIs expose typed, bounded product DTOs rather than raw persistence rows or credentials;
-- starting a Run from the browser must enter the existing validated runtime path rather than creating a parallel execution path;
-- Project / Run / Task views may display accepted evidence but may not synthesize success;
-- SSE remains Step 4.3 and must not be smuggled into Step 4.2;
-- DAG visualization remains Step 4.4;
+- `docs/PRODUCT_PAGES.md`
+- `docs/STEP_4_2_ACCEPTANCE.md`
+
+### Accepted product flow
+
+```text
+browser
+   ↓
+typed FastAPI product boundary
+   ├── Projects
+   ├── New Run
+   ├── Runs
+   ├── Run Dashboard
+   └── Task Detail
+   ↓
+validated TaskContract request
+   ↓
+backend-managed Git workspace
+   ↓
+actual Git HEAD → base_commit
+   ↓
+PostgresEvidenceStore.start_run()
+   ↓
+DramatiqTaskDispatcher.dispatch()
+   ↓
+existing lease / heartbeat / run_token fenced worker runtime
+```
+
+The browser can request work but cannot provide runtime authority. It never supplies `base_commit`, `run_token`, lease state, verification success, Reviewer approval, integration success, or terminal Run status.
+
+Project repository materialization is backend-owned. Product requests accept only absolute HTTPS repository URLs without embedded credentials. Existing managed workspaces must match the persisted origin and default branch; project-level symlink workspaces fail closed.
+
+The product API exposes bounded DTO projections rather than raw database rows. Task Detail exposes the persisted `TaskContract` plus bounded evidence kind/stage/sequence/hash metadata, not raw prompts, model outputs, verifier stdout/stderr, credentials, or fencing capabilities.
+
+### Run launch boundary
+
+New Run deliberately derives repository truth on the server:
+
+```text
+browser TaskContract
+        ↓
+Pydantic validation
+        ↓
+managed workspace readiness check
+        ↓
+Git HEAD
+        ↓
+exact base_commit
+        ↓
+persist Run
+        ↓
+existing Dramatiq dispatch path
+```
+
+An unready/untrustworthy workspace fails before Run creation. A Redis broker rejection after persistence is returned as `BROKER_UNAVAILABLE`; the API does not fabricate queued execution or task success and makes no exactly-once dispatch claim.
+
+Persisted Run status is constrained by `PersistedRunStatus`, so unknown/corrupted status strings fail closed at the product DTO boundary.
+
+### Accepted product HTTP surface
+
+```text
+GET  /healthz
+GET  /api/v1/projects
+POST /api/v1/projects
+GET  /api/v1/projects/{project_id}
+GET  /api/v1/runs
+POST /api/v1/runs
+GET  /api/v1/runs/{run_id}
+GET  /api/v1/runs/{run_id}/tasks/{task_id}
+```
+
+SSE/WebSocket streaming is intentionally absent from Step 4.2.
+
+### Final acceptance snapshot
+
+The hardened Step 4.2 code path passed:
+
+- PostgreSQL + Redis service startup: **PASS**;
+- Alembic full upgrade → downgrade base → upgrade head: **PASS**;
+- verification Docker image build: **PASS**;
+- Ruff: **PASS**;
+- backend pytest: **293 passed in 33.82s**;
+- previous Starlette/TestClient deprecation warning: **removed**;
+- Frontend Quality locked install: **PASS**;
+- TypeScript strict typecheck: **PASS**;
+- frontend lint: **PASS**;
+- Vitest / Testing Library product-page and API-client regressions: **PASS**;
+- Vite production build: **PASS**;
+- Backend and Frontend workflow path gates cover Step 4.2 design/acceptance/progress documents;
+- both workflows retain read-only repository permissions.
+
+Frozen Step 4.2 principle:
+
+> **The browser may request work; Git, typed persistence, and the accepted runtime still decide what work exists and what happened.**
+
+---
+
+## Gate before Step 4.3 — SSE Live Status / Logs
+
+The next roadmap item is **Step 4.3 — SSE live status/log updates**.
+
+Step 4.3 may expose the already accepted structured runtime-event timeline as a browser-consumable server-sent event stream, but it must preserve these boundaries:
+
+- SSE is observability/transport only and never becomes a scheduler or success authority;
+- persisted structured runtime events remain a projection of accepted typed evidence/runtime mutations, not a second truth store;
+- the browser resumes with monotonic Run sequence/cursor semantics rather than inventing client-side ordering;
+- reconnects must be bounded and must not duplicate or skip accepted event history silently;
+- `run_token`, provider/Git/database/Redis credentials, raw prompts, raw verification outputs, and other sensitive evidence remain outside the SSE payload;
+- the initial stream should be Run-scoped and queryable from the existing structured event boundary;
+- DAG visualization remains Step 4.4 and must not be smuggled into Step 4.3;
 - diff viewer, metrics, and GitHub publication remain their dedicated later steps.
 
-**Step 4.2 status: NOT STARTED.**
+**Step 4.3 status: NOT STARTED.**
