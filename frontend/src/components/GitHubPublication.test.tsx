@@ -79,19 +79,23 @@ describe("GitHubPublication", () => {
     expect(screen.queryByText(/token/i)).not.toBeInTheDocument();
   });
 
-  it("treats PUBLISHING as a read-only backend claim", async () => {
+  it("leaves PUBLISHING claim expiry and takeover authority in the backend", async () => {
     vi.mocked(productApi.getGitHubPublication).mockResolvedValue(
       publication("PUBLISHING"),
     );
     renderPublication("SUCCEEDED");
 
-    const button = await screen.findByRole("button", { name: "Publishing…" });
-    expect(button).toBeDisabled();
+    const button = await screen.findByRole("button", { name: "Retry publication" });
+    expect(button).toBeEnabled();
     expect(
-      screen.getByText(/Another backend publication attempt currently owns/),
+      screen.getByText(/backend rejects a still-live claim and takes over only after/),
     ).toBeInTheDocument();
-    expect(productApi.publishGitHubDraft).not.toHaveBeenCalled();
     expect(screen.queryByText(/attempt_token/i)).not.toBeInTheDocument();
+
+    fireEvent.click(button);
+    await waitFor(() =>
+      expect(productApi.publishGitHubDraft).toHaveBeenCalledWith(runId),
+    );
   });
 
   it("publishes with no browser selector form and leaves Run status outside the component", async () => {
