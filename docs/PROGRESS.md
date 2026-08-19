@@ -5,12 +5,13 @@ This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The developmen
 ## Current position
 
 - Current phase: **Phase 4 — V1.0 Productization**
-- Completed item: **Step 3.8 — Structured run/event logs**
-- Next item: **Step 4.1 — React / TypeScript UI**
+- Completed item: **Step 4.1 — React / TypeScript UI Foundation**
+- Next item: **Step 4.2 — Project / New Run / Dashboard / Task Detail pages**
 - Phase 2 status: **ACCEPTED / COMPLETE**
 - Phase 3 status: **ACCEPTED / COMPLETE**
-- Phase 4 status: **NOT STARTED**
-- Step 4.1 status: **NOT STARTED**
+- Phase 4 status: **IN PROGRESS**
+- Step 4.1 status: **ACCEPTED / COMPLETE**
+- Step 4.2 status: **NOT STARTED**
 - V0.1 status: **ACCEPTED / COMPLETE**
 
 ---
@@ -233,31 +234,89 @@ Frozen Step 3.8 principle:
 
 ---
 
-# Phase 4 — V1.0 Productization — NOT STARTED
+# Phase 4 — V1.0 Productization — IN PROGRESS
 
-The next roadmap item is **Step 4.1 — React / TypeScript UI**.
+Phase 4 turns the accepted runtime into an operable, observable, and evaluable product without moving runtime authority into the browser.
 
-Phase 4 target order from `docs/DEVELOPMENT_PLAN.md`:
+| Step | Capability | Status | Acceptance snapshot |
+| --- | --- | --- | --- |
+| 4.1 | React / TypeScript UI Foundation | **ACCEPTED** | locked install + typecheck + lint + 3 UI tests + production build |
+| 4.2 | Project / New Run / Dashboard / Task Detail pages | **NEXT / NOT STARTED** | — |
+| 4.3 | SSE live status/log updates | **NOT STARTED** | — |
+| 4.4 | DAG visualization | **NOT STARTED** | — |
+| 4.5 | Diff viewer | **NOT STARTED** | — |
+| 4.6 | Run metrics | **NOT STARTED** | — |
+| 4.7 | GitHub branch + Draft PR integration | **NOT STARTED** | — |
+| 4.8 | Benchmark/demo suite | **NOT STARTED** | — |
 
-1. React / TypeScript UI.
-2. Project / New Run / Dashboard / Task Detail pages.
-3. SSE live status/log updates.
-4. DAG visualization.
-5. Diff viewer.
-6. Run metrics.
-7. GitHub branch + Draft PR integration.
-8. Benchmark/demo suite.
+## Step 4.1 — React / TypeScript UI Foundation — ACCEPTED
 
-## Gate before Step 4.1 — React / TypeScript UI
+Merged through PR #26 candidate: `Phase 4 Step 4.1: add React TypeScript UI foundation`.
 
-Step 4.1 should establish the frontend project and quality baseline only. It should consume existing backend concepts without rewriting the accepted runtime, persistence, scheduling, fencing, verification, or event semantics.
+Design / acceptance documents:
 
-The first productization step should preserve these boundaries:
+- `docs/FRONTEND_FOUNDATION.md`
+- `docs/STEP_4_1_ACCEPTANCE.md`
 
-- frontend state is presentation/client state, never scheduler truth;
-- structured runtime events are observable data, never task-success authority;
-- browser code never receives provider secrets, GitHub credentials, database credentials, or `run_token`;
-- SSE belongs to the later Phase 4 streaming step rather than being smuggled into the initial UI scaffold;
-- GitHub Draft PR publication remains a later dedicated Phase 4 boundary.
+### Accepted frontend foundation
 
-**Step 4.1 status: NOT STARTED.**
+```text
+browser
+   ↓
+React / TypeScript / Vite
+   ├── React Router       presentation routes
+   ├── TanStack Query     server-state client boundary
+   ├── typed API client   HTTP boundary
+   ├── Tailwind CSS       presentation layer
+   └── Vitest / Testing Library
+
+backend runtime truth
+   ↑
+never replaced by browser state
+```
+
+The browser is explicitly non-authoritative. Scheduling, leases, `run_token` fencing, verification, Reviewer decisions, integration state, typed evidence, and run success remain backend-owned.
+
+Browser-visible configuration is restricted to public values such as `VITE_API_BASE_URL`. Provider credentials, GitHub credentials, database credentials, Redis credentials, and `run_token` remain outside the frontend boundary.
+
+Runtime-event DTOs mirror the accepted backend wire fields and enum values while excluding credentials. This prepares later API/SSE consumption without implementing streaming in Step 4.1.
+
+### Reproducible quality gate
+
+`frontend/package-lock.json` is committed. The final workflow runs under Node.js 24 with read-only repository permission and executes:
+
+```text
+npm ci
+    ↓
+TypeScript strict typecheck
+    ↓
+Oxlint
+    ↓
+Vitest + Testing Library
+    ↓
+Vite production build
+```
+
+The final Step 4.1 code head passed all five gates. The acceptance and progress documents are also workflow-triggering paths so ledger-only changes cannot bypass exact-head frontend validation.
+
+Frozen Step 4.1 principle:
+
+> **The browser may present runtime truth; it may not manufacture runtime truth.**
+
+---
+
+## Gate before Step 4.2 — Product Pages
+
+The next roadmap item is **Step 4.2 — Project / New Run / Dashboard / Task Detail pages**.
+
+Step 4.2 may introduce real browser-facing product pages and the minimal backend HTTP read/write contracts required by those pages, but it must preserve these boundaries:
+
+- browser state remains presentation/client state, never scheduler truth;
+- backend APIs expose typed, bounded product DTOs rather than raw persistence rows or credentials;
+- starting a Run from the browser must enter the existing validated runtime path rather than creating a parallel execution path;
+- Project / Run / Task views may display accepted evidence but may not synthesize success;
+- SSE remains Step 4.3 and must not be smuggled into Step 4.2;
+- DAG visualization remains Step 4.4;
+- diff viewer, metrics, and GitHub publication remain their dedicated later steps.
+
+**Step 4.2 status: NOT STARTED.**
