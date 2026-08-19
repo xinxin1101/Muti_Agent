@@ -8,8 +8,13 @@ from fastapi import FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import StreamingResponse
 
+from app.api.github_publication import (
+    ProductGitHubPublicationConfigurationError,
+    ProductGitHubPublicationFailedError,
+)
 from app.api.models import (
     ProductDiffKind,
+    ProductGitHubPublication,
     ProductProject,
     ProductRun,
     ProductRunDAG,
@@ -21,6 +26,7 @@ from app.api.models import (
     RunCreateRequest,
     RunLaunchResponse,
 )
+from app.api.publication import ProductGitHubPublicationUnavailableError
 from app.api.service import (
     ProductDiffUnavailableError,
     ProductMetricsUnavailableError,
@@ -34,7 +40,11 @@ from app.api.sse import (
     runtime_event_stream,
     validate_runtime_event_batch,
 )
-from app.persistence import PersistenceCorruptionError, PersistenceDAGUnavailableError
+from app.persistence import (
+    PersistenceConflictError,
+    PersistenceCorruptionError,
+    PersistenceDAGUnavailableError,
+)
 from app.workspace import ProjectProvisionError, WorkspaceGitError
 
 
@@ -134,6 +144,68 @@ def create_app(service: ProductRuntimeService, *, close_service: bool = False) -
             raise HTTPException(
                 status_code=500,
                 detail="persisted Run Metrics source facts failed integrity validation",
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get(
+        "/api/v1/runs/{run_id}/github-publication",
+        response_model=ProductGitHubPublication,
+    )
+    async def get_github_publication(
+        request: Request,
+        run_id: UUID,
+    ) -> ProductGitHubPublication:
+        if request.query_params:
+            raise HTTPException(
+                status_code=400,
+                detail="GitHub publication does not accept browser-authored selectors",
+            )
+        try:
+            return await service.get_github_publication(run_id)  # type: ignore[attr-defined]
+        except ProductGitHubPublicationUnavailableError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except PersistenceCorruptionError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail="GitHub publication source facts failed integrity validation",
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post(
+        "/api/v1/runs/{run_id}/github-publication",
+        response_model=ProductGitHubPublication,
+    )
+    async def publish_github_draft(
+        request: Request,
+        run_id: UUID,
+    ) -> ProductGitHubPublication:
+        if request.query_params:
+            raise HTTPException(
+                status_code=400,
+                detail="GitHub publication does not accept browser-authored selectors",
+            )
+        if (await request.body()).strip():
+            raise HTTPException(
+                status_code=400,
+                detail="GitHub publication does not accept a browser-authored request body",
+            )
+        try:
+            return await service.publish_github_draft(run_id)  # type: ignore[attr-defined]
+        except ProductGitHubPublicationUnavailableError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ProductGitHubPublicationConfigurationError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except ProductGitHubPublicationFailedError as exc:
+            status_code = 409 if exc.code == "REMOTE_BRANCH_CONFLICT" else 502
+            raise HTTPException(status_code=status_code, detail=exc.public_message) from exc
+        except PersistenceConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except PersistenceCorruptionError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail="GitHub publication audit/source facts failed integrity validation",
             ) from exc
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
