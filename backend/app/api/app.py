@@ -16,7 +16,7 @@ from app.api.models import (
     RunCreateRequest,
     RunLaunchResponse,
 )
-from app.api.service import ProductRuntimeService
+from app.api.service import ProductRuntimeService, ProductWorkspaceNotReadyError
 from app.workspace import ProjectProvisionError, WorkspaceGitError
 
 
@@ -87,6 +87,8 @@ def create_app(service: ProductRuntimeService, *, close_service: bool = False) -
     async def create_run(request: RunCreateRequest) -> RunLaunchResponse:
         try:
             return await service.create_run(request)
+        except ProductWorkspaceNotReadyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except WorkspaceGitError as exc:

@@ -20,7 +20,11 @@ from app.api.models import (
 from app.dispatch.errors import TaskDispatchBrokerError
 from app.models.dispatch import TaskDispatchReceipt
 from app.persistence.types import PersistedRunSnapshot
-from app.workspace import LocalGitWorkspace
+from app.workspace import LocalGitWorkspace, WorkspaceGitError
+
+
+class ProductWorkspaceNotReadyError(RuntimeError):
+    """Raised when a persisted Project has no trustworthy managed Git workspace."""
 
 
 class ProductCatalog(Protocol):
@@ -120,8 +124,19 @@ class ProductRuntimeService:
 
     async def create_run(self, request: RunCreateRequest) -> RunLaunchResponse:
         project = await self._catalog.get_project(request.project_id)
-        workspace = self._workspace_resolver.resolve(request.project_id)
-        base_commit = await asyncio.to_thread(workspace.head_commit)
+        ready = await asyncio.to_thread(self._provisioner.is_ready, request.project_id)
+        if not ready:
+            raise ProductWorkspaceNotReadyError(
+                f"managed workspace is not ready for project {request.project_id}"
+            )
+        try:
+            workspace = self._workspace_resolver.resolve(request.project_id)
+            base_commit = await asyncio.to_thread(workspace.head_commit)
+        except (ValueError, WorkspaceGitError) as exc:
+            raise ProductWorkspaceNotReadyError(
+                f"managed workspace is not trustworthy for project {request.project_id}"
+            ) from exc
+
         run_id = await self._evidence_store.start_run(
             project_id=request.project_id,
             tasks=(request.task,),
@@ -168,7 +183,7 @@ class ProductRuntimeService:
             project_id=snapshot.project_id,
             repository_url=snapshot.repository_url,
             default_branch=snapshot.default_branch,
-            status=snapshot.status.value,
+            status=snapshot.status,
             base_commit=snapshot.base_commit,
             task_count=len(tasks),
             started_at=snapshot.started_at,
@@ -196,7 +211,7 @@ class ProductRuntimeService:
         return ProductTaskDetail(
             run_id=snapshot.run_id,
             project_id=snapshot.project_id,
-            run_status=snapshot.status.value,
+            run_status=snapshot.status,
             task=persisted.task,
             contract_sha256=persisted.contract_sha256,
             created_at=persisted.created_at,

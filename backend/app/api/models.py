@@ -7,7 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
 from app.models.task import TaskContract
-from app.persistence.types import PersistenceEvidenceKind
+from app.persistence.types import PersistenceEvidenceKind, PersistedRunStatus
 
 
 class ProductModel(BaseModel):
@@ -26,7 +26,7 @@ class ProductProject(ProductModel):
 class ProductRun(ProductModel):
     run_id: UUID
     project_id: UUID
-    status: str
+    status: PersistedRunStatus
     base_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
     task_count: int = Field(ge=1)
     started_at: datetime
@@ -57,7 +57,7 @@ class ProductEvidenceSummary(ProductModel):
 class ProductTaskDetail(ProductModel):
     run_id: UUID
     project_id: UUID
-    run_status: str
+    run_status: PersistedRunStatus
     task: TaskContract
     contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     created_at: datetime

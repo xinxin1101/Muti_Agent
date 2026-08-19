@@ -35,7 +35,7 @@ class ManagedProjectProvisioner:
 
     def is_ready(self, project_id: UUID) -> bool:
         path = self.project_path(project_id)
-        if not path.is_dir():
+        if path.is_symlink() or not path.is_dir():
             return False
         try:
             LocalGitWorkspace(path)
@@ -50,6 +50,8 @@ class ManagedProjectProvisioner:
             raise ValueError("default_branch must not be empty")
 
         target = self.project_path(project_id)
+        if target.is_symlink():
+            raise ProjectProvisionError("managed project workspace must not be a symbolic link")
         if target.exists():
             workspace = LocalGitWorkspace(target)
             origin = self._git(
@@ -58,6 +60,13 @@ class ManagedProjectProvisioner:
             if origin != repository:
                 raise ProjectProvisionError(
                     "managed project workspace origin does not match persisted repository URL"
+                )
+            current_branch = self._git(
+                ["-C", str(workspace.root), "symbolic-ref", "--short", "HEAD"]
+            ).strip()
+            if current_branch != branch:
+                raise ProjectProvisionError(
+                    "managed project workspace branch does not match persisted default branch"
                 )
             return
 
@@ -75,7 +84,7 @@ class ManagedProjectProvisioner:
             )
             LocalGitWorkspace(target)
         except Exception:
-            if target.exists():
+            if target.exists() and not target.is_symlink():
                 shutil.rmtree(target, ignore_errors=True)
             raise
 

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from fastapi.testclient import TestClient
+import httpx
+import pytest
+from pydantic import ValidationError
 
 from app.api import create_app
 from app.api.models import (
@@ -17,6 +20,7 @@ from app.api.models import (
     RunCreateRequest,
     RunLaunchResponse,
 )
+from app.api.service import ProductWorkspaceNotReadyError
 from app.models import TaskContract
 
 
@@ -39,6 +43,7 @@ class FakeProductService:
         self.run_id = uuid4()
         self.created_request: ProjectCreateRequest | None = None
         self.run_request: RunCreateRequest | None = None
+        self.workspace_ready = True
 
     async def dispose(self) -> None:
         return None
@@ -50,7 +55,7 @@ class FakeProductService:
             default_branch="main",
             created_at=datetime(2026, 8, 19, tzinfo=UTC),
             run_count=1,
-            workspace_ready=True,
+            workspace_ready=self.workspace_ready,
         )
 
     async def list_projects(self):
@@ -81,6 +86,8 @@ class FakeProductService:
 
     async def create_run(self, request: RunCreateRequest):
         self.run_request = request
+        if not self.workspace_ready:
+            raise ProductWorkspaceNotReadyError("managed workspace is not ready")
         return RunLaunchResponse(
             run_id=self.run_id,
             project_id=self.project_id,
@@ -127,49 +134,63 @@ class FakeProductService:
         )
 
 
+async def _request(method: str, path: str, *, service: FakeProductService, json=None):
+    transport = httpx.ASGITransport(app=create_app(service))  # type: ignore[arg-type]
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        return await client.request(method, path, json=json)
+
+
 def test_product_routes_expose_typed_browser_contracts() -> None:
     service = FakeProductService()
-    client = TestClient(create_app(service))  # type: ignore[arg-type]
 
-    assert client.get("/healthz").json() == {"status": "ok"}
-
-    projects = client.get("/api/v1/projects")
+    assert asyncio.run(_request("GET", "/healthz", service=service)).json() == {"status": "ok"}
+    projects = asyncio.run(_request("GET", "/api/v1/projects", service=service))
     assert projects.status_code == 200
     assert projects.json()[0]["workspace_ready"] is True
 
-    runs = client.get(f"/api/v1/runs?project_id={service.project_id}")
+    runs = asyncio.run(
+        _request("GET", f"/api/v1/runs?project_id={service.project_id}", service=service)
+    )
     assert runs.status_code == 200
     assert runs.json()[0]["status"] == "RUNNING"
 
-    dashboard = client.get(f"/api/v1/runs/{service.run_id}")
+    dashboard = asyncio.run(_request("GET", f"/api/v1/runs/{service.run_id}", service=service))
     assert dashboard.status_code == 200
     assert dashboard.json()["tasks"][0]["task_id"] == "api-task"
 
-    task = client.get(f"/api/v1/runs/{service.run_id}/tasks/api-task")
+    task = asyncio.run(
+        _request("GET", f"/api/v1/runs/{service.run_id}/tasks/api-task", service=service)
+    )
     assert task.status_code == 200
     assert task.json()["task"]["verification_commands"] == ["pytest -q"]
 
 
 def test_project_and_run_creation_use_validated_requests() -> None:
     service = FakeProductService()
-    client = TestClient(create_app(service))  # type: ignore[arg-type]
-
-    created = client.post(
-        "/api/v1/projects",
-        json={
-            "repository_url": "https://github.com/example/repo",
-            "default_branch": "main",
-        },
+    created = asyncio.run(
+        _request(
+            "POST",
+            "/api/v1/projects",
+            service=service,
+            json={
+                "repository_url": "https://github.com/example/repo",
+                "default_branch": "main",
+            },
+        )
     )
     assert created.status_code == 201
     assert service.created_request is not None
 
-    launched = client.post(
-        "/api/v1/runs",
-        json={
-            "project_id": str(service.project_id),
-            "task": _task().model_dump(mode="json"),
-        },
+    launched = asyncio.run(
+        _request(
+            "POST",
+            "/api/v1/runs",
+            service=service,
+            json={
+                "project_id": str(service.project_id),
+                "task": _task().model_dump(mode="json"),
+            },
+        )
     )
     assert launched.status_code == 201
     assert launched.json()["dispatch_status"] == "QUEUED"
@@ -177,12 +198,38 @@ def test_project_and_run_creation_use_validated_requests() -> None:
     assert "base_commit" not in service.run_request.model_dump()
 
 
+def test_workspace_not_ready_maps_to_conflict() -> None:
+    service = FakeProductService()
+    service.workspace_ready = False
+    response = asyncio.run(
+        _request(
+            "POST",
+            "/api/v1/runs",
+            service=service,
+            json={"project_id": str(service.project_id), "task": _task().model_dump(mode="json")},
+        )
+    )
+    assert response.status_code == 409
+
+
 def test_unknown_product_resources_map_to_404() -> None:
     service = FakeProductService()
-    client = TestClient(create_app(service))  # type: ignore[arg-type]
-
-    missing = client.get(f"/api/v1/runs/{uuid4()}")
+    missing = asyncio.run(_request("GET", f"/api/v1/runs/{uuid4()}", service=service))
     assert missing.status_code == 404
 
-    missing_task = client.get(f"/api/v1/runs/{service.run_id}/tasks/missing")
+    missing_task = asyncio.run(
+        _request("GET", f"/api/v1/runs/{service.run_id}/tasks/missing", service=service)
+    )
     assert missing_task.status_code == 404
+
+
+def test_product_run_rejects_unknown_persistence_status() -> None:
+    with pytest.raises(ValidationError):
+        ProductRun(
+            run_id=uuid4(),
+            project_id=uuid4(),
+            status="NOT_A_RUNTIME_STATUS",
+            base_commit="a" * 40,
+            task_count=1,
+            started_at=datetime(2026, 8, 19, tzinfo=UTC),
+        )
