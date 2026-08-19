@@ -5,8 +5,8 @@ This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The developmen
 ## Current position
 
 - Current phase: **Phase 4 — V1.0 Productization**
-- Completed item: **Step 4.4 — DAG visualization**
-- Next item: **Step 4.5 — Diff viewer**
+- Completed item: **Step 4.5 — Diff viewer**
+- Next item: **Step 4.6 — Run metrics**
 - Phase 2 status: **ACCEPTED / COMPLETE**
 - Phase 3 status: **ACCEPTED / COMPLETE**
 - Phase 4 status: **IN PROGRESS**
@@ -14,7 +14,8 @@ This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The developmen
 - Step 4.2 status: **ACCEPTED / COMPLETE**
 - Step 4.3 status: **ACCEPTED / COMPLETE**
 - Step 4.4 status: **ACCEPTED / COMPLETE**
-- Step 4.5 status: **NOT STARTED**
+- Step 4.5 status: **ACCEPTED / COMPLETE**
+- Step 4.6 status: **NOT STARTED**
 - V0.1 status: **ACCEPTED / COMPLETE**
 
 ---
@@ -247,8 +248,8 @@ Phase 4 turns the accepted runtime into an operable, observable, and evaluable p
 | 4.2 | Project / New Run / Dashboard / Task Detail pages | **ACCEPTED** | Backend Quality: 293 passed; Frontend Quality: typecheck + lint + tests + build |
 | 4.3 | SSE live status/log updates | **ACCEPTED** | PostgreSQL sequence → SSE/Last-Event-ID + browser fail-closed validation; Backend Quality: 299 passed; Frontend Quality: typecheck + lint + tests + build |
 | 4.4 | DAG visualization | **ACCEPTED** | atomic/hash-validated DAG persistence + read-only typed SVG projection; Backend Quality: 307 passed; Frontend Quality: typecheck + lint + tests + build |
-| 4.5 | Diff viewer | **NEXT / NOT STARTED** | — |
-| 4.6 | Run metrics | **NOT STARTED** | — |
+| 4.5 | Diff viewer | **ACCEPTED** | evidence-bound commit pairs + bounded read-only Git diff; Backend Quality: 317 passed; Frontend Quality: 20 tests + typecheck + lint + build |
+| 4.6 | Run metrics | **NEXT / NOT STARTED** | — |
 | 4.7 | GitHub branch + Draft PR integration | **NOT STARTED** | — |
 | 4.8 | Benchmark/demo suite | **NOT STARTED** | — |
 
@@ -554,22 +555,101 @@ Frozen Step 4.4 principle:
 
 ---
 
-## Gate before Step 4.5 — Diff Viewer
+## Step 4.5 — Diff Viewer — ACCEPTED
 
-The next roadmap item is **Step 4.5 — Diff viewer**.
+Accepted through PR #30 candidate: `Phase 4 Step 4.5: add evidence-bound Diff Viewer`.
 
-Step 4.5 may make accepted Git/task-commit changes inspectable in the product, but it must preserve these boundaries:
+Design / acceptance documents:
 
-- Git/worktree/task-commit/integration-ref evidence remains the code-state truth; the browser never becomes a file or Git authority;
-- the Diff Viewer is a read-only projection and cannot edit files, stage changes, create commits, rewrite task commits, or advance the integration ref;
-- diff source commits/refs must be selected by backend-validated Run/Task/Git evidence rather than browser-provided arbitrary repository objects;
-- changed paths and diff hunks must be bounded so a large repository or binary output cannot become an unbounded browser payload;
-- path-scope rules remain enforced by the existing TaskContract/workspace boundaries; the viewer cannot widen readable/writable scope;
-- missing, stale, or contradictory Git evidence must fail closed instead of fabricating an empty/successful diff;
-- a visible diff is evidence for inspection only and cannot replace deterministic verification, Reviewer approval, merge gates, or Run success authority;
-- SSE may invalidate/reload diff metadata when accepted Git/runtime facts change, but it must not author or mutate Git state;
-- Run metrics remains Step 4.6;
+- `docs/DIFF_VIEWER.md`
+- `docs/STEP_4_5_ACCEPTANCE.md`
+
+### Accepted Git evidence chain
+
+```text
+accepted WORKER_EXECUTION / MERGE_QUEUE_SNAPSHOT
+        ↓
+backend commit-pair resolver
+        ↓
+exact Git object + parent-chain revalidation
+        ↓
+ReadOnlyCommitDiffReader
+        ↓
+bounded typed Diff DTO
+        ↓
+React read-only DiffViewer
+```
+
+Task diffs are selected only from successful typed `WORKER_EXECUTION` evidence. Integration diffs are selected only from typed `MERGE_QUEUE_SNAPSHOT` integrated attempts. The browser may choose the evidence view (`TASK` or `INTEGRATION`) but cannot provide base/head SHAs, branch names, refs, or worktree paths.
+
+Task commit evidence is accepted for display only when the recorded commit exists and has exactly the recorded task base as its sole parent. Integration evidence is accepted only when the task commit still matches its recorded task base and the integration commit has the exact ordered parent pair `(previous integration head, task commit)`. Missing evidence returns an unavailable projection; conflicting or irreproducible evidence fails closed as persistence corruption.
+
+### Read-only and bounded extraction
+
+Every diff command forces `--no-ext-diff` and `--no-textconv`, preventing repository/global external diff or textconv helpers from executing through the product read path. Rename detection is disabled. A side-effecting textconv regression proves that the configured helper is not invoked.
+
+The accepted output bounds are:
+
+- at most 100 rendered changed-file records;
+- at most 64 KiB patch bytes per file;
+- at most 256 KiB rendered patch bytes per response;
+- text patches omitted for blobs larger than 512 KiB;
+- 10 second timeout per Git command;
+- binary patch bodies omitted explicitly.
+
+The DTO carries exact evidence identity/hash, validated commit pair, per-file status/statistics, patch SHA-256, omission reasons, and explicit truncation metadata. Bounded content is never presented as the complete artifact.
+
+The API is GET-only:
+
+```text
+GET /api/v1/runs/{run_id}/tasks/{task_id}/diff?kind=TASK
+GET /api/v1/runs/{run_id}/tasks/{task_id}/diff?kind=INTEGRATION
+```
+
+Unexpected query selectors, duplicate `kind`, and arbitrary SHA injection fail closed. React renders unified patch text as ordinary text nodes and exposes no edit, stage, commit, reset, merge, ref, or integration controls.
+
+### Final acceptance snapshot
+
+The hardened Step 4.5 code head `6eb3b9437d6b51f1e6bdcbb112f98a22da6af347` passed:
+
+- PostgreSQL + Redis service startup: **PASS**;
+- existing Alembic full upgrade → downgrade base → upgrade head: **PASS**;
+- no new database migration: **PASS**;
+- verification Docker image build: **PASS**;
+- Ruff: **PASS**;
+- Task/Integration evidence-bound commit-pair regressions: **PASS**;
+- invalid Task parent / reversed Integration parent regressions: **PASS**;
+- external diff/textconv execution fencing regression: **PASS**;
+- binary/blob/file-count/patch-byte bounds: **PASS**;
+- arbitrary SHA/query selector rejection: **PASS**;
+- backend pytest: **317 passed in 34.18s**;
+- Frontend Quality locked install: **PASS**;
+- TypeScript strict typecheck: **PASS**;
+- frontend lint: **PASS**;
+- Vitest: **20 passed across 5 test files**;
+- Task/Integration Diff Viewer regressions: **PASS**;
+- Vite production build: **PASS**.
+
+Frozen Step 4.5 principle:
+
+> **Persisted typed evidence chooses the commit pair; Git proves the code delta; the browser only renders the bounded result.**
+
+---
+
+## Gate before Step 4.6 — Run Metrics
+
+The next roadmap item is **Step 4.6 — Run metrics**.
+
+Step 4.6 may aggregate already accepted typed runtime evidence/events into operational metrics, but it must preserve these boundaries:
+
+- metrics are observability/read-model projections only and never become scheduler, verification, Reviewer, integration, or Run-success authority;
+- metric values must come from typed persisted evidence/runtime-event timestamps and identities rather than browser counters or client timing;
+- counts must not be interpreted as success (for example, a verification count is not equivalent to verification passing);
+- durations must have a documented clock/source boundary and fail closed when required timestamps are contradictory or unavailable;
+- per-Run/per-Task aggregation must remain bounded and must not expose raw prompts, model outputs, `run_token`, credentials, or unbounded logs;
+- SSE may trigger metric refresh, but streamed client state may not increment authoritative counters directly;
+- Diff Viewer evidence remains read-only and cannot be converted into a metric-based Git/integration authorization path;
 - GitHub branch / Draft PR publication remains Step 4.7;
 - benchmark/demo suite remains Step 4.8.
 
-**Step 4.5 status: NOT STARTED.**
+**Step 4.6 status: NOT STARTED.**
