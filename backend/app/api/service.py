@@ -19,6 +19,7 @@ from app.api.models import (
 )
 from app.dispatch.errors import TaskDispatchBrokerError
 from app.models.dispatch import TaskDispatchReceipt
+from app.models.events import PersistedRuntimeEvent
 from app.persistence.types import PersistedRunSnapshot
 from app.workspace import LocalGitWorkspace, WorkspaceGitError
 
@@ -56,6 +57,13 @@ class ProductEvidenceStore(Protocol):
         run_id: UUID | None = None,
     ) -> UUID: ...
     async def load_run(self, run_id: UUID) -> PersistedRunSnapshot: ...
+    async def list_runtime_events(
+        self,
+        run_id: UUID,
+        *,
+        after_sequence: int = 0,
+        limit: int = 200,
+    ) -> tuple[PersistedRuntimeEvent, ...]: ...
     async def dispose(self) -> None: ...
 
 
@@ -189,6 +197,21 @@ class ProductRuntimeService:
             started_at=snapshot.started_at,
             finished_at=snapshot.finished_at,
             tasks=tasks,
+        )
+
+    async def get_runtime_events(
+        self,
+        run_id: UUID,
+        *,
+        after_sequence: int = 0,
+        limit: int = 200,
+    ) -> tuple[PersistedRuntimeEvent, ...]:
+        """Read the accepted monotonic event projection without changing runtime state."""
+
+        return await self._evidence_store.list_runtime_events(
+            run_id,
+            after_sequence=after_sequence,
+            limit=limit,
         )
 
     async def get_task(self, run_id: UUID, task_id: str) -> ProductTaskDetail:
