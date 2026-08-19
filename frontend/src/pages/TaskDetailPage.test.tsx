@@ -1,5 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -90,8 +96,9 @@ describe("TaskDetailPage diff viewer", () => {
     renderTask();
 
     expect(await screen.findByText(/WORKER_EXECUTION evidence #7/)).toBeInTheDocument();
-    expect(screen.getByText("src/app.py")).toBeInTheDocument();
-    expect(screen.getByText("+new = 2")).toBeInTheDocument();
+    const viewer = await screen.findByLabelText("Read-only Git diff");
+    expect(within(viewer).getByText("src/app.py")).toBeInTheDocument();
+    expect(within(viewer).getByText("+new = 2")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /stage/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /commit/i })).not.toBeInTheDocument();
   });
