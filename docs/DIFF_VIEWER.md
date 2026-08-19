@@ -66,6 +66,15 @@ The displayed comparison is `previous_integration_commit → integration_commit`
 
 `ReadOnlyCommitDiffReader` executes only read-only Git object/diff commands and never calls `update-ref`, `checkout`, `switch`, `reset`, `add`, `commit`, `commit-tree`, `merge`, or worktree mutation operations.
 
+Every `git diff` path forces both:
+
+```text
+--no-ext-diff
+--no-textconv
+```
+
+This prevents repository/global external diff helpers and configured textconv drivers from being executed through the Diff Viewer read path. A regression test intentionally configures a side-effecting textconv driver and proves that bounded diff extraction never invokes it.
+
 Current output bounds are:
 
 - at most 100 rendered changed-file records;
