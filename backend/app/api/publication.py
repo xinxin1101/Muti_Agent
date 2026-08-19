@@ -232,6 +232,10 @@ def _single_task_source(
             )
         if execution.status is not WorkerExecutionStatus.SUCCEEDED:
             continue
+        if execution.base_commit != snapshot.base_commit:
+            raise PersistenceCorruptionError(
+                "successful worker publication evidence does not match the Run base commit"
+            )
         if execution.commit_sha is None:
             raise PersistenceCorruptionError(
                 "successful worker publication evidence lacks task commit"
