@@ -1,0 +1,20 @@
+export type ProductGitHubPublication = Readonly<{
+  run_id: string;
+  project_id: string;
+  state: "READY" | "FAILED" | "PUBLISHED";
+  source_basis: "INTEGRATION" | "SINGLE_TASK";
+  source_commit: string;
+  source_evidence_id: number;
+  source_evidence_sha256: string;
+  repository_slug: string;
+  base_branch: string;
+  branch_name: string;
+  publisher_configured: boolean;
+  attempt_count: number;
+  pull_request_number: number | null;
+  pull_request_url: string | null;
+  pull_request_state: "open" | "closed" | null;
+  pull_request_draft: boolean | null;
+  last_error_code: string | null;
+  last_error_message: string | null;
+}>;
