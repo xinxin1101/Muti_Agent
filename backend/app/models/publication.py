@@ -14,6 +14,7 @@ class GitHubPublicationSourceBasis(StrEnum):
 
 class GitHubPublicationState(StrEnum):
     READY = "READY"
+    PUBLISHING = "PUBLISHING"
     FAILED = "FAILED"
     PUBLISHED = "PUBLISHED"
 
@@ -94,5 +95,5 @@ class PersistedGitHubPublication(BaseModel):
             if self.last_error_code is None or self.last_error_message is None:
                 raise ValueError("failed GitHub publication requires bounded failure evidence")
         elif self.last_error_code is not None or self.last_error_message is not None:
-            raise ValueError("ready GitHub publication must not contain failure evidence")
+            raise ValueError("active/ready GitHub publication must not contain failure evidence")
         return self
