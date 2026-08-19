@@ -1,0 +1,57 @@
+name: Frontend Quality
+
+on:
+  pull_request:
+    paths:
+      - "frontend/**"
+      - "docs/FRONTEND_FOUNDATION.md"
+      - "docs/STEP_4_1_ACCEPTANCE.md"
+      - "docs/PROGRESS.md"
+      - ".github/workflows/frontend-quality.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "frontend/**"
+      - "docs/FRONTEND_FOUNDATION.md"
+      - "docs/STEP_4_1_ACCEPTANCE.md"
+      - "docs/PROGRESS.md"
+      - ".github/workflows/frontend-quality.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install locked frontend dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm run test
+
+      - name: Build
+        run: npm run build
