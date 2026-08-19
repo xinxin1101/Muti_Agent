@@ -4,7 +4,7 @@ from app.api.catalog import PostgresProductCatalog
 from app.api.service import ProductRuntimeService
 from app.core.settings import Settings
 from app.dispatch import DramatiqTaskDispatcher
-from app.persistence import PostgresEvidenceStore
+from app.persistence import PostgresDAGStore, PostgresEvidenceStore
 from app.workers.executor import ManagedProjectWorkspaceResolver
 from app.workspace import ManagedProjectProvisioner
 
@@ -19,6 +19,10 @@ def build_product_service(settings: Settings) -> ProductRuntimeService:
         settings.database_url,
         echo=settings.database_echo,
     )
+    dag_store = PostgresDAGStore.from_url(
+        settings.database_url,
+        echo=settings.database_echo,
+    )
     catalog = PostgresProductCatalog.from_url(
         settings.database_url,
         echo=settings.database_echo,
@@ -30,6 +34,7 @@ def build_product_service(settings: Settings) -> ProductRuntimeService:
     return ProductRuntimeService(
         catalog=catalog,
         evidence_store=evidence_store,
+        dag_store=dag_store,
         provisioner=provisioner,
         workspace_resolver=resolver,
         dispatcher=dispatcher,
