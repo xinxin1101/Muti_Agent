@@ -107,6 +107,39 @@ beforeEach(() => {
       },
     ],
   });
+  vi.mocked(productApi.getRunMetrics).mockResolvedValue({
+    run_id: runId,
+    project_id: "11111111-1111-1111-1111-111111111111",
+    status: "RUNNING",
+    status_basis: "PERSISTED_RUN",
+    task_count: 1,
+    started_at: "2026-08-19T00:00:00Z",
+    finished_at: null,
+    terminal_duration_ms: null,
+    evidence: {
+      total_records: 8,
+      developer_runs: 1,
+      verification_attempts: 3,
+      review_decisions: 1,
+      repair_attempts: 1,
+      failure_reports: 1,
+      dispatch_events: 1,
+      worker_executions: 1,
+      merge_queue_snapshots: 0,
+      merge_conflicts: 0,
+      integration_gate_evaluations: 0,
+      human_decisions: 0,
+    },
+    runtime_events: {
+      total_events: 4,
+      warning_events: 1,
+      error_events: 0,
+      lease_acquisitions: 1,
+      lease_takeovers: 0,
+      lease_releases: 0,
+      latest_sequence: 4,
+    },
+  });
   vi.mocked(productApi.getRunDAG).mockResolvedValue({
     run_id: runId,
     dag_sha256: "d".repeat(64),
@@ -132,6 +165,17 @@ afterEach(() => {
 });
 
 describe("RunDashboardPage live timeline", () => {
+  it("renders descriptive Run Metrics without a browser success score", async () => {
+    renderDashboard();
+
+    expect(await screen.findByRole("region", { name: "Run metrics" })).toBeInTheDocument();
+    expect(screen.getByText("Verification attempts")).toBeInTheDocument();
+    expect(screen.getByText("Review decisions")).toBeInTheDocument();
+    expect(screen.getByText(/Status remains sourced from PERSISTED_RUN/)).toBeInTheDocument();
+    expect(screen.queryByText(/success rate/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/approval rate/i)).not.toBeInTheDocument();
+  });
+
   it("renders the backend-validated DAG with task navigation", async () => {
     renderDashboard();
 
@@ -170,11 +214,12 @@ describe("RunDashboardPage live timeline", () => {
     expect(FakeEventSource.instances[0]?.closed).toBe(true);
   });
 
-  it("re-reads DAG presentation state after accepted evidence arrives", async () => {
+  it("re-reads Metrics and DAG projections after accepted events arrive", async () => {
     renderDashboard();
     await screen.findByRole("heading", { name: "Run Dashboard" });
     await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
     await waitFor(() => expect(productApi.getRunDAG).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(productApi.getRunMetrics).toHaveBeenCalledTimes(1));
 
     act(() => {
       FakeEventSource.instances[0]?.message(
@@ -186,6 +231,7 @@ describe("RunDashboardPage live timeline", () => {
     });
 
     await waitFor(() => expect(productApi.getRunDAG).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(productApi.getRunMetrics).toHaveBeenCalledTimes(2));
   });
 
   it("fails closed on a sequence gap instead of presenting corrupted order", async () => {
