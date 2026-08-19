@@ -266,9 +266,14 @@ class ReadOnlyCommitDiffReader:
     def _resolve_commit(self, commit: str) -> str:
         if _COMMIT_PATTERN.fullmatch(commit) is None:
             raise CommitDiffError("commit evidence must be a full lowercase Git object id")
-        resolved = self._git_text(["rev-parse", "--verify", f"{commit}^{{commit}}"], check=False).strip()
+        resolved = self._git_text(
+            ["rev-parse", "--verify", f"{commit}^{{commit}}"],
+            check=False,
+        ).strip()
         if resolved != commit:
-            raise CommitDiffError("persisted commit evidence does not resolve to the expected commit")
+            raise CommitDiffError(
+                "persisted commit evidence does not resolve to the expected commit"
+            )
         return resolved
 
     def _git_text(self, arguments: list[str], *, check: bool = True) -> str:
