@@ -4,8 +4,8 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
-from fastapi.testclient import TestClient
 
 import app.api.service as service_module
 from app.api.app import create_app
@@ -244,17 +244,28 @@ class FakeApiService:
         )
 
 
-def test_metrics_api_is_get_only_and_rejects_browser_selectors() -> None:
-    client = TestClient(create_app(FakeApiService()))  # type: ignore[arg-type]
+async def _api_request(method: str, path: str) -> httpx.Response:
+    transport = httpx.ASGITransport(
+        app=create_app(FakeApiService()),  # type: ignore[arg-type]
+    )
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+    ) as client:
+        return await client.request(method, path)
 
-    response = client.get(f"/api/v1/runs/{RUN_ID}/metrics")
+
+def test_metrics_api_is_get_only_and_rejects_browser_selectors() -> None:
+    response = asyncio.run(_api_request("GET", f"/api/v1/runs/{RUN_ID}/metrics"))
     assert response.status_code == 200
     assert response.json()["status_basis"] == "PERSISTED_RUN"
     assert response.json()["evidence"]["verification_attempts"] == 3
 
-    injected = client.get(f"/api/v1/runs/{RUN_ID}/metrics?success_rate=1")
+    injected = asyncio.run(
+        _api_request("GET", f"/api/v1/runs/{RUN_ID}/metrics?success_rate=1")
+    )
     assert injected.status_code == 400
     assert "does not accept browser-authored selectors" in injected.json()["detail"]
 
-    write_attempt = client.post(f"/api/v1/runs/{RUN_ID}/metrics")
+    write_attempt = asyncio.run(_api_request("POST", f"/api/v1/runs/{RUN_ID}/metrics"))
     assert write_attempt.status_code == 405
