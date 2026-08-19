@@ -15,6 +15,8 @@ Step 4.5 is ready for acceptance when the exact PR head proves:
 - malformed, conflicting, missing, or irreproducible Git evidence cannot be rendered as trusted code history;
 - unavailable Task/Integration evidence returns a bounded unavailable response rather than accepting user-supplied replacement SHAs;
 - Git extraction is read-only and does not mutate HEAD, branches, refs, index, worktrees, or integration state;
+- every diff invocation disables external diff helpers and textconv execution with `--no-ext-diff` and `--no-textconv`;
+- a side-effecting configured textconv driver is regression-tested and is never executed by the Diff Viewer read path;
 - output is deterministically bounded by file count, per-file patch bytes, total patch bytes, blob size, and Git timeout;
 - binary patch bodies are omitted explicitly;
 - bounded patches/files carry explicit truncation/omission metadata;
