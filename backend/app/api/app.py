@@ -4,8 +4,9 @@ from contextlib import asynccontextmanager
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import FastAPI, HTTPException, Query, status
+from fastapi import FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.responses import StreamingResponse
 
 from app.api.models import (
     ProductProject,
@@ -17,6 +18,13 @@ from app.api.models import (
     RunLaunchResponse,
 )
 from app.api.service import ProductRuntimeService, ProductWorkspaceNotReadyError
+from app.api.sse import (
+    SSE_BATCH_LIMIT,
+    RuntimeEventStreamSafetyError,
+    resolve_event_cursor,
+    runtime_event_stream,
+    validate_runtime_event_batch,
+)
 from app.workspace import ProjectProvisionError, WorkspaceGitError
 
 
@@ -39,7 +47,7 @@ def create_app(service: ProductRuntimeService, *, close_service: bool = False) -
         allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
         allow_credentials=False,
         allow_methods=["GET", "POST"],
-        allow_headers=["Content-Type"],
+        allow_headers=["Content-Type", "Last-Event-ID"],
     )
 
     @app.get("/healthz")
@@ -100,6 +108,57 @@ def create_app(service: ProductRuntimeService, *, close_service: bool = False) -
             return await service.get_run(run_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/v1/runs/{run_id}/events")
+    async def stream_run_events(
+        request: Request,
+        run_id: UUID,
+        after_sequence: Annotated[int, Query(ge=0)] = 0,
+        last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
+    ) -> StreamingResponse:
+        try:
+            cursor = resolve_event_cursor(
+                after_sequence=after_sequence,
+                last_event_id=last_event_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        try:
+            initial_events = await service.get_runtime_events(
+                run_id,
+                after_sequence=cursor,
+                limit=SSE_BATCH_LIMIT,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        try:
+            validate_runtime_event_batch(
+                initial_events,
+                run_id=run_id,
+                after_sequence=cursor,
+            )
+        except RuntimeEventStreamSafetyError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail="runtime event stream safety validation failed",
+            ) from exc
+
+        return StreamingResponse(
+            runtime_event_stream(
+                service,
+                request,
+                run_id=run_id,
+                after_sequence=cursor,
+                initial_events=initial_events,
+            ),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @app.get(
         "/api/v1/runs/{run_id}/tasks/{task_id}",
