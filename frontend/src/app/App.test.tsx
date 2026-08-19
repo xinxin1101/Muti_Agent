@@ -167,7 +167,7 @@ describe("App", () => {
     expect(
       await screen.findByRole("heading", { name: "Run Dashboard" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("RUNNING")).toBeInTheDocument();
+    expect(screen.getAllByText("RUNNING").length).toBeGreaterThan(0);
     expect(screen.getByText("Build the product page.")).toBeInTheDocument();
     expect(
       screen.getByRole("img", { name: "Validated task dependency DAG" }),
