@@ -177,7 +177,11 @@ def test_runtime_event_gap_or_cross_run_fails_closed() -> None:
 
 
 class FakeStore:
-    def __init__(self, snapshot: PersistedRunSnapshot, events: tuple[PersistedRuntimeEvent, ...]) -> None:
+    def __init__(
+        self,
+        snapshot: PersistedRunSnapshot,
+        events: tuple[PersistedRuntimeEvent, ...],
+    ) -> None:
         self.snapshot = snapshot
         self.events = events
 
