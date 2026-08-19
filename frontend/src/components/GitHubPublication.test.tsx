@@ -9,7 +9,9 @@ vi.mock("../api/product");
 
 const runId = "22222222-2222-2222-2222-222222222222";
 
-function publication(state: "READY" | "PUBLISHED" = "READY") {
+type PublicationState = "READY" | "PUBLISHING" | "PUBLISHED";
+
+function publication(state: PublicationState = "READY") {
   return {
     run_id: runId,
     project_id: "11111111-1111-1111-1111-111111111111",
@@ -22,7 +24,7 @@ function publication(state: "READY" | "PUBLISHED" = "READY") {
     base_branch: "main",
     branch_name: `devflow/run-${runId}`,
     publisher_configured: true,
-    attempt_count: state === "PUBLISHED" ? 1 : 0,
+    attempt_count: state === "READY" ? 0 : 1,
     pull_request_number: state === "PUBLISHED" ? 42 : null,
     pull_request_url:
       state === "PUBLISHED" ? "https://github.com/example/repo/pull/42" : null,
@@ -56,26 +58,49 @@ beforeEach(() => {
 describe("GitHubPublication", () => {
   it("does not query or publish before persisted Run success", () => {
     renderPublication("RUNNING");
-    expect(screen.getByText(/eligible only after persisted Run status is SUCCEEDED/)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Create Draft PR" })).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/eligible only after persisted Run status is SUCCEEDED/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Create Draft PR" }),
+    ).not.toBeInTheDocument();
     expect(productApi.getGitHubPublication).not.toHaveBeenCalled();
     expect(productApi.publishGitHubDraft).not.toHaveBeenCalled();
   });
 
   it("renders only backend-selected publication facts", async () => {
     renderPublication("SUCCEEDED");
-    expect(await screen.findByRole("button", { name: "Create Draft PR" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "Create Draft PR" }),
+    ).toBeInTheDocument();
     expect(screen.getByText(`devflow/run-${runId}`)).toBeInTheDocument();
     expect(screen.getByText("example/repo")).toBeInTheDocument();
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
     expect(screen.queryByText(/token/i)).not.toBeInTheDocument();
   });
 
+  it("treats PUBLISHING as a read-only backend claim", async () => {
+    vi.mocked(productApi.getGitHubPublication).mockResolvedValue(
+      publication("PUBLISHING"),
+    );
+    renderPublication("SUCCEEDED");
+
+    const button = await screen.findByRole("button", { name: "Publishing…" });
+    expect(button).toBeDisabled();
+    expect(
+      screen.getByText(/Another backend publication attempt currently owns/),
+    ).toBeInTheDocument();
+    expect(productApi.publishGitHubDraft).not.toHaveBeenCalled();
+    expect(screen.queryByText(/attempt_token/i)).not.toBeInTheDocument();
+  });
+
   it("publishes with no browser selector form and leaves Run status outside the component", async () => {
     renderPublication("SUCCEEDED");
     fireEvent.click(await screen.findByRole("button", { name: "Create Draft PR" }));
 
-    await waitFor(() => expect(productApi.publishGitHubDraft).toHaveBeenCalledWith(runId));
+    await waitFor(() =>
+      expect(productApi.publishGitHubDraft).toHaveBeenCalledWith(runId),
+    );
     const link = await screen.findByRole("link", { name: "Open Draft PR #42" });
     expect(link).toHaveAttribute("href", "https://github.com/example/repo/pull/42");
     expect(screen.queryByText(/Run SUCCEEDED by GitHub/i)).not.toBeInTheDocument();
