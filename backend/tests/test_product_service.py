@@ -12,6 +12,7 @@ from app.api.models import (
 from app.api.service import ProductRuntimeService
 from app.dispatch.errors import TaskDispatchBrokerError
 from app.models import TaskContract
+from app.models.dag import TaskDAG
 from app.models.dispatch import TaskDispatchReceipt
 
 
@@ -50,6 +51,7 @@ class FakeCatalog:
 class FakeStore:
     def __init__(self, project_id: UUID) -> None:
         self.project_id = project_id
+        self.started_run_id: UUID | None = None
         self.started_base_commit: str | None = None
         self.started_task: TaskContract | None = None
 
@@ -60,11 +62,27 @@ class FakeStore:
         return self.project_id
 
     async def start_run(self, *, project_id, tasks, base_commit, run_id=None):
+        self.started_run_id = uuid4()
         self.started_base_commit = base_commit
         self.started_task = tasks[0]
-        return uuid4()
+        return self.started_run_id
 
     async def load_run(self, run_id):
+        raise AssertionError("not needed")
+
+
+class FakeDAGStore:
+    def __init__(self) -> None:
+        self.persisted: tuple[UUID, TaskDAG] | None = None
+
+    async def dispose(self) -> None:
+        return None
+
+    async def persist_dag(self, *, run_id: UUID, dag: TaskDAG):
+        self.persisted = (run_id, dag)
+        return None
+
+    async def load_dag(self, run_id: UUID):
         raise AssertionError("not needed")
 
 
@@ -119,22 +137,24 @@ def _service(*, dispatcher: FakeDispatcher | None = None):
         workspace_ready=False,
     )
     store = FakeStore(project_id)
+    dag_store = FakeDAGStore()
     provisioner = FakeProvisioner()
     actual_dispatcher = dispatcher or FakeDispatcher()
     service = ProductRuntimeService(
         catalog=FakeCatalog(project),  # type: ignore[arg-type]
         evidence_store=store,  # type: ignore[arg-type]
+        dag_store=dag_store,  # type: ignore[arg-type]
         provisioner=provisioner,
         workspace_resolver=FakeResolver(),  # type: ignore[arg-type]
         dispatcher=actual_dispatcher,
     )
-    return service, store, provisioner, actual_dispatcher, project_id
+    return service, store, dag_store, provisioner, actual_dispatcher, project_id
 
 
 def test_create_project_provisions_backend_managed_workspace() -> None:
     import asyncio
 
-    service, _store, provisioner, _dispatcher, project_id = _service()
+    service, _store, _dag, provisioner, _dispatcher, project_id = _service()
     result = asyncio.run(
         service.create_project(
             ProjectCreateRequest(
@@ -148,17 +168,22 @@ def test_create_project_provisions_backend_managed_workspace() -> None:
     assert result.workspace_ready is True
 
 
-def test_create_run_derives_base_commit_and_dispatches_existing_runtime() -> None:
+def test_create_run_freezes_dag_before_dispatching_existing_runtime() -> None:
     import asyncio
 
-    service, store, _provisioner, dispatcher, project_id = _service()
+    service, store, dag_store, _provisioner, dispatcher, project_id = _service()
     result = asyncio.run(
         service.create_run(RunCreateRequest(project_id=project_id, task=_task()))
     )
 
     assert store.started_base_commit == "c" * 40
     assert store.started_task == _task()
-    assert dispatcher.dispatched is not None
+    assert store.started_run_id is not None
+    assert dag_store.persisted is not None
+    assert dag_store.persisted[0] == store.started_run_id
+    assert dag_store.persisted[1].task_ids == ("service-task",)
+    assert dag_store.persisted[1].node("service-task").depends_on == ()
+    assert dispatcher.dispatched == (store.started_run_id, "service-task")
     assert result.dispatch_status is DispatchStatus.QUEUED
     assert result.base_commit == "c" * 40
 
@@ -167,7 +192,7 @@ def test_broker_failure_is_reported_without_fabricating_runtime_success() -> Non
     import asyncio
 
     dispatcher = FakeDispatcher(fail=True)
-    service, _store, _provisioner, _dispatcher, project_id = _service(
+    service, _store, _dag, _provisioner, _dispatcher, project_id = _service(
         dispatcher=dispatcher
     )
     result = asyncio.run(
