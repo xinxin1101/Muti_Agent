@@ -25,6 +25,8 @@ def upgrade() -> None:
         sa.Column("intent_sha256", sa.String(length=64), nullable=False),
         sa.Column("state", sa.String(length=32), nullable=False, server_default="READY"),
         sa.Column("attempt_count", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("attempt_token", postgresql.UUID(as_uuid=True), nullable=True),
+        sa.Column("attempt_expires_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("pull_request_number", sa.Integer(), nullable=True),
         sa.Column("pull_request_url", sa.Text(), nullable=True),
         sa.Column("pull_request_state", sa.String(length=16), nullable=True),
@@ -48,8 +50,15 @@ def upgrade() -> None:
             name="ck_github_publications_attempt_count",
         ),
         sa.CheckConstraint(
-            "state IN ('READY', 'FAILED', 'PUBLISHED')",
+            "state IN ('READY', 'PUBLISHING', 'FAILED', 'PUBLISHED')",
             name="ck_github_publications_state",
+        ),
+        sa.CheckConstraint(
+            "(state = 'PUBLISHING' AND attempt_token IS NOT NULL "
+            "AND attempt_expires_at IS NOT NULL) OR "
+            "(state <> 'PUBLISHING' AND attempt_token IS NULL "
+            "AND attempt_expires_at IS NULL)",
+            name="ck_github_publications_attempt_claim",
         ),
         sa.ForeignKeyConstraint(
             ["run_id"],
