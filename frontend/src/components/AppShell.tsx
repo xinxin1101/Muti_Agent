@@ -3,14 +3,15 @@ import { NavLink, Outlet } from "react-router";
 const navigation = [
   { to: "/", label: "Foundation", end: true },
   { to: "/projects", label: "Projects", end: false },
-  { to: "/runs", label: "Runs", end: false },
+  { to: "/runs/new", label: "New Run", end: false },
+  { to: "/runs", label: "Runs", end: true },
 ] as const;
 
 export function AppShell() {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
       <header className="border-b border-slate-800 bg-slate-950/95">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-6 px-6 py-4">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.25em] text-cyan-300">
               DevFlow
@@ -20,7 +21,7 @@ export function AppShell() {
             </p>
           </div>
 
-          <nav aria-label="Primary" className="flex gap-2">
+          <nav aria-label="Primary" className="flex flex-wrap justify-end gap-2">
             {navigation.map((item) => (
               <NavLink
                 key={item.to}
