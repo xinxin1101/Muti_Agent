@@ -46,6 +46,48 @@ class ProductRunDetail(ProductRun):
     tasks: tuple[ProductTaskSummary, ...]
 
 
+class ProductRunStatusBasis(StrEnum):
+    PERSISTED_RUN = "PERSISTED_RUN"
+
+
+class ProductEvidenceMetrics(ProductModel):
+    total_records: int = Field(ge=0)
+    developer_runs: int = Field(ge=0)
+    verification_attempts: int = Field(ge=0)
+    review_decisions: int = Field(ge=0)
+    repair_attempts: int = Field(ge=0)
+    failure_reports: int = Field(ge=0)
+    dispatch_events: int = Field(ge=0)
+    worker_executions: int = Field(ge=0)
+    merge_queue_snapshots: int = Field(ge=0)
+    merge_conflicts: int = Field(ge=0)
+    integration_gate_evaluations: int = Field(ge=0)
+    human_decisions: int = Field(ge=0)
+
+
+class ProductRuntimeEventMetrics(ProductModel):
+    total_events: int = Field(ge=0)
+    warning_events: int = Field(ge=0)
+    error_events: int = Field(ge=0)
+    lease_acquisitions: int = Field(ge=0)
+    lease_takeovers: int = Field(ge=0)
+    lease_releases: int = Field(ge=0)
+    latest_sequence: int = Field(ge=0)
+
+
+class ProductRunMetrics(ProductModel):
+    run_id: UUID
+    project_id: UUID
+    status: PersistedRunStatus
+    status_basis: ProductRunStatusBasis = ProductRunStatusBasis.PERSISTED_RUN
+    task_count: int = Field(ge=1)
+    started_at: datetime
+    finished_at: datetime | None = None
+    terminal_duration_ms: int | None = Field(default=None, ge=0)
+    evidence: ProductEvidenceMetrics
+    runtime_events: ProductRuntimeEventMetrics
+
+
 class ProductDAGNodeState(StrEnum):
     PENDING = "PENDING"
     READY = "READY"
