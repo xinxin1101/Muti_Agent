@@ -15,6 +15,7 @@ from app.models.publication import GitHubPublicationIntent, GitHubRemotePullRequ
 from app.workspace import LocalGitWorkspace
 
 _GITHUB_API_VERSION = "2026-03-10"
+_GITHUB_API_BASE_URL = "https://api.github.com"
 _NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40,64}$")
 
@@ -88,7 +89,7 @@ class GitHubPublicationGateway:
         self,
         token: SecretStr,
         *,
-        api_base_url: str = "https://api.github.com",
+        api_base_url: str = _GITHUB_API_BASE_URL,
         timeout_seconds: float = 30.0,
         client: httpx.AsyncClient | None = None,
     ) -> None:
@@ -97,8 +98,13 @@ class GitHubPublicationGateway:
         secret = token.get_secret_value()
         if not secret:
             raise ValueError("GitHub publication token must not be empty")
+        normalized_api_base = api_base_url.strip().rstrip("/")
+        if normalized_api_base != _GITHUB_API_BASE_URL:
+            raise ValueError(
+                "GitHub publication API base URL must be exactly https://api.github.com"
+            )
         self._token = token
-        self._api_base_url = api_base_url.rstrip("/")
+        self._api_base_url = normalized_api_base
         self._timeout_seconds = timeout_seconds
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=timeout_seconds)
@@ -441,10 +447,10 @@ class GitHubPublicationGateway:
                 "REMOTE_PR_IDENTITY_MISMATCH",
                 "GitHub Pull Request does not match the evidence-bound publication target.",
             )
-        expected_prefix = f"https://github.com/{intent.repository_slug}/pull/"
-        if not result.html_url.startswith(expected_prefix):
+        expected_url = f"https://github.com/{intent.repository_slug}/pull/{result.number}"
+        if result.html_url != expected_url:
             raise GitHubPublicationGatewayError(
                 "REMOTE_PR_IDENTITY_MISMATCH",
-                "GitHub Pull Request URL does not match the persisted repository.",
+                "GitHub Pull Request URL does not match the persisted repository and PR number.",
             )
         return result
