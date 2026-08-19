@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime
-from uuid import UUID
+from datetime import datetime, timedelta
+from uuid import UUID, uuid4
 
 from pydantic import SecretStr, ValidationError
 from sqlalchemy import func, select
@@ -18,6 +18,8 @@ from app.persistence.errors import PersistenceConflictError, PersistenceCorrupti
 from app.persistence.models import GitHubPublicationRow, RunRow
 from app.persistence.serialization import canonical_payload, verify_payload_hash
 from app.persistence.types import PersistedRunStatus
+
+_PUBLICATION_CLAIM_SECONDS = 300
 
 
 class PostgresGitHubPublicationStore:
@@ -58,7 +60,7 @@ class PostgresGitHubPublicationStore:
     async def begin_attempt(
         self,
         intent: GitHubPublicationIntent,
-    ) -> PersistedGitHubPublication:
+    ) -> tuple[PersistedGitHubPublication, UUID | None]:
         payload, digest = canonical_payload(intent)
         async with self._session_factory.begin() as session:
             run = (
@@ -77,6 +79,7 @@ class PostgresGitHubPublicationStore:
                     "GitHub publication attempts require an already-SUCCEEDED persisted Run"
                 )
 
+            observed_at = await self._database_time(session)
             row = (
                 await session.execute(
                     select(GitHubPublicationRow)
@@ -85,17 +88,22 @@ class PostgresGitHubPublicationStore:
                 )
             ).scalar_one_or_none()
             if row is None:
+                attempt_token = uuid4()
                 row = GitHubPublicationRow(
                     run_id=intent.run_id,
                     intent=payload,
                     intent_sha256=digest,
-                    state=GitHubPublicationState.READY.value,
+                    state=GitHubPublicationState.PUBLISHING.value,
                     attempt_count=1,
+                    attempt_token=attempt_token,
+                    attempt_expires_at=observed_at
+                    + timedelta(seconds=_PUBLICATION_CLAIM_SECONDS),
+                    updated_at=observed_at,
                 )
                 session.add(row)
                 await session.flush()
                 await session.refresh(row)
-                return self._decode(row)
+                return self._decode(row), attempt_token
 
             current = self._decode(row)
             if current.intent_sha256 != digest:
@@ -103,26 +111,40 @@ class PostgresGitHubPublicationStore:
                     "GitHub publication intent is immutable and differs from the accepted audit row"
                 )
             if current.state is GitHubPublicationState.PUBLISHED:
-                return current
+                return current, None
+            if (
+                current.state is GitHubPublicationState.PUBLISHING
+                and row.attempt_expires_at is not None
+                and row.attempt_expires_at > observed_at
+            ):
+                raise PersistenceConflictError(
+                    "GitHub publication attempt is already in progress for this Run"
+                )
 
-            row.state = GitHubPublicationState.READY.value
+            attempt_token = uuid4()
+            row.state = GitHubPublicationState.PUBLISHING.value
             row.attempt_count += 1
+            row.attempt_token = attempt_token
+            row.attempt_expires_at = observed_at + timedelta(
+                seconds=_PUBLICATION_CLAIM_SECONDS
+            )
             row.pull_request_number = None
             row.pull_request_url = None
             row.pull_request_state = None
             row.pull_request_draft = None
             row.last_error_code = None
             row.last_error_message = None
-            row.updated_at = await self._database_time(session)
+            row.updated_at = observed_at
             await session.flush()
             await session.refresh(row)
-            return self._decode(row)
+            return self._decode(row), attempt_token
 
     async def mark_published(
         self,
         *,
         run_id: UUID,
         intent_sha256: str,
+        attempt_token: UUID,
         remote: GitHubRemotePullRequest,
     ) -> PersistedGitHubPublication:
         async with self._session_factory.begin() as session:
@@ -142,6 +164,13 @@ class PostgresGitHubPublicationStore:
                     )
                 return current
 
+            observed_at = await self._database_time(session)
+            self._assert_active_attempt(
+                row,
+                current,
+                attempt_token=attempt_token,
+                observed_at=observed_at,
+            )
             intent = current.intent
             if (
                 remote.head_branch != intent.branch_name
@@ -153,13 +182,15 @@ class PostgresGitHubPublicationStore:
                 )
 
             row.state = GitHubPublicationState.PUBLISHED.value
+            row.attempt_token = None
+            row.attempt_expires_at = None
             row.pull_request_number = remote.number
             row.pull_request_url = remote.html_url
             row.pull_request_state = remote.state
             row.pull_request_draft = remote.draft
             row.last_error_code = None
             row.last_error_message = None
-            row.updated_at = await self._database_time(session)
+            row.updated_at = observed_at
             await session.flush()
             await session.refresh(row)
             return self._decode(row)
@@ -169,6 +200,7 @@ class PostgresGitHubPublicationStore:
         *,
         run_id: UUID,
         intent_sha256: str,
+        attempt_token: UUID,
         error_code: str,
         error_message: str,
     ) -> PersistedGitHubPublication:
@@ -184,14 +216,23 @@ class PostgresGitHubPublicationStore:
             if current.state is GitHubPublicationState.PUBLISHED:
                 return current
 
+            observed_at = await self._database_time(session)
+            self._assert_active_attempt(
+                row,
+                current,
+                attempt_token=attempt_token,
+                observed_at=observed_at,
+            )
             row.state = GitHubPublicationState.FAILED.value
+            row.attempt_token = None
+            row.attempt_expires_at = None
             row.pull_request_number = None
             row.pull_request_url = None
             row.pull_request_state = None
             row.pull_request_draft = None
             row.last_error_code = code
             row.last_error_message = message
-            row.updated_at = await self._database_time(session)
+            row.updated_at = observed_at
             await session.flush()
             await session.refresh(row)
             return self._decode(row)
@@ -232,6 +273,24 @@ class PostgresGitHubPublicationStore:
             )
 
     @staticmethod
+    def _assert_active_attempt(
+        row: GitHubPublicationRow,
+        current: PersistedGitHubPublication,
+        *,
+        attempt_token: UUID,
+        observed_at: datetime,
+    ) -> None:
+        if (
+            current.state is not GitHubPublicationState.PUBLISHING
+            or row.attempt_token != attempt_token
+            or row.attempt_expires_at is None
+            or row.attempt_expires_at <= observed_at
+        ):
+            raise PersistenceConflictError(
+                "GitHub publication result belongs to a stale or expired attempt"
+            )
+
+    @staticmethod
     def _decode(row: GitHubPublicationRow) -> PersistedGitHubPublication:
         verify_payload_hash(
             row.intent,
@@ -241,6 +300,11 @@ class PostgresGitHubPublicationStore:
         try:
             intent = GitHubPublicationIntent.model_validate(row.intent)
             state = GitHubPublicationState(row.state)
+            if state is GitHubPublicationState.PUBLISHING:
+                if row.attempt_token is None or row.attempt_expires_at is None:
+                    raise ValueError("publishing GitHub audit row lacks an active claim")
+            elif row.attempt_token is not None or row.attempt_expires_at is not None:
+                raise ValueError("inactive GitHub audit row retains publication claim data")
             return PersistedGitHubPublication(
                 intent=intent,
                 intent_sha256=row.intent_sha256,
