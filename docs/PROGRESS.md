@@ -5,8 +5,8 @@ This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The developmen
 ## Current position
 
 - Current phase: **Phase 4 — V1.0 Productization**
-- Completed item: **Step 4.6 — Run metrics**
-- Next item: **Step 4.7 — GitHub branch + Draft PR integration**
+- Completed item: **Step 4.7 — GitHub branch + Draft PR integration**
+- Next item: **Step 4.8 — Benchmark/demo suite**
 - Phase 2 status: **ACCEPTED / COMPLETE**
 - Phase 3 status: **ACCEPTED / COMPLETE**
 - Phase 4 status: **IN PROGRESS**
@@ -16,7 +16,8 @@ This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The developmen
 - Step 4.4 status: **ACCEPTED / COMPLETE**
 - Step 4.5 status: **ACCEPTED / COMPLETE**
 - Step 4.6 status: **ACCEPTED / COMPLETE**
-- Step 4.7 status: **NOT STARTED**
+- Step 4.7 status: **ACCEPTED / COMPLETE**
+- Step 4.8 status: **NOT STARTED**
 - V0.1 status: **ACCEPTED / COMPLETE**
 
 ---
@@ -251,8 +252,8 @@ Phase 4 turns the accepted runtime into an operable, observable, and evaluable p
 | 4.4 | DAG visualization | **ACCEPTED** | atomic/hash-validated DAG persistence + read-only typed SVG projection; Backend Quality: 307 passed; Frontend Quality: typecheck + lint + tests + build |
 | 4.5 | Diff viewer | **ACCEPTED** | evidence-bound commit pairs + bounded read-only Git diff; Backend Quality: 317 passed; Frontend Quality: 20 tests + typecheck + lint + build |
 | 4.6 | Run metrics | **ACCEPTED** | evidence/event descriptive projection + bounded scan; Backend Quality: 322 passed; Frontend Quality: 21 tests + typecheck + lint + build |
-| 4.7 | GitHub branch + Draft PR integration | **NEXT / NOT STARTED** | — |
-| 4.8 | Benchmark/demo suite | **NOT STARTED** | — |
+| 4.7 | GitHub branch + Draft PR integration | **ACCEPTED** | evidence-bound source + fenced DevFlow branch/open Draft PR; Backend Quality: 332 passed; Frontend Quality: 25 tests + typecheck + lint + build |
+| 4.8 | Benchmark/demo suite | **NEXT / NOT STARTED** | — |
 
 ## Step 4.1 — React / TypeScript UI Foundation — ACCEPTED
 
@@ -718,21 +719,92 @@ Frozen Step 4.6 principle:
 
 ---
 
-## Gate before Step 4.7 — GitHub Branch + Draft PR Integration
+## Step 4.7 — GitHub Branch + Draft PR Integration — ACCEPTED
 
-The next roadmap item is **Step 4.7 — GitHub branch + Draft PR integration**.
+Accepted through PR #32 candidate: `Phase 4 Step 4.7: add evidence-bound GitHub publication`.
 
-Step 4.7 may publish already accepted local Git/runtime facts to GitHub, but it must preserve these boundaries:
+Design / acceptance documents:
 
-- GitHub publication is an external projection of backend-validated Git/runtime evidence, not a new source of task or Run success;
-- the browser must not choose arbitrary commit SHAs, local filesystem paths, force-push targets, or default-branch mutations;
-- publication source commit/ref must come from validated task/integration Git evidence already owned by the backend;
-- GitHub credentials remain backend-only and must never enter browser DTOs, runtime events, logs, prompts, or persisted generic evidence payloads;
-- branch creation/push and Draft PR creation must be bounded, auditable, and idempotent so retries cannot create uncontrolled duplicate branches/PRs;
-- publication must be restricted to a dedicated DevFlow-owned branch namespace and must not force-push, delete remote refs, or directly update the repository default branch;
-- a successful GitHub API response does not authorize verification, Reviewer approval, integration success, or Run finalization;
-- GitHub failure must preserve accepted local Git/runtime truth and return an explicit publication failure rather than rewriting prior evidence;
-- existing Diff Viewer remains read-only and Metrics remains descriptive; neither may become a publication authorization shortcut;
-- benchmark/demo suite remains Step 4.8.
+- `docs/GITHUB_PUBLICATION.md`
+- `docs/STEP_4_7_ACCEPTANCE.md`
 
-**Step 4.7 status: NOT STARTED.**
+### Accepted publication authority chain
+
+```text
+accepted typed Run / Git evidence
+        ↓
+backend publication eligibility
+        ↓
+local Git provenance revalidation
+        ↓
+immutable GitHubPublicationIntent
+        ↓
+PostgreSQL PUBLISHING claim + fencing token
+        ↓
+devflow/run-<run_id>
+        ↓
+bounded non-force GitHub push
+        ↓
+exact open Draft Pull Request
+        ↓
+non-authoritative publication audit
+        ↓
+React read-only publication status
+```
+
+The persisted Run must already be `SUCCEEDED`; GitHub publication never creates or upgrades that truth. Multi-task Runs publish only from complete accepted integration evidence covering every task. Single-task fallback requires accepted successful worker evidence whose base matches the persisted Run base. In both cases local Git objects and exact parent provenance are revalidated before any external write.
+
+The browser cannot author a SHA, ref, branch, base/head commit, local path, PR title/body, or credential. Its POST is body-free and selector-free. The only remote branch namespace is `devflow/run-<run_id>`; same branch/same SHA is idempotent, same branch/different SHA fails closed, and publication never force-pushes, deletes refs, or targets the default branch.
+
+### Publication fencing and credential boundary
+
+`github_publications` is separate from append-closed terminal typed evidence. A publication attempt owns a PostgreSQL DB-time `PUBLISHING` claim with a backend-only random attempt token and bounded expiry. A live concurrent retry fails closed; an expired claim may be taken over with a new token; stale results cannot overwrite the newer audit state. A PUBLISHED audit row cannot be downgraded by a late failure.
+
+GitHub credentials remain backend-only. REST credentials are sent only to the fixed `https://api.github.com` destination with explicit API version `2026-03-10`; HTTPS Git credentials are injected through child-process Git configuration rather than command arguments. Raw Git stderr and raw GitHub response bodies are not persisted as publication evidence.
+
+Existing PR reuse requires exact repository, DevFlow head branch, evidence-selected head SHA, persisted base branch, exact PR URL/number identity, `open` state, and `draft=true`. PostgreSQL fencing supplies concurrency control instead of assuming undocumented remote duplicate-create semantics.
+
+### Final acceptance snapshot
+
+The hardened Step 4.7 implementation head `2cb2544c06c6a5f48e29ac4f6ccb91678de53c37` passed:
+
+- PostgreSQL + Redis service startup: **PASS**;
+- Alembic through `0006_github_publications`, downgrade base, and re-upgrade through `0006`: **PASS**;
+- verification Docker image build: **PASS**;
+- Ruff: **PASS**;
+- evidence eligibility / Run-base / real integration-parent provenance regressions: **PASS**;
+- branch namespace / non-force / no-delete / no-default-branch write regressions: **PASS**;
+- publication claim / takeover / stale-token / non-downgrade regressions: **PASS**;
+- selector-free GET + body-free POST regressions: **PASS**;
+- GitHub REST version, credential-destination, exact open-Draft PR identity regressions: **PASS**;
+- backend pytest: **332 passed in 32.79s**;
+- Frontend Quality locked install: **PASS**;
+- TypeScript strict typecheck: **PASS**;
+- frontend lint: **0 warnings / 0 errors**;
+- Vitest: **25 passed across 6 test files**;
+- PUBLISHING retry keeps live/expired claim authority in PostgreSQL: **PASS**;
+- Vite production build: **PASS**;
+- no live GitHub publication mutation or paid SiliconFlow API call was required by CI.
+
+Frozen Step 4.7 principle:
+
+> **Accepted runtime/Git evidence selects what may be published; GitHub only receives that already-accepted projection.**
+
+---
+
+## Gate before Step 4.8 — Benchmark / Demo Suite
+
+The next roadmap item is **Step 4.8 — Benchmark/demo suite**.
+
+Step 4.8 may make the accepted runtime reproducibly evaluable and demoable, but it must preserve these boundaries:
+
+- benchmark inputs, expected outcomes, and grading rules must be versioned and deterministic enough to reproduce reported results;
+- benchmark scoring measures runtime behavior and product quality; it must never become a scheduler, verification, Reviewer, integration, Human Gate, or Run-success authority;
+- benchmark aggregation must distinguish completion, correctness/evidence quality, latency/cost, and failure modes instead of collapsing them into one score that can rewrite runtime truth;
+- fixtures must not contain production credentials, `run_token`, private repository secrets, or unbounded raw model/log data;
+- benchmark/demo Runs must use the same accepted runtime paths and safety gates rather than a privileged shortcut implementation;
+- demo helpers may seed deterministic local/public fixtures but may not bypass Git provenance, persistence, lease/fencing, verification, Reviewer, integration, Metrics, or GitHub publication boundaries;
+- GitHub publication from Step 4.7 remains an external projection only and cannot be used as benchmark ground truth for Run success;
+- reported metrics must identify dataset/fixture version and execution configuration so results are auditable rather than anecdotal.
+
+**Step 4.8 status: NOT STARTED.**

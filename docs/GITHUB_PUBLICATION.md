@@ -74,7 +74,7 @@ The Git command never uses force push, ref deletion, or a default-branch destina
 
 GitHub credentials are backend-only settings. They are never accepted in browser DTOs or requests and are never written into runtime events, prompts, generic typed evidence, Git command arguments, publication claim data, or persisted publication intent payloads.
 
-REST authentication is sent only through the Authorization header. HTTPS Git authentication is injected into the child process environment through a temporary Git HTTP extra-header configuration, with terminal credential prompts disabled.
+REST authentication is sent only through the Authorization header, and the credential destination is pinned to `https://api.github.com`; production configuration cannot redirect the Bearer token to another REST host. HTTPS Git authentication is injected into the child process environment through a temporary Git HTTP extra-header configuration, with terminal credential prompts disabled.
 
 External errors are converted to bounded public error codes/messages; raw Git stderr and raw GitHub response bodies are not persisted or returned through the product API.
 
