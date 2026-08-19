@@ -238,8 +238,15 @@ class GitHubPublicationRow(PersistenceBase):
     __table_args__ = (
         CheckConstraint("attempt_count >= 0", name="ck_github_publications_attempt_count"),
         CheckConstraint(
-            "state IN ('READY', 'FAILED', 'PUBLISHED')",
+            "state IN ('READY', 'PUBLISHING', 'FAILED', 'PUBLISHED')",
             name="ck_github_publications_state",
+        ),
+        CheckConstraint(
+            "(state = 'PUBLISHING' AND attempt_token IS NOT NULL "
+            "AND attempt_expires_at IS NOT NULL) OR "
+            "(state <> 'PUBLISHING' AND attempt_token IS NULL "
+            "AND attempt_expires_at IS NULL)",
+            name="ck_github_publications_attempt_claim",
         ),
     )
 
@@ -252,6 +259,10 @@ class GitHubPublicationRow(PersistenceBase):
     intent_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     state: Mapped[str] = mapped_column(String(32), nullable=False, default="READY")
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    attempt_token: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    attempt_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     pull_request_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     pull_request_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     pull_request_state: Mapped[str | None] = mapped_column(String(16), nullable=True)
