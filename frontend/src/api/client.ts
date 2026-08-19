@@ -43,6 +43,20 @@ export class ApiClient {
     });
   }
 
+  async postNoBody<TResponse>(
+    path: string,
+    init?: RequestInit,
+  ): Promise<TResponse> {
+    const headers = new Headers(init?.headers);
+    headers.delete("Content-Type");
+    return this.requestJson<TResponse>(path, {
+      ...init,
+      method: "POST",
+      headers,
+      body: undefined,
+    });
+  }
+
   private async requestJson<T>(path: string, init: RequestInit): Promise<T> {
     const headers = new Headers(init.headers);
     headers.set("Accept", "application/json");

@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 from app.api.catalog import PostgresProductCatalog
-from app.api.service import ProductRuntimeService
+from app.api.github_publication import ProductRuntimeServiceWithGitHubPublication
 from app.core.settings import Settings
 from app.dispatch import DramatiqTaskDispatcher
-from app.persistence import PostgresDAGStore, PostgresEvidenceStore
+from app.persistence import (
+    PostgresDAGStore,
+    PostgresEvidenceStore,
+    PostgresGitHubPublicationStore,
+)
+from app.publication import GitHubPublicationGateway
 from app.workers.executor import ManagedProjectWorkspaceResolver
 from app.workspace import ManagedProjectProvisioner
 
 
-def build_product_service(settings: Settings) -> ProductRuntimeService:
+def build_product_service(settings: Settings) -> ProductRuntimeServiceWithGitHubPublication:
     if settings.database_url is None:
         raise ValueError("DEVFLOW_DATABASE_URL is required by the product API")
 
@@ -23,6 +28,10 @@ def build_product_service(settings: Settings) -> ProductRuntimeService:
         settings.database_url,
         echo=settings.database_echo,
     )
+    publication_store = PostgresGitHubPublicationStore.from_url(
+        settings.database_url,
+        echo=settings.database_echo,
+    )
     catalog = PostgresProductCatalog.from_url(
         settings.database_url,
         echo=settings.database_echo,
@@ -31,11 +40,21 @@ def build_product_service(settings: Settings) -> ProductRuntimeService:
     provisioner = ManagedProjectProvisioner(repository_root)
     resolver = ManagedProjectWorkspaceResolver(repository_root)
     dispatcher = DramatiqTaskDispatcher(store=evidence_store, actor=execute_devflow_task)
-    return ProductRuntimeService(
+    github_publisher = (
+        None
+        if settings.github_token is None
+        else GitHubPublicationGateway(
+            settings.github_token,
+            timeout_seconds=settings.github_publication_timeout_seconds,
+        )
+    )
+    return ProductRuntimeServiceWithGitHubPublication(
         catalog=catalog,
         evidence_store=evidence_store,
         dag_store=dag_store,
         provisioner=provisioner,
         workspace_resolver=resolver,
         dispatcher=dispatcher,
+        publication_store=publication_store,
+        github_publisher=github_publisher,
     )

@@ -16,6 +16,8 @@ on:
       - "docs/STEP_4_5_ACCEPTANCE.md"
       - "docs/RUN_METRICS.md"
       - "docs/STEP_4_6_ACCEPTANCE.md"
+      - "docs/GITHUB_PUBLICATION.md"
+      - "docs/STEP_4_7_ACCEPTANCE.md"
       - "docs/PROGRESS.md"
       - ".github/workflows/frontend-quality.yml"
   push:
@@ -35,6 +37,8 @@ on:
       - "docs/STEP_4_5_ACCEPTANCE.md"
       - "docs/RUN_METRICS.md"
       - "docs/STEP_4_6_ACCEPTANCE.md"
+      - "docs/GITHUB_PUBLICATION.md"
+      - "docs/STEP_4_7_ACCEPTANCE.md"
       - "docs/PROGRESS.md"
       - ".github/workflows/frontend-quality.yml"
 

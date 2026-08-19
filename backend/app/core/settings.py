@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     siliconflow_timeout_seconds: float = Field(default=60.0, gt=0.0, le=600.0)
     siliconflow_max_retries: int = Field(default=0, ge=0, le=5)
 
+    github_token: SecretStr | None = None
+    github_publication_timeout_seconds: float = Field(default=30.0, gt=0.0, le=30.0)
+
     planner_model: str = "Pro/zai-org/GLM-4.7"
     developer_model: str = "deepseek-ai/DeepSeek-V3.2"
     reviewer_model: str = "Pro/zai-org/GLM-4.7"

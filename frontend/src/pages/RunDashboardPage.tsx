@@ -7,6 +7,7 @@ import {
   parseRuntimeEventSummary,
   runtimeEventStreamUrl,
 } from "../api/runtime-events";
+import { GitHubPublication } from "../components/GitHubPublication";
 import { RunDAG } from "../components/RunDAG";
 import { RunMetrics } from "../components/RunMetrics";
 import { StatusBadge } from "../components/StatusBadge";
@@ -198,6 +199,8 @@ export function RunDashboardPage() {
       ) : (
         <RunMetrics metrics={metrics.data} />
       )}
+
+      <GitHubPublication runId={runId} runStatus={run.data.status} />
 
       {dag.isLoading ? (
         <p className="rounded-xl border border-slate-800 bg-slate-950/60 p-5 text-sm text-slate-500">

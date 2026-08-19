@@ -6,6 +6,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
+from app.models.publication import GitHubPublicationSourceBasis, GitHubPublicationState
 from app.models.task import TaskContract
 from app.persistence.dag import PersistedDAGSource
 from app.persistence.types import PersistedRunStatus, PersistenceEvidenceKind
@@ -86,6 +87,27 @@ class ProductRunMetrics(ProductModel):
     terminal_duration_ms: int | None = Field(default=None, ge=0)
     evidence: ProductEvidenceMetrics
     runtime_events: ProductRuntimeEventMetrics
+
+
+class ProductGitHubPublication(ProductModel):
+    run_id: UUID
+    project_id: UUID
+    state: GitHubPublicationState
+    source_basis: GitHubPublicationSourceBasis
+    source_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    source_evidence_id: int = Field(ge=1)
+    source_evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    repository_slug: str = Field(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+    base_branch: str = Field(min_length=1, max_length=255)
+    branch_name: str = Field(pattern=r"^devflow/run-[0-9a-f-]{36}$", max_length=255)
+    publisher_configured: bool
+    attempt_count: int = Field(ge=0)
+    pull_request_number: int | None = Field(default=None, ge=1)
+    pull_request_url: str | None = Field(default=None, max_length=2000)
+    pull_request_state: str | None = Field(default=None, pattern=r"^(open|closed)$")
+    pull_request_draft: bool | None = None
+    last_error_code: str | None = Field(default=None, max_length=64)
+    last_error_message: str | None = Field(default=None, max_length=512)
 
 
 class ProductDAGNodeState(StrEnum):
