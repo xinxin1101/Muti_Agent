@@ -39,16 +39,16 @@ export function RunDashboardPage() {
     useState<StreamStatus>("connecting");
   const [streamError, setStreamError] = useState<string | null>(null);
   const lastSequenceRef = useRef(0);
-  const seenEventIdsRef = useRef(new Map<number, string>());
+  const lastEventIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     setEvents([]);
     setStreamError(null);
     setStreamStatus("connecting");
     lastSequenceRef.current = 0;
-    seenEventIdsRef.current.clear();
+    lastEventIdRef.current = null;
 
-    if (!runId) {
+    if (!runId || !run.isSuccess) {
       return;
     }
     if (typeof EventSource === "undefined") {
@@ -70,18 +70,16 @@ export function RunDashboardPage() {
           throw new Error("Runtime event belongs to a different Run.");
         }
 
-        const existingEventId = seenEventIdsRef.current.get(event.sequence);
-        if (existingEventId !== undefined) {
-          if (existingEventId !== event.event_id) {
-            throw new Error(
-              "Runtime event sequence was reused for a different event.",
-            );
-          }
-          return;
-        }
-
         if (event.sequence <= lastSequenceRef.current) {
-          return;
+          if (
+            event.sequence === lastSequenceRef.current &&
+            event.event_id === lastEventIdRef.current
+          ) {
+            return;
+          }
+          throw new Error(
+            "Runtime event sequence moved backward or was reused for a different event.",
+          );
         }
         if (
           lastSequenceRef.current > 0 &&
@@ -94,14 +92,7 @@ export function RunDashboardPage() {
         }
 
         lastSequenceRef.current = event.sequence;
-        seenEventIdsRef.current.set(event.sequence, event.event_id);
-        if (seenEventIdsRef.current.size > MAX_TIMELINE_EVENTS) {
-          const oldest = seenEventIdsRef.current.keys().next().value;
-          if (typeof oldest === "number") {
-            seenEventIdsRef.current.delete(oldest);
-          }
-        }
-
+        lastEventIdRef.current = event.event_id;
         setEvents((current) =>
           [...current, event].slice(-MAX_TIMELINE_EVENTS),
         );
@@ -134,7 +125,7 @@ export function RunDashboardPage() {
     return () => {
       source.close();
     };
-  }, [queryClient, runId]);
+  }, [queryClient, run.isSuccess, runId]);
 
   if (run.isLoading) {
     return <p className="text-slate-400">Loading run…</p>;
