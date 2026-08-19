@@ -76,7 +76,6 @@ class PersistedTask(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     task: TaskContract
-    depends_on: tuple[str, ...] = ()
     contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     created_at: datetime
 
