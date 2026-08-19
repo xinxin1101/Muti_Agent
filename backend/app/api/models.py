@@ -7,7 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
 from app.models.task import TaskContract
-from app.persistence.types import PersistenceEvidenceKind, PersistedRunStatus
+from app.persistence.types import PersistedRunStatus, PersistenceEvidenceKind
 
 
 class ProductModel(BaseModel):
