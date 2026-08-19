@@ -10,10 +10,10 @@ from sqlalchemy import update
 from app.models.dag import TaskDAG, TaskNode
 from app.models.task import TaskContract
 from app.persistence import (
+    PersistedDAGSource,
     PersistenceConflictError,
     PersistenceCorruptionError,
     PersistenceDAGUnavailableError,
-    PersistedDAGSource,
     PostgresDAGStore,
     PostgresEvidenceStore,
 )
@@ -83,7 +83,7 @@ async def _validated_dag_round_trip() -> None:
 
     assert first == second == loaded
     assert loaded.source is PersistedDAGSource.PERSISTED
-    assert loaded.dag.topological_order() == ("A", "B", "C", "D")
+    assert loaded.dag.topological_order() == ["A", "B", "C", "D"]
     assert loaded.dag.node("D").depends_on == ("B", "C")
 
     changed = TaskDAG(
@@ -157,7 +157,7 @@ async def _legacy_topology_boundary() -> None:
     )
     implicit = await dag_store.load_dag(single_run)
     assert implicit.source is PersistedDAGSource.IMPLICIT_SINGLE_TASK
-    assert implicit.dag.task_ids == ("single",)
+    assert implicit.dag.task_ids == ["single"]
     assert implicit.dag.node("single").depends_on == ()
 
     multi_run = await evidence.start_run(
