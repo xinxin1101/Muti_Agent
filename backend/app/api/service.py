@@ -28,6 +28,7 @@ from app.models.dispatch import TaskDispatchReceipt
 from app.models.events import PersistedRuntimeEvent
 from app.models.run import RunEvent, TaskRunState
 from app.persistence.dag import PersistedDAGSnapshot
+from app.persistence.errors import PersistenceCorruptionError
 from app.persistence.types import (
     PersistedRunSnapshot,
     PersistenceEvidenceKind,
@@ -243,37 +244,52 @@ class ProductRuntimeService:
             for task_id, state in latest_states.items()
             if state is TaskRunState.FAILED
         }
-        blocked = set(dag.blocked_task_ids(failed_task_ids=failed))
-        ready = set(
-            dag.ready_task_ids(
-                completed_task_ids=completed,
-                failed_task_ids=failed,
+        try:
+            blocked = set(dag.blocked_task_ids(failed_task_ids=failed))
+            ready = set(
+                dag.ready_task_ids(
+                    completed_task_ids=completed,
+                    failed_task_ids=failed,
+                )
             )
-        )
-        layers = self._dag_layers(dag, order)
+        except ValueError as exc:
+            raise PersistenceCorruptionError(
+                f"persisted Run DAG state evidence is inconsistent: {exc}"
+            ) from exc
 
-        nodes = tuple(
-            ProductDAGNode(
-                task_id=task_id,
-                objective=dag.node(task_id).task.objective,
-                depends_on=dag.node(task_id).depends_on,
-                topological_index=index,
-                layer=layers[task_id],
-                presentation_state=self._presentation_state(
-                    task_id,
-                    latest_states=latest_states,
-                    ready=ready,
-                    blocked=blocked,
-                )[0],
-                state_basis=self._presentation_state(
-                    task_id,
-                    latest_states=latest_states,
-                    ready=ready,
-                    blocked=blocked,
-                )[1],
+        advanced_blocked = {
+            task_id
+            for task_id in blocked
+            if latest_states.get(task_id) not in {None, TaskRunState.PENDING}
+        }
+        if advanced_blocked:
+            raise PersistenceCorruptionError(
+                "persisted Run DAG has active or terminal tasks downstream of failed tasks: "
+                + ", ".join(sorted(advanced_blocked))
             )
-            for index, task_id in enumerate(order)
-        )
+
+        layers = self._dag_layers(dag, order)
+        node_items: list[ProductDAGNode] = []
+        for index, task_id in enumerate(order):
+            presentation_state, state_basis = self._presentation_state(
+                task_id,
+                latest_states=latest_states,
+                ready=ready,
+                blocked=blocked,
+            )
+            node_items.append(
+                ProductDAGNode(
+                    task_id=task_id,
+                    objective=dag.node(task_id).task.objective,
+                    depends_on=dag.node(task_id).depends_on,
+                    topological_index=index,
+                    layer=layers[task_id],
+                    presentation_state=presentation_state,
+                    state_basis=state_basis,
+                )
+            )
+        nodes = tuple(node_items)
+
         order_index = {task_id: index for index, task_id in enumerate(order)}
         edges = tuple(
             ProductDAGEdge(source_task_id=dependency, target_task_id=task_id)
@@ -287,7 +303,7 @@ class ProductRuntimeService:
             run_id=run_id,
             dag_sha256=persisted_dag.dag_sha256,
             topology_source=persisted_dag.source,
-            topological_order=order,
+            topological_order=tuple(order),
             nodes=nodes,
             edges=edges,
         )
@@ -355,7 +371,7 @@ class ProductRuntimeService:
         return {task_id: state for task_id, (_, state) in latest.items()}
 
     @staticmethod
-    def _dag_layers(dag: TaskDAG, order: tuple[str, ...]) -> dict[str, int]:
+    def _dag_layers(dag: TaskDAG, order: Sequence[str]) -> dict[str, int]:
         layers: dict[str, int] = {}
         for task_id in order:
             dependencies = dag.node(task_id).depends_on
