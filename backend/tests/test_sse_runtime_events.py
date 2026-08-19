@@ -9,10 +9,10 @@ import pytest
 
 from app.api import create_app
 from app.api.sse import (
+    RuntimeEventStreamSafetyError,
     encode_runtime_event,
     resolve_event_cursor,
     runtime_event_stream,
-    RuntimeEventStreamSafetyError,
 )
 from app.models.events import (
     PersistedRuntimeEvent,
@@ -20,7 +20,6 @@ from app.models.events import (
     RuntimeEventLevel,
     RuntimeEventSource,
 )
-
 
 RUN_ID = UUID("22222222-2222-2222-2222-222222222222")
 
