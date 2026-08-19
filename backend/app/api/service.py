@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
+
+from pydantic import ValidationError
 
 from app.api.models import (
     DispatchStatus,
@@ -11,12 +14,18 @@ from app.api.models import (
     ProductDAGNode,
     ProductDAGNodeState,
     ProductDAGStateBasis,
+    ProductDiffEvidenceBasis,
+    ProductDiffFile,
+    ProductDiffFileStatus,
+    ProductDiffKind,
+    ProductDiffOmissionReason,
     ProductEvidenceSummary,
     ProductProject,
     ProductRun,
     ProductRunDAG,
     ProductRunDetail,
     ProductTaskDetail,
+    ProductTaskDiff,
     ProductTaskSummary,
     ProjectCreateRequest,
     RunCreateRequest,
@@ -24,8 +33,13 @@ from app.api.models import (
 )
 from app.dispatch.errors import TaskDispatchBrokerError
 from app.models.dag import TaskDAG, TaskNode
-from app.models.dispatch import TaskDispatchReceipt
+from app.models.dispatch import (
+    TaskDispatchReceipt,
+    WorkerExecutionEvidence,
+    WorkerExecutionStatus,
+)
 from app.models.events import PersistedRuntimeEvent
+from app.models.merge import MergeAttemptOutcome, MergeQueueSnapshot
 from app.models.run import RunEvent, TaskRunState
 from app.persistence.dag import PersistedDAGSnapshot
 from app.persistence.errors import PersistenceCorruptionError
@@ -33,11 +47,20 @@ from app.persistence.types import (
     PersistedRunSnapshot,
     PersistenceEvidenceKind,
 )
-from app.workspace import LocalGitWorkspace, WorkspaceGitError
+from app.workspace import (
+    CommitDiffError,
+    LocalGitWorkspace,
+    ReadOnlyCommitDiffReader,
+    WorkspaceGitError,
+)
 
 
 class ProductWorkspaceNotReadyError(RuntimeError):
     """Raised when a persisted Project has no trustworthy managed Git workspace."""
+
+
+class ProductDiffUnavailableError(RuntimeError):
+    """Raised when accepted Git evidence does not yet define the requested diff."""
 
 
 class ProductCatalog(Protocol):
@@ -95,6 +118,16 @@ class ProductWorkspaceResolver(Protocol):
 
 class ProductDispatcher(Protocol):
     async def dispatch(self, *, run_id: UUID, task_id: str) -> TaskDispatchReceipt: ...
+
+
+@dataclass(frozen=True)
+class _DiffCommitPair:
+    base_commit: str
+    head_commit: str
+    evidence_id: int
+    evidence_sha256: str
+    task_commit: str | None = None
+    task_base_commit: str | None = None
 
 
 class ProductRuntimeService:
@@ -304,6 +337,108 @@ class ProductRuntimeService:
             edges=edges,
         )
 
+    async def get_task_diff(
+        self,
+        run_id: UUID,
+        task_id: str,
+        *,
+        kind: ProductDiffKind = ProductDiffKind.TASK,
+    ) -> ProductTaskDiff:
+        """Resolve a bounded read-only Git diff from accepted persisted commit evidence."""
+
+        snapshot = await self._evidence_store.load_run(run_id)
+        if not any(item.task.task_id == task_id for item in snapshot.tasks):
+            raise ValueError(f"task {task_id!r} does not belong to run {run_id}")
+
+        pair = (
+            self._task_commit_pair(snapshot, task_id)
+            if kind is ProductDiffKind.TASK
+            else self._integration_commit_pair(snapshot, task_id)
+        )
+        try:
+            workspace = self._workspace_resolver.resolve(snapshot.project_id)
+        except (ValueError, WorkspaceGitError) as exc:
+            raise ProductWorkspaceNotReadyError(
+                f"managed workspace is not trustworthy for project {snapshot.project_id}"
+            ) from exc
+
+        reader = ReadOnlyCommitDiffReader(workspace)
+        try:
+            if kind is ProductDiffKind.TASK:
+                parents = await asyncio.to_thread(reader.commit_parents, pair.head_commit)
+                if parents != (pair.base_commit,):
+                    raise PersistenceCorruptionError(
+                        "persisted task commit no longer has its recorded task base as sole parent"
+                    )
+            else:
+                if pair.task_commit is None or pair.task_base_commit is None:
+                    raise PersistenceCorruptionError(
+                        "integration diff lacks task commit provenance"
+                    )
+                task_parents = await asyncio.to_thread(reader.commit_parents, pair.task_commit)
+                if task_parents != (pair.task_base_commit,):
+                    raise PersistenceCorruptionError(
+                        "persisted integrated task commit no longer matches its recorded task base"
+                    )
+                integration_parents = await asyncio.to_thread(
+                    reader.commit_parents,
+                    pair.head_commit,
+                )
+                if integration_parents != (pair.base_commit, pair.task_commit):
+                    raise PersistenceCorruptionError(
+                        "persisted integration commit no longer matches its recorded parent pair"
+                    )
+            diff = await asyncio.to_thread(
+                reader.read,
+                base_commit=pair.base_commit,
+                head_commit=pair.head_commit,
+            )
+        except CommitDiffError as exc:
+            raise PersistenceCorruptionError(
+                "persisted Git diff evidence cannot be reproduced from the managed repository"
+            ) from exc
+
+        return ProductTaskDiff(
+            run_id=snapshot.run_id,
+            project_id=snapshot.project_id,
+            task_id=task_id,
+            diff_kind=kind,
+            evidence_basis=(
+                ProductDiffEvidenceBasis.WORKER_EXECUTION
+                if kind is ProductDiffKind.TASK
+                else ProductDiffEvidenceBasis.MERGE_QUEUE_SNAPSHOT
+            ),
+            source_evidence_id=pair.evidence_id,
+            source_evidence_sha256=pair.evidence_sha256,
+            base_commit=diff.base_commit,
+            head_commit=diff.head_commit,
+            changed_file_count=diff.changed_file_count,
+            additions=diff.additions,
+            deletions=diff.deletions,
+            files=tuple(
+                ProductDiffFile(
+                    path=item.path,
+                    status=ProductDiffFileStatus(item.status.value),
+                    additions=item.additions,
+                    deletions=item.deletions,
+                    binary=item.binary,
+                    patch=item.patch,
+                    patch_bytes=item.patch_bytes,
+                    patch_sha256=item.patch_sha256,
+                    patch_truncated=item.patch_truncated,
+                    patch_omitted_reason=(
+                        ProductDiffOmissionReason(item.patch_omitted_reason.value)
+                        if item.patch_omitted_reason is not None
+                        else None
+                    ),
+                )
+                for item in diff.files
+            ),
+            omitted_file_count=diff.omitted_file_count,
+            patch_bytes=diff.patch_bytes,
+            truncated=diff.truncated,
+        )
+
     async def get_runtime_events(
         self,
         run_id: UUID,
@@ -345,6 +480,106 @@ class ProductRuntimeService:
             created_at=persisted.created_at,
             evidence=evidence,
         )
+
+    @staticmethod
+    def _task_commit_pair(snapshot: PersistedRunSnapshot, task_id: str) -> _DiffCommitPair:
+        candidates: list[_DiffCommitPair] = []
+        for evidence in snapshot.evidence:
+            if evidence.kind is not PersistenceEvidenceKind.WORKER_EXECUTION:
+                continue
+            if evidence.task_id != task_id:
+                continue
+            try:
+                execution = WorkerExecutionEvidence.model_validate(evidence.payload)
+            except ValidationError as exc:
+                raise PersistenceCorruptionError(
+                    "persisted worker execution evidence failed schema validation"
+                ) from exc
+            if execution.run_id != snapshot.run_id or execution.task_id != task_id:
+                raise PersistenceCorruptionError(
+                    "persisted worker execution evidence has mismatched Run/Task identity"
+                )
+            if execution.status is not WorkerExecutionStatus.SUCCEEDED:
+                continue
+            if execution.commit_sha is None:
+                raise PersistenceCorruptionError("successful worker evidence lacks task commit")
+            candidates.append(
+                _DiffCommitPair(
+                    base_commit=execution.base_commit,
+                    head_commit=execution.commit_sha,
+                    evidence_id=evidence.id,
+                    evidence_sha256=evidence.payload_sha256,
+                )
+            )
+        if not candidates:
+            raise ProductDiffUnavailableError(
+                "task diff is not available until task "
+                f"{task_id!r} has accepted successful worker evidence"
+            )
+        unique = {(item.base_commit, item.head_commit) for item in candidates}
+        if len(unique) != 1:
+            raise PersistenceCorruptionError(
+                "persisted successful worker evidence defines conflicting task commit pairs"
+            )
+        return max(candidates, key=lambda item: item.evidence_id)
+
+    @staticmethod
+    def _integration_commit_pair(
+        snapshot: PersistedRunSnapshot,
+        task_id: str,
+    ) -> _DiffCommitPair:
+        candidates: list[_DiffCommitPair] = []
+        for evidence in snapshot.evidence:
+            if evidence.kind is not PersistenceEvidenceKind.MERGE_QUEUE_SNAPSHOT:
+                continue
+            try:
+                merge_snapshot = MergeQueueSnapshot.model_validate(evidence.payload)
+            except ValidationError as exc:
+                raise PersistenceCorruptionError(
+                    "persisted merge queue snapshot failed schema validation"
+                ) from exc
+            if merge_snapshot.run_base_commit != snapshot.base_commit:
+                raise PersistenceCorruptionError(
+                    "persisted merge queue snapshot does not match the Run base commit"
+                )
+            for attempt in merge_snapshot.attempts:
+                if (
+                    attempt.task_id != task_id
+                    or attempt.outcome is not MergeAttemptOutcome.INTEGRATED
+                ):
+                    continue
+                if attempt.integration_commit is None:
+                    raise PersistenceCorruptionError(
+                        "integrated merge attempt lacks an integration commit"
+                    )
+                candidates.append(
+                    _DiffCommitPair(
+                        base_commit=attempt.previous_integration_commit,
+                        head_commit=attempt.integration_commit,
+                        evidence_id=evidence.id,
+                        evidence_sha256=evidence.payload_sha256,
+                        task_commit=attempt.task_commit,
+                        task_base_commit=attempt.task_base_commit,
+                    )
+                )
+        if not candidates:
+            raise ProductDiffUnavailableError(
+                f"integration diff is not available for task {task_id!r}"
+            )
+        unique = {
+            (
+                item.base_commit,
+                item.head_commit,
+                item.task_commit,
+                item.task_base_commit,
+            )
+            for item in candidates
+        }
+        if len(unique) != 1:
+            raise PersistenceCorruptionError(
+                "persisted merge queue evidence defines conflicting integration commit pairs"
+            )
+        return max(candidates, key=lambda item: item.evidence_id)
 
     async def _with_workspace_state(self, project: ProductProject) -> ProductProject:
         ready = await asyncio.to_thread(self._provisioner.is_ready, project.project_id)

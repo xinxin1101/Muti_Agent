@@ -1,3 +1,11 @@
+from app.workspace.diff import (
+    CommitDiffError,
+    CommitDiffFile,
+    CommitDiffFileStatus,
+    CommitDiffOmissionReason,
+    CommitDiffSnapshot,
+    ReadOnlyCommitDiffReader,
+)
 from app.workspace.git import LocalGitWorkspace, WorkspaceGitError
 from app.workspace.provision import ManagedProjectProvisioner, ProjectProvisionError
 from app.workspace.scope import (
@@ -15,9 +23,15 @@ from app.workspace.worktree import (
 )
 
 __all__ = [
+    "CommitDiffError",
+    "CommitDiffFile",
+    "CommitDiffFileStatus",
+    "CommitDiffOmissionReason",
+    "CommitDiffSnapshot",
     "LocalGitWorkspace",
     "ManagedProjectProvisioner",
     "ProjectProvisionError",
+    "ReadOnlyCommitDiffReader",
     "ScopeCheckResult",
     "ScopeEnforcer",
     "ScopeViolation",
