@@ -4,8 +4,8 @@ const boundaries = [
     body: "Frontend state is presentation state. Scheduling, leases, fencing, verification, and success decisions stay in the accepted backend runtime.",
   },
   {
-    title: "Events are observability",
-    body: "Structured runtime events may be rendered later, but they never become a second success authority or a replacement for typed evidence.",
+    title: "Product requests are typed",
+    body: "Step 4.2 adds bounded Project and Run HTTP contracts. Git HEAD and persisted runtime evidence remain backend-owned.",
   },
   {
     title: "Secrets stay out of the browser",
@@ -18,15 +18,14 @@ export function FoundationPage() {
     <section className="space-y-8">
       <div className="max-w-3xl space-y-4">
         <p className="text-sm font-semibold uppercase tracking-[0.2em] text-cyan-300">
-          Phase 4 / Step 4.1
+          Phase 4
         </p>
         <h1 className="text-4xl font-semibold tracking-tight text-white">
-          React / TypeScript UI foundation
+          DevFlow product foundation
         </h1>
         <p className="text-lg leading-8 text-slate-300">
-          The frontend quality baseline is established without widening the
-          accepted runtime boundary. Product pages and live event streaming
-          remain separate follow-up steps.
+          The React foundation now hosts bounded Project and Run product pages
+          without widening the accepted runtime authority boundary.
         </p>
       </div>
 
@@ -46,13 +45,12 @@ export function FoundationPage() {
 
       <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/5 p-5">
         <p className="text-sm font-medium text-emerald-200">
-          Foundation scope
+          Current product scope
         </p>
         <p className="mt-2 text-sm leading-6 text-slate-300">
-          React, TypeScript, Vite, React Router, TanStack Query, Tailwind CSS,
-          Vitest, Testing Library, typed browser configuration, and frontend CI
-          quality gates are in scope. SSE, DAG visualization, diff viewing,
-          metrics, and GitHub publication are not.
+          Projects, New Run, persisted Run Dashboard, and Task Detail are in
+          scope. SSE, DAG visualization, diff viewing, metrics, and GitHub
+          publication remain dedicated later steps.
         </p>
       </div>
     </section>

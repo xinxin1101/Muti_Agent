@@ -7,12 +7,18 @@ on:
       - "agent/**"
     paths:
       - "backend/**"
+      - "docs/PRODUCT_PAGES.md"
+      - "docs/STEP_4_2_ACCEPTANCE.md"
+      - "docs/PROGRESS.md"
       - ".github/workflows/backend-quality.yml"
   pull_request:
     branches:
       - main
     paths:
       - "backend/**"
+      - "docs/PRODUCT_PAGES.md"
+      - "docs/STEP_4_2_ACCEPTANCE.md"
+      - "docs/PROGRESS.md"
       - ".github/workflows/backend-quality.yml"
 
 permissions:

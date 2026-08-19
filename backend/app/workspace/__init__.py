@@ -1,4 +1,5 @@
 from app.workspace.git import LocalGitWorkspace, WorkspaceGitError
+from app.workspace.provision import ManagedProjectProvisioner, ProjectProvisionError
 from app.workspace.scope import (
     ScopeCheckResult,
     ScopeEnforcer,
@@ -15,6 +16,8 @@ from app.workspace.worktree import (
 
 __all__ = [
     "LocalGitWorkspace",
+    "ManagedProjectProvisioner",
+    "ProjectProvisionError",
     "ScopeCheckResult",
     "ScopeEnforcer",
     "ScopeViolation",
