@@ -7,9 +7,14 @@ from uuid import UUID
 
 from app.api.models import (
     DispatchStatus,
+    ProductDAGEdge,
+    ProductDAGNode,
+    ProductDAGNodeState,
+    ProductDAGStateBasis,
     ProductEvidenceSummary,
     ProductProject,
     ProductRun,
+    ProductRunDAG,
     ProductRunDetail,
     ProductTaskDetail,
     ProductTaskSummary,
@@ -18,9 +23,16 @@ from app.api.models import (
     RunLaunchResponse,
 )
 from app.dispatch.errors import TaskDispatchBrokerError
+from app.models.dag import TaskDAG, TaskNode
 from app.models.dispatch import TaskDispatchReceipt
 from app.models.events import PersistedRuntimeEvent
-from app.persistence.types import PersistedRunSnapshot
+from app.models.run import RunEvent, TaskRunState
+from app.persistence.dag import PersistedDAGSnapshot
+from app.persistence.errors import PersistenceCorruptionError
+from app.persistence.types import (
+    PersistedRunSnapshot,
+    PersistenceEvidenceKind,
+)
 from app.workspace import LocalGitWorkspace, WorkspaceGitError
 
 
@@ -48,14 +60,6 @@ class ProductEvidenceStore(Protocol):
         default_branch: str,
         project_id: UUID | None = None,
     ) -> UUID: ...
-    async def start_run(
-        self,
-        *,
-        project_id: UUID,
-        tasks: Sequence,
-        base_commit: str,
-        run_id: UUID | None = None,
-    ) -> UUID: ...
     async def load_run(self, run_id: UUID) -> PersistedRunSnapshot: ...
     async def list_runtime_events(
         self,
@@ -64,6 +68,19 @@ class ProductEvidenceStore(Protocol):
         after_sequence: int = 0,
         limit: int = 200,
     ) -> tuple[PersistedRuntimeEvent, ...]: ...
+    async def dispose(self) -> None: ...
+
+
+class ProductDAGStore(Protocol):
+    async def start_run(
+        self,
+        *,
+        project_id: UUID,
+        dag: TaskDAG,
+        base_commit: str,
+        run_id: UUID | None = None,
+    ) -> UUID: ...
+    async def load_dag(self, run_id: UUID) -> PersistedDAGSnapshot: ...
     async def dispose(self) -> None: ...
 
 
@@ -88,12 +105,14 @@ class ProductRuntimeService:
         *,
         catalog: ProductCatalog,
         evidence_store: ProductEvidenceStore,
+        dag_store: ProductDAGStore,
         provisioner: ProductProvisioner,
         workspace_resolver: ProductWorkspaceResolver,
         dispatcher: ProductDispatcher,
     ) -> None:
         self._catalog = catalog
         self._evidence_store = evidence_store
+        self._dag_store = dag_store
         self._provisioner = provisioner
         self._workspace_resolver = workspace_resolver
         self._dispatcher = dispatcher
@@ -101,6 +120,7 @@ class ProductRuntimeService:
     async def dispose(self) -> None:
         await self._catalog.dispose()
         await self._evidence_store.dispose()
+        await self._dag_store.dispose()
 
     async def list_projects(self) -> tuple[ProductProject, ...]:
         projects = await self._catalog.list_projects()
@@ -145,9 +165,10 @@ class ProductRuntimeService:
                 f"managed workspace is not trustworthy for project {request.project_id}"
             ) from exc
 
-        run_id = await self._evidence_store.start_run(
+        dag = TaskDAG(tasks=(TaskNode(task=request.task, depends_on=()),))
+        run_id = await self._dag_store.start_run(
             project_id=request.project_id,
-            tasks=(request.task,),
+            dag=dag,
             base_commit=base_commit,
         )
         try:
@@ -199,6 +220,90 @@ class ProductRuntimeService:
             tasks=tasks,
         )
 
+    async def get_run_dag(self, run_id: UUID) -> ProductRunDAG:
+        """Project immutable DAG topology plus evidence-backed presentation state."""
+
+        snapshot, persisted_dag = await asyncio.gather(
+            self._evidence_store.load_run(run_id),
+            self._dag_store.load_dag(run_id),
+        )
+        dag = persisted_dag.dag
+        order = dag.topological_order()
+        latest_states = self._latest_task_states(snapshot)
+        completed = {
+            task_id
+            for task_id, state in latest_states.items()
+            if state is TaskRunState.SUCCEEDED
+        }
+        failed = {
+            task_id
+            for task_id, state in latest_states.items()
+            if state is TaskRunState.FAILED
+        }
+        try:
+            blocked = set(dag.blocked_task_ids(failed_task_ids=failed))
+            ready = set(
+                dag.ready_task_ids(
+                    completed_task_ids=completed,
+                    failed_task_ids=failed,
+                )
+            )
+        except ValueError as exc:
+            raise PersistenceCorruptionError(
+                f"persisted Run DAG state evidence is inconsistent: {exc}"
+            ) from exc
+
+        advanced_blocked = {
+            task_id
+            for task_id in blocked
+            if latest_states.get(task_id) not in {None, TaskRunState.PENDING}
+        }
+        if advanced_blocked:
+            raise PersistenceCorruptionError(
+                "persisted Run DAG has active or terminal tasks downstream of failed tasks: "
+                + ", ".join(sorted(advanced_blocked))
+            )
+
+        layers = self._dag_layers(dag, order)
+        node_items: list[ProductDAGNode] = []
+        for index, task_id in enumerate(order):
+            presentation_state, state_basis = self._presentation_state(
+                task_id,
+                latest_states=latest_states,
+                ready=ready,
+                blocked=blocked,
+            )
+            node_items.append(
+                ProductDAGNode(
+                    task_id=task_id,
+                    objective=dag.node(task_id).task.objective,
+                    depends_on=dag.node(task_id).depends_on,
+                    topological_index=index,
+                    layer=layers[task_id],
+                    presentation_state=presentation_state,
+                    state_basis=state_basis,
+                )
+            )
+        nodes = tuple(node_items)
+
+        order_index = {task_id: index for index, task_id in enumerate(order)}
+        edges = tuple(
+            ProductDAGEdge(source_task_id=dependency, target_task_id=task_id)
+            for task_id in order
+            for dependency in sorted(
+                dag.node(task_id).depends_on,
+                key=order_index.__getitem__,
+            )
+        )
+        return ProductRunDAG(
+            run_id=run_id,
+            dag_sha256=persisted_dag.dag_sha256,
+            topology_source=persisted_dag.source,
+            topological_order=tuple(order),
+            nodes=nodes,
+            edges=edges,
+        )
+
     async def get_runtime_events(
         self,
         run_id: UUID,
@@ -244,3 +349,50 @@ class ProductRuntimeService:
     async def _with_workspace_state(self, project: ProductProject) -> ProductProject:
         ready = await asyncio.to_thread(self._provisioner.is_ready, project.project_id)
         return project.model_copy(update={"workspace_ready": ready})
+
+    @staticmethod
+    def _latest_task_states(snapshot: PersistedRunSnapshot) -> dict[str, TaskRunState]:
+        latest: dict[str, tuple[int, TaskRunState]] = {}
+        for evidence in snapshot.evidence:
+            if (
+                evidence.kind is not PersistenceEvidenceKind.STATE_TRANSITION
+                or evidence.task_id is None
+            ):
+                continue
+            event = RunEvent.model_validate(evidence.payload)
+            sequence = evidence.sequence if evidence.sequence is not None else event.sequence
+            current = latest.get(evidence.task_id)
+            if current is None or sequence > current[0]:
+                latest[evidence.task_id] = (sequence, event.state)
+        return {task_id: state for task_id, (_, state) in latest.items()}
+
+    @staticmethod
+    def _dag_layers(dag: TaskDAG, order: Sequence[str]) -> dict[str, int]:
+        layers: dict[str, int] = {}
+        for task_id in order:
+            dependencies = dag.node(task_id).depends_on
+            layers[task_id] = (
+                0
+                if not dependencies
+                else 1 + max(layers[dependency] for dependency in dependencies)
+            )
+        return layers
+
+    @staticmethod
+    def _presentation_state(
+        task_id: str,
+        *,
+        latest_states: dict[str, TaskRunState],
+        ready: set[str],
+        blocked: set[str],
+    ) -> tuple[ProductDAGNodeState, ProductDAGStateBasis]:
+        latest = latest_states.get(task_id)
+        if latest not in {None, TaskRunState.PENDING}:
+            return ProductDAGNodeState(latest.value), ProductDAGStateBasis.EVIDENCE
+        if task_id in blocked:
+            return ProductDAGNodeState.BLOCKED, ProductDAGStateBasis.DERIVED_DAG
+        if task_id in ready:
+            return ProductDAGNodeState.READY, ProductDAGStateBasis.DERIVED_DAG
+        if latest is TaskRunState.PENDING:
+            return ProductDAGNodeState.PENDING, ProductDAGStateBasis.EVIDENCE
+        return ProductDAGNodeState.PENDING, ProductDAGStateBasis.DERIVED_DAG

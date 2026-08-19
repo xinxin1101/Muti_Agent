@@ -11,6 +11,7 @@ from starlette.responses import StreamingResponse
 from app.api.models import (
     ProductProject,
     ProductRun,
+    ProductRunDAG,
     ProductRunDetail,
     ProductTaskDetail,
     ProjectCreateRequest,
@@ -25,6 +26,7 @@ from app.api.sse import (
     runtime_event_stream,
     validate_runtime_event_batch,
 )
+from app.persistence import PersistenceCorruptionError, PersistenceDAGUnavailableError
 from app.workspace import ProjectProvisionError, WorkspaceGitError
 
 
@@ -106,6 +108,20 @@ def create_app(service: ProductRuntimeService, *, close_service: bool = False) -
     async def get_run(run_id: UUID) -> ProductRunDetail:
         try:
             return await service.get_run(run_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/v1/runs/{run_id}/dag", response_model=ProductRunDAG)
+    async def get_run_dag(run_id: UUID) -> ProductRunDAG:
+        try:
+            return await service.get_run_dag(run_id)
+        except PersistenceDAGUnavailableError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except PersistenceCorruptionError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail="persisted Run DAG failed integrity validation",
+            ) from exc
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 

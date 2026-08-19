@@ -5,15 +5,16 @@ This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The developmen
 ## Current position
 
 - Current phase: **Phase 4 — V1.0 Productization**
-- Completed item: **Step 4.3 — SSE live status/log updates**
-- Next item: **Step 4.4 — DAG visualization**
+- Completed item: **Step 4.4 — DAG visualization**
+- Next item: **Step 4.5 — Diff viewer**
 - Phase 2 status: **ACCEPTED / COMPLETE**
 - Phase 3 status: **ACCEPTED / COMPLETE**
 - Phase 4 status: **IN PROGRESS**
 - Step 4.1 status: **ACCEPTED / COMPLETE**
 - Step 4.2 status: **ACCEPTED / COMPLETE**
 - Step 4.3 status: **ACCEPTED / COMPLETE**
-- Step 4.4 status: **NOT STARTED**
+- Step 4.4 status: **ACCEPTED / COMPLETE**
+- Step 4.5 status: **NOT STARTED**
 - V0.1 status: **ACCEPTED / COMPLETE**
 
 ---
@@ -245,8 +246,8 @@ Phase 4 turns the accepted runtime into an operable, observable, and evaluable p
 | 4.1 | React / TypeScript UI Foundation | **ACCEPTED** | locked install + typecheck + lint + 3 UI tests + production build |
 | 4.2 | Project / New Run / Dashboard / Task Detail pages | **ACCEPTED** | Backend Quality: 293 passed; Frontend Quality: typecheck + lint + tests + build |
 | 4.3 | SSE live status/log updates | **ACCEPTED** | PostgreSQL sequence → SSE/Last-Event-ID + browser fail-closed validation; Backend Quality: 299 passed; Frontend Quality: typecheck + lint + tests + build |
-| 4.4 | DAG visualization | **NEXT / NOT STARTED** | — |
-| 4.5 | Diff viewer | **NOT STARTED** | — |
+| 4.4 | DAG visualization | **ACCEPTED** | atomic/hash-validated DAG persistence + read-only typed SVG projection; Backend Quality: 307 passed; Frontend Quality: typecheck + lint + tests + build |
+| 4.5 | Diff viewer | **NEXT / NOT STARTED** | — |
 | 4.6 | Run metrics | **NOT STARTED** | — |
 | 4.7 | GitHub branch + Draft PR integration | **NOT STARTED** | — |
 | 4.8 | Benchmark/demo suite | **NOT STARTED** | — |
@@ -487,22 +488,88 @@ Frozen Step 4.3 principle:
 
 ---
 
-## Gate before Step 4.4 — DAG Visualization
+## Step 4.4 — DAG Visualization — ACCEPTED
 
-The next roadmap item is **Step 4.4 — DAG visualization**.
+Accepted through PR #29 candidate: `Phase 4 Step 4.4: add validated DAG visualization`.
 
-Step 4.4 may render the already validated task dependency graph and combine it with accepted Run/Task/SSE presentation state, but it must preserve these boundaries:
+Design / acceptance documents:
 
-- the DAG view is presentation only and never becomes scheduler truth;
-- graph nodes/edges come from accepted backend task/dependency data rather than browser-authored topology;
-- the browser may color or annotate nodes from accepted Run/Task/event state but may not mutate dependency truth or authorize execution;
-- SSE remains an observability feed and cannot create, remove, reorder, or unblock DAG dependencies;
-- graph rendering must handle malformed/unknown task references fail-closed rather than inventing edges;
-- no drag/drop or client-side edit may silently alter a persisted Task DAG;
-- scheduler readiness, topological execution, leases, `run_token`, verification, Reviewer decisions, integration state, and success remain backend-owned;
-- diff viewer remains Step 4.5;
-- run metrics remains Step 4.6;
+- `docs/DAG_VISUALIZATION.md`
+- `docs/STEP_4_4_ACCEPTANCE.md`
+
+### Accepted DAG authority chain
+
+```text
+validated TaskDAG
+        ↓
+atomic PostgreSQL Run + DAG snapshot
+        ↓
+canonical DAG SHA-256
+        ↓
+backend ProductRunDAG projection
+        ↓
+React read-only SVG
+```
+
+New Product Run creation freezes `RunRow`, task contract hashes, dependency lists, DAG hash, and the `RUN_STARTED` event in one PostgreSQL transaction before Dramatiq dispatch. A persistence failure therefore cannot leave a newly created Product Run with missing topology while still dispatching work.
+
+`PostgresDAGStore` is the dedicated topology authority. It reconstructs the persisted graph through the existing validated `TaskDAG`, so unknown dependencies, self-dependencies, and cycles remain fail-closed. The normalized topology is checked against a canonical SHA-256 and is immutable once recorded. The generic `PersistedRunSnapshot` deliberately does not expose dependency topology, preventing a second unvalidated DAG read path.
+
+Legacy compatibility also fails closed: an old single-task Run can be represented as `IMPLICIT_SINGLE_TASK`, because there is no possible dependency edge to lose; an old multi-task Run without authoritative persisted topology returns unavailable rather than pretending every task is independent.
+
+### Presentation-state boundary
+
+`GET /api/v1/runs/{run_id}/dag` is read-only. It returns typed nodes, directed edges, deterministic topological order/layers, topology source/hash, and node presentation-state basis.
+
+The backend reads accepted typed `STATE_TRANSITION` evidence for active and terminal states. For tasks that have not advanced, the validated DAG may derive READY/BLOCKED presentation state from accepted completed/failed upstream evidence. Contradictory advanced state downstream of a failed dependency is treated as persistence corruption rather than displayed as a valid graph state.
+
+Step 4.3 SSE remains a freshness signal only. Accepted evidence/finalization events invalidate the `run-dag` TanStack Query, and React re-reads the backend projection; EventSource never directly edits node state.
+
+The deterministic SVG renderer consumes only backend-provided layers and edges. DAG nodes link to the existing Task Detail page. No drag/drop, edge editing, dependency toggles, manual unblock, scheduler control, or browser-authored task transitions are exposed.
+
+### Final acceptance snapshot
+
+The hardened Step 4.4 code head passed:
+
+- PostgreSQL + Redis service startup: **PASS**;
+- Alembic `0001 → 0002 → 0003 → 0004 → 0005 → downgrade base → upgrade head`: **PASS**;
+- verification Docker image build: **PASS**;
+- Ruff: **PASS**;
+- atomic Run/DAG persistence and rollback regressions: **PASS**;
+- DAG identity/hash/immutability/corruption regressions: **PASS**;
+- legacy topology fail-closed regressions: **PASS**;
+- backend evidence-derived DAG state regressions: **PASS**;
+- backend pytest: **307 passed in 32.04s**;
+- Frontend Quality locked install: **PASS**;
+- TypeScript strict typecheck: **PASS**;
+- frontend lint: **PASS**;
+- DAG rendering / Task Detail navigation / SSE refresh regressions: **PASS**;
+- Vite production build: **PASS**;
+- Backend and Frontend workflow path gates cover Step 4.4 design/acceptance/progress documents;
+- both workflows retain read-only repository permissions.
+
+Frozen Step 4.4 principle:
+
+> **The browser may render validated DAG truth and refreshed evidence-derived presentation state; it may not create, edit, schedule, or replace that truth.**
+
+---
+
+## Gate before Step 4.5 — Diff Viewer
+
+The next roadmap item is **Step 4.5 — Diff viewer**.
+
+Step 4.5 may make accepted Git/task-commit changes inspectable in the product, but it must preserve these boundaries:
+
+- Git/worktree/task-commit/integration-ref evidence remains the code-state truth; the browser never becomes a file or Git authority;
+- the Diff Viewer is a read-only projection and cannot edit files, stage changes, create commits, rewrite task commits, or advance the integration ref;
+- diff source commits/refs must be selected by backend-validated Run/Task/Git evidence rather than browser-provided arbitrary repository objects;
+- changed paths and diff hunks must be bounded so a large repository or binary output cannot become an unbounded browser payload;
+- path-scope rules remain enforced by the existing TaskContract/workspace boundaries; the viewer cannot widen readable/writable scope;
+- missing, stale, or contradictory Git evidence must fail closed instead of fabricating an empty/successful diff;
+- a visible diff is evidence for inspection only and cannot replace deterministic verification, Reviewer approval, merge gates, or Run success authority;
+- SSE may invalidate/reload diff metadata when accepted Git/runtime facts change, but it must not author or mutate Git state;
+- Run metrics remains Step 4.6;
 - GitHub branch / Draft PR publication remains Step 4.7;
 - benchmark/demo suite remains Step 4.8.
 
-**Step 4.4 status: NOT STARTED.**
+**Step 4.5 status: NOT STARTED.**

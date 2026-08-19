@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
+
+import pytest
 
 from app.api.models import (
     DispatchStatus,
@@ -12,6 +15,7 @@ from app.api.models import (
 from app.api.service import ProductRuntimeService
 from app.dispatch.errors import TaskDispatchBrokerError
 from app.models import TaskContract
+from app.models.dag import TaskDAG
 from app.models.dispatch import TaskDispatchReceipt
 
 
@@ -50,8 +54,6 @@ class FakeCatalog:
 class FakeStore:
     def __init__(self, project_id: UUID) -> None:
         self.project_id = project_id
-        self.started_base_commit: str | None = None
-        self.started_task: TaskContract | None = None
 
     async def dispose(self) -> None:
         return None
@@ -59,12 +61,38 @@ class FakeStore:
     async def ensure_project(self, *, repository_url: str, default_branch: str, project_id=None):
         return self.project_id
 
-    async def start_run(self, *, project_id, tasks, base_commit, run_id=None):
-        self.started_base_commit = base_commit
-        self.started_task = tasks[0]
-        return uuid4()
-
     async def load_run(self, run_id):
+        raise AssertionError("not needed")
+
+
+class FakeDAGStore:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.started_run_id: UUID | None = None
+        self.started_project_id: UUID | None = None
+        self.started_base_commit: str | None = None
+        self.started_dag: TaskDAG | None = None
+
+    async def dispose(self) -> None:
+        return None
+
+    async def start_run(
+        self,
+        *,
+        project_id: UUID,
+        dag: TaskDAG,
+        base_commit: str,
+        run_id: UUID | None = None,
+    ) -> UUID:
+        if self.fail:
+            raise RuntimeError("atomic DAG Run start failed")
+        self.started_run_id = run_id or uuid4()
+        self.started_project_id = project_id
+        self.started_base_commit = base_commit
+        self.started_dag = dag
+        return self.started_run_id
+
+    async def load_dag(self, run_id: UUID):
         raise AssertionError("not needed")
 
 
@@ -108,7 +136,11 @@ class FakeDispatcher:
         )
 
 
-def _service(*, dispatcher: FakeDispatcher | None = None):
+def _service(
+    *,
+    dispatcher: FakeDispatcher | None = None,
+    dag_store: FakeDAGStore | None = None,
+):
     project_id = uuid4()
     project = ProductProject(
         project_id=project_id,
@@ -119,22 +151,22 @@ def _service(*, dispatcher: FakeDispatcher | None = None):
         workspace_ready=False,
     )
     store = FakeStore(project_id)
+    actual_dag_store = dag_store or FakeDAGStore()
     provisioner = FakeProvisioner()
     actual_dispatcher = dispatcher or FakeDispatcher()
     service = ProductRuntimeService(
         catalog=FakeCatalog(project),  # type: ignore[arg-type]
         evidence_store=store,  # type: ignore[arg-type]
+        dag_store=actual_dag_store,  # type: ignore[arg-type]
         provisioner=provisioner,
         workspace_resolver=FakeResolver(),  # type: ignore[arg-type]
         dispatcher=actual_dispatcher,
     )
-    return service, store, provisioner, actual_dispatcher, project_id
+    return service, store, actual_dag_store, provisioner, actual_dispatcher, project_id
 
 
 def test_create_project_provisions_backend_managed_workspace() -> None:
-    import asyncio
-
-    service, _store, provisioner, _dispatcher, project_id = _service()
+    service, _store, _dag, provisioner, _dispatcher, project_id = _service()
     result = asyncio.run(
         service.create_project(
             ProjectCreateRequest(
@@ -148,26 +180,42 @@ def test_create_project_provisions_backend_managed_workspace() -> None:
     assert result.workspace_ready is True
 
 
-def test_create_run_derives_base_commit_and_dispatches_existing_runtime() -> None:
-    import asyncio
-
-    service, store, _provisioner, dispatcher, project_id = _service()
+def test_create_run_atomically_freezes_dag_before_dispatch() -> None:
+    service, _store, dag_store, _provisioner, dispatcher, project_id = _service()
     result = asyncio.run(
         service.create_run(RunCreateRequest(project_id=project_id, task=_task()))
     )
 
-    assert store.started_base_commit == "c" * 40
-    assert store.started_task == _task()
-    assert dispatcher.dispatched is not None
+    assert dag_store.started_project_id == project_id
+    assert dag_store.started_base_commit == "c" * 40
+    assert dag_store.started_run_id is not None
+    assert dag_store.started_dag is not None
+    assert dag_store.started_dag.task_ids == ["service-task"]
+    assert dag_store.started_dag.node("service-task").depends_on == ()
+    assert dispatcher.dispatched == (dag_store.started_run_id, "service-task")
+    assert result.run_id == dag_store.started_run_id
     assert result.dispatch_status is DispatchStatus.QUEUED
     assert result.base_commit == "c" * 40
 
 
-def test_broker_failure_is_reported_without_fabricating_runtime_success() -> None:
-    import asyncio
+def test_atomic_dag_run_start_failure_prevents_dispatch_and_run_identity() -> None:
+    dag_store = FakeDAGStore(fail=True)
+    service, _store, _dag, _provisioner, dispatcher, project_id = _service(
+        dag_store=dag_store
+    )
 
+    with pytest.raises(RuntimeError, match="atomic DAG Run start failed"):
+        asyncio.run(
+            service.create_run(RunCreateRequest(project_id=project_id, task=_task()))
+        )
+
+    assert dag_store.started_run_id is None
+    assert dispatcher.dispatched is None
+
+
+def test_broker_failure_is_reported_without_fabricating_runtime_success() -> None:
     dispatcher = FakeDispatcher(fail=True)
-    service, _store, _provisioner, _dispatcher, project_id = _service(
+    service, _store, _dag, _provisioner, _dispatcher, project_id = _service(
         dispatcher=dispatcher
     )
     result = asyncio.run(

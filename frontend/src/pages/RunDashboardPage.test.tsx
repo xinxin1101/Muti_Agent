@@ -83,6 +83,7 @@ function renderDashboard() {
 }
 
 beforeEach(() => {
+  vi.clearAllMocks();
   FakeEventSource.instances = [];
   vi.stubGlobal(
     "EventSource",
@@ -106,6 +107,24 @@ beforeEach(() => {
       },
     ],
   });
+  vi.mocked(productApi.getRunDAG).mockResolvedValue({
+    run_id: runId,
+    dag_sha256: "d".repeat(64),
+    topology_source: "PERSISTED",
+    topological_order: ["task-1"],
+    nodes: [
+      {
+        task_id: "task-1",
+        objective: "Stream accepted runtime events.",
+        depends_on: [],
+        topological_index: 0,
+        layer: 0,
+        presentation_state: "READY",
+        state_basis: "DERIVED_DAG",
+      },
+    ],
+    edges: [],
+  });
 });
 
 afterEach(() => {
@@ -113,6 +132,17 @@ afterEach(() => {
 });
 
 describe("RunDashboardPage live timeline", () => {
+  it("renders the backend-validated DAG with task navigation", async () => {
+    renderDashboard();
+
+    expect(
+      await screen.findByRole("img", { name: "Validated task dependency DAG" }),
+    ).toBeInTheDocument();
+    const taskLink = screen.getByRole("link", { name: "Open task task-1" });
+    expect(taskLink).toHaveAttribute("href", `/runs/${runId}/tasks/task-1`);
+    expect(screen.getByText(/Topology: PERSISTED/)).toBeInTheDocument();
+  });
+
   it("subscribes after REST confirms the Run and renders accepted events", async () => {
     const rendered = renderDashboard();
 
@@ -138,6 +168,24 @@ describe("RunDashboardPage live timeline", () => {
 
     rendered.unmount();
     expect(FakeEventSource.instances[0]?.closed).toBe(true);
+  });
+
+  it("re-reads DAG presentation state after accepted evidence arrives", async () => {
+    renderDashboard();
+    await screen.findByRole("heading", { name: "Run Dashboard" });
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    await waitFor(() => expect(productApi.getRunDAG).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      FakeEventSource.instances[0]?.message(
+        runtimeEvent(1, "33333333-3333-3333-3333-333333333333"),
+      );
+      FakeEventSource.instances[0]?.message(
+        runtimeEvent(2, "44444444-4444-4444-4444-444444444444"),
+      );
+    });
+
+    await waitFor(() => expect(productApi.getRunDAG).toHaveBeenCalledTimes(2));
   });
 
   it("fails closed on a sequence gap instead of presenting corrupted order", async () => {

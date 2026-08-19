@@ -7,6 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
 from app.models.task import TaskContract
+from app.persistence.dag import PersistedDAGSource
 from app.persistence.types import PersistedRunStatus, PersistenceEvidenceKind
 
 
@@ -43,6 +44,47 @@ class ProductRunDetail(ProductRun):
     repository_url: str
     default_branch: str
     tasks: tuple[ProductTaskSummary, ...]
+
+
+class ProductDAGNodeState(StrEnum):
+    PENDING = "PENDING"
+    READY = "READY"
+    RUNNING = "RUNNING"
+    VERIFYING = "VERIFYING"
+    REVIEWING = "REVIEWING"
+    REPAIRING = "REPAIRING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    BLOCKED = "BLOCKED"
+
+
+class ProductDAGStateBasis(StrEnum):
+    EVIDENCE = "EVIDENCE"
+    DERIVED_DAG = "DERIVED_DAG"
+
+
+class ProductDAGNode(ProductModel):
+    task_id: str = Field(min_length=1, max_length=128)
+    objective: str = Field(min_length=1)
+    depends_on: tuple[str, ...] = ()
+    topological_index: int = Field(ge=0)
+    layer: int = Field(ge=0)
+    presentation_state: ProductDAGNodeState
+    state_basis: ProductDAGStateBasis
+
+
+class ProductDAGEdge(ProductModel):
+    source_task_id: str = Field(min_length=1, max_length=128)
+    target_task_id: str = Field(min_length=1, max_length=128)
+
+
+class ProductRunDAG(ProductModel):
+    run_id: UUID
+    dag_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    topology_source: PersistedDAGSource
+    topological_order: tuple[str, ...]
+    nodes: tuple[ProductDAGNode, ...]
+    edges: tuple[ProductDAGEdge, ...]
 
 
 class ProductEvidenceSummary(ProductModel):

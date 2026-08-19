@@ -1,3 +1,9 @@
+from app.persistence.dag import (
+    PersistedDAGSnapshot,
+    PersistedDAGSource,
+    PersistenceDAGUnavailableError,
+    PostgresDAGStore,
+)
 from app.persistence.database import create_postgres_engine, create_session_factory
 from app.persistence.errors import (
     PersistenceConfigurationError,
@@ -21,15 +27,19 @@ from app.persistence.types import (
 
 __all__ = [
     "ContextFingerprintReference",
+    "PersistenceConfigurationError",
+    "PersistenceConflictError",
+    "PersistenceCorruptionError",
+    "PersistenceDAGUnavailableError",
+    "PersistenceError",
+    "PersistenceEvidenceKind",
+    "PersistedDAGSnapshot",
+    "PersistedDAGSource",
     "PersistedEvidence",
     "PersistedRunSnapshot",
     "PersistedRunStatus",
     "PersistedTask",
-    "PersistenceConfigurationError",
-    "PersistenceConflictError",
-    "PersistenceCorruptionError",
-    "PersistenceError",
-    "PersistenceEvidenceKind",
+    "PostgresDAGStore",
     "PostgresEvidenceStore",
     "PostgresTaskLeaseStore",
     "StaleRunTokenError",

@@ -30,6 +30,41 @@ export type ProductRunDetail = ProductRun &
     tasks: readonly ProductTaskSummary[];
   }>;
 
+export type ProductDAGNodeState =
+  | "PENDING"
+  | "READY"
+  | "RUNNING"
+  | "VERIFYING"
+  | "REVIEWING"
+  | "REPAIRING"
+  | "SUCCEEDED"
+  | "FAILED"
+  | "BLOCKED";
+
+export type ProductDAGNode = Readonly<{
+  task_id: string;
+  objective: string;
+  depends_on: readonly string[];
+  topological_index: number;
+  layer: number;
+  presentation_state: ProductDAGNodeState;
+  state_basis: "EVIDENCE" | "DERIVED_DAG";
+}>;
+
+export type ProductDAGEdge = Readonly<{
+  source_task_id: string;
+  target_task_id: string;
+}>;
+
+export type ProductRunDAG = Readonly<{
+  run_id: string;
+  dag_sha256: string;
+  topology_source: "PERSISTED" | "IMPLICIT_SINGLE_TASK";
+  topological_order: readonly string[];
+  nodes: readonly ProductDAGNode[];
+  edges: readonly ProductDAGEdge[];
+}>;
+
 export type TaskContractPayload = Readonly<{
   task_id: string;
   objective: string;

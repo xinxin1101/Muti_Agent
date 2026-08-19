@@ -2,6 +2,7 @@ import { apiClient } from "./client";
 import type {
   ProductProject,
   ProductRun,
+  ProductRunDAG,
   ProductRunDetail,
   ProductTaskDetail,
   ProjectCreatePayload,
@@ -38,6 +39,10 @@ export function createRun(payload: RunCreatePayload): Promise<RunLaunchResponse>
 
 export function getRun(runId: string): Promise<ProductRunDetail> {
   return apiClient.getJson<ProductRunDetail>(`${API_PREFIX}/runs/${runId}`);
+}
+
+export function getRunDAG(runId: string): Promise<ProductRunDAG> {
+  return apiClient.getJson<ProductRunDAG>(`${API_PREFIX}/runs/${runId}/dag`);
 }
 
 export function getTask(
