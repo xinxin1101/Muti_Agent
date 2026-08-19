@@ -1,4 +1,5 @@
 import { apiClient } from "./client";
+import type { ProductGitHubPublication } from "../types/publication";
 import type {
   ProductDiffKind,
   ProductProject,
@@ -46,6 +47,18 @@ export function getRun(runId: string): Promise<ProductRunDetail> {
 
 export function getRunMetrics(runId: string): Promise<ProductRunMetrics> {
   return apiClient.getJson<ProductRunMetrics>(`${API_PREFIX}/runs/${runId}/metrics`);
+}
+
+export function getGitHubPublication(runId: string): Promise<ProductGitHubPublication> {
+  return apiClient.getJson<ProductGitHubPublication>(
+    `${API_PREFIX}/runs/${runId}/github-publication`,
+  );
+}
+
+export function publishGitHubDraft(runId: string): Promise<ProductGitHubPublication> {
+  return apiClient.postNoBody<ProductGitHubPublication>(
+    `${API_PREFIX}/runs/${runId}/github-publication`,
+  );
 }
 
 export function getRunDAG(runId: string): Promise<ProductRunDAG> {
