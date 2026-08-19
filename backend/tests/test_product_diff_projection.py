@@ -14,6 +14,7 @@ from app.models.dispatch import WorkerExecutionEvidence, WorkerExecutionStatus
 from app.models.merge import MergeAttemptOutcome, MergeQueueAttempt, MergeQueueSnapshot
 from app.models.run import RunEvent, SingleTaskRunResult, TaskRunState
 from app.models.task import TaskContract
+from app.persistence.errors import PersistenceCorruptionError
 from app.persistence.serialization import canonical_payload
 from app.persistence.types import (
     PersistedEvidence,
@@ -52,17 +53,28 @@ def _repo(tmp_path: Path) -> tuple[LocalGitWorkspace, str, str]:
     return LocalGitWorkspace(root), base, head
 
 
-def _integration_commit(workspace: LocalGitWorkspace, base: str, task_commit: str) -> str:
+def _integration_commit(
+    workspace: LocalGitWorkspace,
+    base: str,
+    task_commit: str,
+    *,
+    reverse_parents: bool = False,
+) -> str:
     root = workspace.root
     tree = _git(root, "rev-parse", f"{task_commit}^{{tree}}")
+    parents = (
+        (task_commit, base)
+        if reverse_parents
+        else (base, task_commit)
+    )
     return _git(
         root,
         "commit-tree",
         tree,
         "-p",
-        base,
+        parents[0],
         "-p",
-        task_commit,
+        parents[1],
         "-m",
         "DevFlow integration test",
     )
@@ -240,6 +252,27 @@ def test_task_diff_pair_is_resolved_from_worker_evidence_not_browser_sha(tmp_pat
     assert "+value = 2" in (result.files[0].patch or "")
 
 
+def test_task_diff_rejects_commit_not_directly_based_on_recorded_base(tmp_path: Path) -> None:
+    workspace, base, task_commit = _repo(tmp_path)
+    (workspace.root / "app.py").write_text("value = 3\n", encoding="utf-8")
+    _git(workspace.root, "add", "app.py")
+    _git(workspace.root, "commit", "-m", "unexpected intermediate task")
+    later_commit = _git(workspace.root, "rev-parse", "HEAD")
+    assert _git(workspace.root, "rev-parse", f"{later_commit}^") == task_commit
+
+    snapshot = _snapshot(base, later_commit)
+    service = _service(snapshot, workspace)
+
+    with pytest.raises(PersistenceCorruptionError, match="recorded task base as sole parent"):
+        asyncio.run(
+            service.get_task_diff(
+                snapshot.run_id,
+                "task-1",
+                kind=ProductDiffKind.TASK,
+            )
+        )
+
+
 def test_integration_diff_revalidates_the_recorded_two_parent_commit(tmp_path: Path) -> None:
     workspace, base, task_commit = _repo(tmp_path)
     integration_commit = _integration_commit(workspace, base, task_commit)
@@ -260,6 +293,27 @@ def test_integration_diff_revalidates_the_recorded_two_parent_commit(tmp_path: P
     assert result.source_evidence_id == 2
     assert result.files[0].path == "app.py"
     assert "+value = 2" in (result.files[0].patch or "")
+
+
+def test_integration_diff_rejects_reversed_parent_order(tmp_path: Path) -> None:
+    workspace, base, task_commit = _repo(tmp_path)
+    integration_commit = _integration_commit(
+        workspace,
+        base,
+        task_commit,
+        reverse_parents=True,
+    )
+    snapshot = _snapshot(base, task_commit, integration_commit=integration_commit)
+    service = _service(snapshot, workspace)
+
+    with pytest.raises(PersistenceCorruptionError, match="recorded parent pair"):
+        asyncio.run(
+            service.get_task_diff(
+                snapshot.run_id,
+                "task-1",
+                kind=ProductDiffKind.INTEGRATION,
+            )
+        )
 
 
 def test_integration_diff_is_unavailable_without_merge_queue_evidence(tmp_path: Path) -> None:
