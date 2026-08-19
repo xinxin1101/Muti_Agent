@@ -118,17 +118,22 @@ export function GitHubPublication({
       ) : (
         <button
           type="button"
-          disabled={!item.publisher_configured || publish.isPending || publishing}
+          disabled={!item.publisher_configured || publish.isPending}
           onClick={() => publish.mutate()}
           className="rounded-lg bg-cyan-300 px-4 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
         >
-          {publish.isPending || publishing ? "Publishing…" : "Create Draft PR"}
+          {publish.isPending
+            ? "Publishing…"
+            : publishing
+              ? "Retry publication"
+              : "Create Draft PR"}
         </button>
       )}
 
       {publishing ? (
         <p className="text-xs text-slate-500">
-          Another backend publication attempt currently owns the bounded claim for this Run.
+          A backend publication claim exists. Retrying is safe: the backend rejects a still-live
+          claim and takes over only after its PostgreSQL expiry.
         </p>
       ) : null}
       {!item.publisher_configured && !item.pull_request_url ? (
