@@ -4,12 +4,18 @@ on:
   pull_request:
     paths:
       - "frontend/**"
+      - "docs/FRONTEND_FOUNDATION.md"
+      - "docs/STEP_4_1_ACCEPTANCE.md"
+      - "docs/PROGRESS.md"
       - ".github/workflows/frontend-quality.yml"
   push:
     branches:
       - main
     paths:
       - "frontend/**"
+      - "docs/FRONTEND_FOUNDATION.md"
+      - "docs/STEP_4_1_ACCEPTANCE.md"
+      - "docs/PROGRESS.md"
       - ".github/workflows/frontend-quality.yml"
 
 permissions:
@@ -35,6 +41,14 @@ jobs:
 
       - name: Install frontend dependencies
         run: npm install --no-audit --no-fund
+
+      - name: Capture generated lockfile
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-package-lock
+          path: frontend/package-lock.json
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Typecheck
         run: npm run typecheck
