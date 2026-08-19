@@ -5,6 +5,8 @@ Status: **CANDIDATE / PENDING CI**
 Step 4.4 is ready for acceptance when the exact PR head proves:
 
 - only a validated `TaskDAG` can be frozen as authoritative Run topology;
+- new Product Run identity, task contracts, dependency edges, DAG hash, and `RUN_STARTED` event commit atomically before dispatch;
+- a failed atomic DAG Run start leaves no persisted Run identity and cannot dispatch work;
 - persisted DAG task ids and TaskContract hashes exactly match the Run tasks;
 - canonical DAG SHA-256 detects topology corruption;
 - unknown dependency, self-dependency, and cycle validation remains owned by `TaskDAG`;
@@ -13,6 +15,7 @@ Step 4.4 is ready for acceptance when the exact PR head proves:
 - historical single-task Runs may be projected explicitly as `IMPLICIT_SINGLE_TASK`;
 - `GET /api/v1/runs/{run_id}/dag` is read-only and exposes typed nodes/edges/order/layers/state basis;
 - node presentation state is built from accepted typed state evidence plus validated-DAG READY/BLOCKED derivation;
+- contradictory advanced state downstream of a failed dependency fails closed as persistence corruption;
 - SSE only invalidates the DAG query and never writes node state directly;
 - React renders backend-provided topology and offers Task Detail navigation without edge/task scheduling controls;
 - frontend does not infer dependency edges from task ordering or event prose;
