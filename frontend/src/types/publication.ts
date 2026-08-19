@@ -1,7 +1,7 @@
 export type ProductGitHubPublication = Readonly<{
   run_id: string;
   project_id: string;
-  state: "READY" | "FAILED" | "PUBLISHED";
+  state: "READY" | "PUBLISHING" | "FAILED" | "PUBLISHED";
   source_basis: "INTEGRATION" | "SINGLE_TASK";
   source_commit: string;
   source_evidence_id: number;
