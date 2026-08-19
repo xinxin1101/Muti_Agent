@@ -2,12 +2,13 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useParams } from "react-router";
 
-import { getRun, getRunDAG } from "../api/product";
+import { getRun, getRunDAG, getRunMetrics } from "../api/product";
 import {
   parseRuntimeEventSummary,
   runtimeEventStreamUrl,
 } from "../api/runtime-events";
 import { RunDAG } from "../components/RunDAG";
+import { RunMetrics } from "../components/RunMetrics";
 import { StatusBadge } from "../components/StatusBadge";
 import type { RunLaunchResponse } from "../types/product";
 import type { RuntimeEventSummary } from "../types/runtime";
@@ -34,6 +35,11 @@ export function RunDashboardPage() {
     queryKey: ["run", runId],
     queryFn: () => getRun(runId),
     enabled: Boolean(runId),
+  });
+  const metrics = useQuery({
+    queryKey: ["run-metrics", runId],
+    queryFn: () => getRunMetrics(runId),
+    enabled: Boolean(runId) && run.isSuccess,
   });
   const dag = useQuery({
     queryKey: ["run-dag", runId],
@@ -105,6 +111,7 @@ export function RunDashboardPage() {
         setStreamStatus("live");
         setStreamError(null);
 
+        void queryClient.invalidateQueries({ queryKey: ["run-metrics", runId] });
         if (
           event.kind === "EVIDENCE_RECORDED" ||
           event.kind === "RUN_FINALIZED"
@@ -173,6 +180,24 @@ export function RunDashboardPage() {
         <Metric label="Tasks" value={String(run.data.task_count)} />
         <Metric label="Started" value={new Date(run.data.started_at).toLocaleString()} />
       </dl>
+
+      {metrics.isLoading ? (
+        <p className="rounded-xl border border-slate-800 bg-slate-950/60 p-5 text-sm text-slate-500">
+          Loading accepted Run Metrics…
+        </p>
+      ) : metrics.error || !metrics.data ? (
+        <div className="rounded-xl border border-amber-400/20 bg-amber-400/5 p-5">
+          <h2 className="font-semibold text-amber-100">Run Metrics unavailable</h2>
+          <p className="mt-2 text-sm text-amber-200/80">
+            {metrics.error?.message ?? "A complete bounded metrics projection is unavailable."}
+          </p>
+          <p className="mt-2 text-xs text-amber-200/60">
+            The browser will not infer partial counters or derive Run success from missing metrics.
+          </p>
+        </div>
+      ) : (
+        <RunMetrics metrics={metrics.data} />
+      )}
 
       {dag.isLoading ? (
         <p className="rounded-xl border border-slate-800 bg-slate-950/60 p-5 text-sm text-slate-500">

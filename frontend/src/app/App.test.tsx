@@ -59,6 +59,39 @@ beforeEach(() => {
       },
     ],
   });
+  vi.mocked(productApi.getRunMetrics).mockResolvedValue({
+    run_id: run.run_id,
+    project_id: project.project_id,
+    status: "RUNNING",
+    status_basis: "PERSISTED_RUN",
+    task_count: 1,
+    started_at: run.started_at,
+    finished_at: null,
+    terminal_duration_ms: null,
+    evidence: {
+      total_records: 2,
+      developer_runs: 0,
+      verification_attempts: 1,
+      review_decisions: 0,
+      repair_attempts: 0,
+      failure_reports: 0,
+      dispatch_events: 0,
+      worker_executions: 1,
+      merge_queue_snapshots: 0,
+      merge_conflicts: 0,
+      integration_gate_evaluations: 0,
+      human_decisions: 0,
+    },
+    runtime_events: {
+      total_events: 1,
+      warning_events: 0,
+      error_events: 0,
+      lease_acquisitions: 0,
+      lease_takeovers: 0,
+      lease_releases: 0,
+      latest_sequence: 1,
+    },
+  });
   vi.mocked(productApi.getRunDAG).mockResolvedValue({
     run_id: run.run_id,
     dag_sha256: "d".repeat(64),
@@ -203,6 +236,7 @@ describe("App", () => {
     expect(
       screen.getByRole("img", { name: "Validated task dependency DAG" }),
     ).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Run metrics" })).toBeInTheDocument();
   });
 
   it("renders Task Detail contract, diff, and evidence metadata", async () => {

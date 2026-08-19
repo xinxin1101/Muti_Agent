@@ -5,6 +5,7 @@ import type {
   ProductRun,
   ProductRunDAG,
   ProductRunDetail,
+  ProductRunMetrics,
   ProductTaskDetail,
   ProductTaskDiff,
   ProjectCreatePayload,
@@ -41,6 +42,10 @@ export function createRun(payload: RunCreatePayload): Promise<RunLaunchResponse>
 
 export function getRun(runId: string): Promise<ProductRunDetail> {
   return apiClient.getJson<ProductRunDetail>(`${API_PREFIX}/runs/${runId}`);
+}
+
+export function getRunMetrics(runId: string): Promise<ProductRunMetrics> {
+  return apiClient.getJson<ProductRunMetrics>(`${API_PREFIX}/runs/${runId}/metrics`);
 }
 
 export function getRunDAG(runId: string): Promise<ProductRunDAG> {

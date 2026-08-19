@@ -14,6 +14,7 @@ from app.api.models import (
     ProductRun,
     ProductRunDAG,
     ProductRunDetail,
+    ProductRunMetrics,
     ProductTaskDetail,
     ProductTaskDiff,
     ProjectCreateRequest,
@@ -22,6 +23,7 @@ from app.api.models import (
 )
 from app.api.service import (
     ProductDiffUnavailableError,
+    ProductMetricsUnavailableError,
     ProductRuntimeService,
     ProductWorkspaceNotReadyError,
 )
@@ -114,6 +116,25 @@ def create_app(service: ProductRuntimeService, *, close_service: bool = False) -
     async def get_run(run_id: UUID) -> ProductRunDetail:
         try:
             return await service.get_run(run_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/v1/runs/{run_id}/metrics", response_model=ProductRunMetrics)
+    async def get_run_metrics(request: Request, run_id: UUID) -> ProductRunMetrics:
+        if request.query_params:
+            raise HTTPException(
+                status_code=400,
+                detail="Run Metrics does not accept browser-authored selectors",
+            )
+        try:
+            return await service.get_run_metrics(run_id)
+        except ProductMetricsUnavailableError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except PersistenceCorruptionError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail="persisted Run Metrics source facts failed integrity validation",
+            ) from exc
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 

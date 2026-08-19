@@ -8,6 +8,12 @@ from uuid import UUID
 
 from pydantic import ValidationError
 
+from app.api.metrics import (
+    MAX_METRIC_EVENT_SCAN,
+    METRIC_EVENT_PAGE_SIZE,
+    aggregate_runtime_events,
+    build_run_metrics,
+)
 from app.api.models import (
     DispatchStatus,
     ProductDAGEdge,
@@ -24,6 +30,7 @@ from app.api.models import (
     ProductRun,
     ProductRunDAG,
     ProductRunDetail,
+    ProductRunMetrics,
     ProductTaskDetail,
     ProductTaskDiff,
     ProductTaskSummary,
@@ -61,6 +68,10 @@ class ProductWorkspaceNotReadyError(RuntimeError):
 
 class ProductDiffUnavailableError(RuntimeError):
     """Raised when accepted Git evidence does not yet define the requested diff."""
+
+
+class ProductMetricsUnavailableError(RuntimeError):
+    """Raised when a complete bounded Run Metrics projection cannot be produced."""
 
 
 class ProductCatalog(Protocol):
@@ -252,6 +263,42 @@ class ProductRuntimeService:
             finished_at=snapshot.finished_at,
             tasks=tasks,
         )
+
+    async def get_run_metrics(self, run_id: UUID) -> ProductRunMetrics:
+        """Return bounded descriptive metrics without deriving Run success."""
+
+        snapshot = await self._evidence_store.load_run(run_id)
+        events: list[PersistedRuntimeEvent] = []
+        cursor = 0
+
+        while len(events) < MAX_METRIC_EVENT_SCAN:
+            remaining = MAX_METRIC_EVENT_SCAN - len(events)
+            page_limit = min(METRIC_EVENT_PAGE_SIZE, remaining)
+            batch = await self._evidence_store.list_runtime_events(
+                run_id,
+                after_sequence=cursor,
+                limit=page_limit,
+            )
+            if not batch:
+                break
+            events.extend(batch)
+            cursor = batch[-1].sequence
+            if len(batch) < page_limit:
+                break
+
+        if len(events) == MAX_METRIC_EVENT_SCAN:
+            overflow = await self._evidence_store.list_runtime_events(
+                run_id,
+                after_sequence=cursor,
+                limit=1,
+            )
+            if overflow:
+                raise ProductMetricsUnavailableError(
+                    "Run Metrics exceed the bounded runtime-event scan limit"
+                )
+
+        aggregate = aggregate_runtime_events(run_id, tuple(events))
+        return build_run_metrics(snapshot, aggregate)
 
     async def get_run_dag(self, run_id: UUID) -> ProductRunDAG:
         """Project immutable DAG topology plus evidence-backed presentation state."""

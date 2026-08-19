@@ -126,3 +126,34 @@ class PersistedRuntimeEvent(BaseModel):
     attributes: dict[str, Any]
     attributes_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     created_at: datetime
+
+
+class RuntimeEventAggregate(BaseModel):
+    """Bounded SQL aggregate over persisted runtime-event observability facts."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    total_events: int = Field(ge=0)
+    warning_events: int = Field(ge=0)
+    error_events: int = Field(ge=0)
+    lease_acquisitions: int = Field(ge=0)
+    lease_takeovers: int = Field(ge=0)
+    lease_releases: int = Field(ge=0)
+    latest_sequence: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_aggregate(self) -> RuntimeEventAggregate:
+        bounded_counts = (
+            self.warning_events,
+            self.error_events,
+            self.lease_acquisitions,
+            self.lease_takeovers,
+            self.lease_releases,
+        )
+        if any(value > self.total_events for value in bounded_counts):
+            raise ValueError("runtime event aggregate counters cannot exceed total events")
+        if self.total_events == 0 and self.latest_sequence != 0:
+            raise ValueError("empty runtime event aggregates must have latest_sequence zero")
+        if self.total_events > 0 and self.latest_sequence != self.total_events:
+            raise ValueError("runtime event sequence must remain contiguous from one")
+        return self
