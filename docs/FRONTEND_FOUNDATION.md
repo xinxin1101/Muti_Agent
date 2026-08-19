@@ -11,8 +11,9 @@ Step 4.1 includes:
 - TanStack Query server-state provider;
 - Tailwind CSS build integration;
 - a typed HTTP client boundary;
-- browser-safe runtime event DTOs;
+- browser-safe runtime event DTOs aligned with the accepted backend event model;
 - Vitest + Testing Library regression baseline;
+- a committed npm lockfile for reproducible dependency resolution;
 - a dedicated `Frontend Quality` GitHub Actions workflow;
 - a minimal application shell with explicit placeholders for later product pages.
 
@@ -74,6 +75,7 @@ frontend/
 │   └── styles.css
 ├── index.html
 ├── package.json
+├── package-lock.json
 ├── tsconfig*.json
 ├── vite.config.ts
 └── vitest.config.ts
@@ -84,14 +86,14 @@ frontend/
 From `frontend/`:
 
 ```bash
-npm install
+npm ci
 npm run typecheck
 npm run lint
 npm run test
 npm run build
 ```
 
-CI runs the same gates under Node.js 24.
+CI runs the same locked install and quality gates under Node.js 24.
 
 ## Server-state boundary
 
@@ -105,6 +107,10 @@ The initial defaults intentionally keep behavior conservative:
 - short stale-time suitable for later API consumption.
 
 SSE is intentionally deferred to the dedicated live-status step instead of being smuggled into this scaffold.
+
+## Event DTO boundary
+
+The browser-facing runtime-event model mirrors the accepted backend `PersistedRuntimeEvent` field names and enum values at the wire boundary. It intentionally excludes `run_token` and other credentials. Any later view-model conversion is a presentation concern and must not redefine backend event semantics.
 
 ## Step 4.2 handoff
 
