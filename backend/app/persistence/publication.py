@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID
 
 from pydantic import SecretStr, ValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.models.publication import (
@@ -214,8 +215,8 @@ class PostgresGitHubPublicationStore:
         return row
 
     @staticmethod
-    async def _database_time(session: AsyncSession):
-        value = await session.scalar(select(__import__("sqlalchemy").func.now()))
+    async def _database_time(session: AsyncSession) -> datetime:
+        value = await session.scalar(select(func.now()))
         if value is None:
             raise PersistenceCorruptionError("PostgreSQL did not return publication audit time")
         return value
