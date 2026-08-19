@@ -1,8 +1,8 @@
 # Step 4.4 Acceptance — DAG Visualization
 
-Status: **CANDIDATE / PENDING CI**
+Status: **ACCEPTED / COMPLETE**
 
-Step 4.4 is ready for acceptance when the exact PR head proves:
+Step 4.4 is accepted with the following frozen guarantees and boundaries:
 
 - only a validated `TaskDAG` can be frozen as authoritative Run topology;
 - new Product Run identity, task contracts, dependency edges, DAG hash, and `RUN_STARTED` event commit atomically before dispatch;
@@ -19,10 +19,40 @@ Step 4.4 is ready for acceptance when the exact PR head proves:
 - SSE only invalidates the DAG query and never writes node state directly;
 - React renders backend-provided topology and offers Task Detail navigation without edge/task scheduling controls;
 - frontend does not infer dependency edges from task ordering or event prose;
-- migration upgrade/downgrade, verifier build, Ruff, and the complete backend suite remain green;
-- frontend locked install, strict typecheck, lint, tests, and production build remain green;
+- the generic `PersistedRunSnapshot` deliberately does not expose dependency topology, so `PostgresDAGStore` remains the only hash-validated DAG read path;
 - no Diff Viewer, Metrics, GitHub publication, benchmark/demo, or product multi-task authoring is introduced.
 
-Frozen candidate principle:
+## Final exact-head acceptance
+
+Accepted code head before ledger advancement:
+
+`67e4cd9eb67a8c456d983f336802c3be711050c7`
+
+Backend Quality on that exact head:
+
+- PostgreSQL + Redis service startup: **PASS**;
+- Alembic `0001 → 0002 → 0003 → 0004 → 0005 → downgrade base → 0001 → 0002 → 0003 → 0004 → 0005`: **PASS**;
+- verification Docker image build: **PASS**;
+- `ruff check .`: **PASS**;
+- atomic Run + DAG + `RUN_STARTED` persistence regressions: **PASS**;
+- DAG identity / TaskContract hash / immutable topology regressions: **PASS**;
+- DAG SHA-256 corruption detection: **PASS**;
+- legacy single-task / multi-task topology boundary regressions: **PASS**;
+- evidence-backed READY/BLOCKED presentation-state regressions: **PASS**;
+- contradictory downstream state corruption regression: **PASS**;
+- complete backend `pytest`: **307 passed in 32.04s**.
+
+Frontend Quality on the same exact head:
+
+- locked `npm ci`: **PASS**;
+- strict TypeScript typecheck: **PASS**;
+- lint: **PASS**;
+- Run Dashboard DAG / Task Detail navigation regressions: **PASS**;
+- SSE → DAG query refresh and sequence fail-closed regressions: **PASS**;
+- Vite production build: **PASS**.
+
+Both Step 4.4 design/acceptance documents and `docs/PROGRESS.md` are covered by Backend Quality and Frontend Quality path gates with read-only repository permissions. The acceptance/progress ledger update therefore must pass both workflows again before merge.
+
+Frozen Step 4.4 principle:
 
 > **The browser may render validated DAG truth and refreshed evidence-derived presentation state; it may not create, edit, schedule, or replace that truth.**
