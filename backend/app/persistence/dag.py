@@ -93,7 +93,11 @@ class PostgresDAGStore:
             self._validate_task_identity(rows, normalized)
 
             if run.dag_sha256 is not None:
-                existing = self._decode_persisted_dag(run_id=run_id, rows=rows, digest=run.dag_sha256)
+                existing = self._decode_persisted_dag(
+                    run_id=run_id,
+                    rows=rows,
+                    digest=run.dag_sha256,
+                )
                 _, existing_digest = canonical_payload(existing)
                 if existing_digest != digest:
                     raise PersistenceConflictError(
@@ -162,7 +166,11 @@ class PostgresDAGStore:
                 source=PersistedDAGSource.IMPLICIT_SINGLE_TASK,
             )
 
-        dag = self._decode_persisted_dag(run_id=run_id, rows=rows, digest=run.dag_sha256)
+        dag = self._decode_persisted_dag(
+            run_id=run_id,
+            rows=rows,
+            digest=run.dag_sha256,
+        )
         return PersistedDAGSnapshot(
             run_id=run_id,
             dag=dag,
