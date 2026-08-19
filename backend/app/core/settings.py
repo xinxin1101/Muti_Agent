@@ -33,7 +33,6 @@ class Settings(BaseSettings):
     siliconflow_max_retries: int = Field(default=0, ge=0, le=5)
 
     github_token: SecretStr | None = None
-    github_api_base_url: str = "https://api.github.com"
     github_publication_timeout_seconds: float = Field(default=30.0, gt=0.0, le=30.0)
 
     planner_model: str = "Pro/zai-org/GLM-4.7"
