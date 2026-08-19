@@ -37,6 +37,32 @@ class FakeEventSource {
   }
 }
 
+function runtimeEvent(
+  sequence: number,
+  eventId: string,
+  overrides: Record<string, unknown> = {},
+) {
+  return JSON.stringify({
+    id: sequence,
+    event_id: eventId,
+    run_id: runId,
+    sequence,
+    event_key: `event:${sequence}`,
+    kind: sequence === 1 ? "RUN_STARTED" : "EVIDENCE_RECORDED",
+    source: sequence === 1 ? "PERSISTENCE" : "RUNTIME",
+    level: "INFO",
+    task_id: sequence === 1 ? null : "task-1",
+    dispatch_id: null,
+    generation: null,
+    message: sequence === 1 ? "Persisted run started." : "Accepted evidence.",
+    schema_version: 1,
+    attributes: {},
+    attributes_sha256: "b".repeat(64),
+    created_at: "2026-08-19T00:00:00Z",
+    ...overrides,
+  });
+}
+
 function renderDashboard() {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -87,13 +113,14 @@ afterEach(() => {
 });
 
 describe("RunDashboardPage live timeline", () => {
-  it("subscribes through EventSource and renders accepted runtime events", async () => {
+  it("subscribes after REST confirms the Run and renders accepted events", async () => {
     const rendered = renderDashboard();
 
+    expect(FakeEventSource.instances).toHaveLength(0);
     expect(
       await screen.findByRole("heading", { name: "Run Dashboard" }),
     ).toBeInTheDocument();
-    expect(FakeEventSource.instances).toHaveLength(1);
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
     expect(FakeEventSource.instances[0]?.url).toContain(
       `/api/v1/runs/${runId}/events`,
     );
@@ -101,26 +128,7 @@ describe("RunDashboardPage live timeline", () => {
     act(() => {
       FakeEventSource.instances[0]?.open();
       FakeEventSource.instances[0]?.message(
-        JSON.stringify({
-          id: 1,
-          event_id: "33333333-3333-3333-3333-333333333333",
-          run_id: runId,
-          sequence: 1,
-          event_key: "run:started",
-          kind: "RUN_STARTED",
-          source: "PERSISTENCE",
-          level: "INFO",
-          task_id: null,
-          dispatch_id: null,
-          generation: null,
-          message: "Persisted run started.",
-          schema_version: 1,
-          attributes: {
-            project_id: "11111111-1111-1111-1111-111111111111",
-          },
-          attributes_sha256: "b".repeat(64),
-          created_at: "2026-08-19T00:00:00Z",
-        }),
+        runtimeEvent(1, "33333333-3333-3333-3333-333333333333"),
       );
     });
 
@@ -135,32 +143,44 @@ describe("RunDashboardPage live timeline", () => {
   it("fails closed on a sequence gap instead of presenting corrupted order", async () => {
     renderDashboard();
     await screen.findByRole("heading", { name: "Run Dashboard" });
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
 
     act(() => {
       FakeEventSource.instances[0]?.message(
-        JSON.stringify({
-          id: 2,
-          event_id: "44444444-4444-4444-4444-444444444444",
-          run_id: runId,
-          sequence: 2,
-          event_key: "event:2",
-          kind: "EVIDENCE_RECORDED",
-          source: "RUNTIME",
-          level: "INFO",
-          task_id: "task-1",
-          dispatch_id: null,
-          generation: null,
-          message: "Accepted evidence.",
-          schema_version: 1,
-          attributes: {},
-          attributes_sha256: "c".repeat(64),
-          created_at: "2026-08-19T00:00:01Z",
-        }),
+        runtimeEvent(2, "44444444-4444-4444-4444-444444444444"),
       );
     });
 
     expect(
       await screen.findByText(/did not start at sequence 1/),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(FakeEventSource.instances[0]?.closed).toBe(true),
+    );
+  });
+
+  it("allows an exact duplicate but rejects sequence reuse with a different event id", async () => {
+    renderDashboard();
+    await screen.findByRole("heading", { name: "Run Dashboard" });
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+
+    const first = runtimeEvent(1, "33333333-3333-3333-3333-333333333333");
+    act(() => {
+      FakeEventSource.instances[0]?.message(first);
+      FakeEventSource.instances[0]?.message(first);
+    });
+
+    expect(await screen.findByText("RUN_STARTED")).toBeInTheDocument();
+    expect(screen.getAllByText("RUN_STARTED")).toHaveLength(1);
+
+    act(() => {
+      FakeEventSource.instances[0]?.message(
+        runtimeEvent(1, "55555555-5555-5555-5555-555555555555"),
+      );
+    });
+
+    expect(
+      await screen.findByText(/moved backward or was reused/),
     ).toBeInTheDocument();
     await waitFor(() =>
       expect(FakeEventSource.instances[0]?.closed).toBe(true),
