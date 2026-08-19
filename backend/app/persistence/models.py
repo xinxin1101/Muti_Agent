@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -228,3 +229,42 @@ class RuntimeEventRow(PersistenceBase):
     )
 
     run: Mapped[RunRow] = relationship(back_populates="events")
+
+
+class GitHubPublicationRow(PersistenceBase):
+    """External publication audit projection; never a Run-success authority."""
+
+    __tablename__ = "github_publications"
+    __table_args__ = (
+        CheckConstraint("attempt_count >= 0", name="ck_github_publications_attempt_count"),
+        CheckConstraint(
+            "state IN ('READY', 'FAILED', 'PUBLISHED')",
+            name="ck_github_publications_state",
+        ),
+    )
+
+    run_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("runs.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    intent: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    intent_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="READY")
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pull_request_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pull_request_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pull_request_state: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    pull_request_draft: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_error_message: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
