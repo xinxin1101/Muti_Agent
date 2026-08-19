@@ -45,7 +45,6 @@ def build_product_service(settings: Settings) -> ProductRuntimeServiceWithGitHub
         if settings.github_token is None
         else GitHubPublicationGateway(
             settings.github_token,
-            api_base_url=settings.github_api_base_url,
             timeout_seconds=settings.github_publication_timeout_seconds,
         )
     )
