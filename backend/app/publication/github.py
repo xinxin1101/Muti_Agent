@@ -33,10 +33,17 @@ def parse_github_repository_url(repository_url: str) -> tuple[str, str]:
 
     normalized = repository_url.strip()
     parsed = urlparse(normalized)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise GitHubPublicationGatewayError(
+            "UNSUPPORTED_REPOSITORY",
+            "GitHub publication repository URL contains an invalid port.",
+        ) from exc
     if (
         parsed.scheme != "https"
         or (parsed.hostname or "").lower() != "github.com"
-        or parsed.port not in {None, 443}
+        or port not in {None, 443}
         or parsed.username is not None
         or parsed.password is not None
         or parsed.query
@@ -57,7 +64,12 @@ def parse_github_repository_url(repository_url: str) -> tuple[str, str]:
     owner, repo = parts
     if repo.endswith(".git"):
         repo = repo[:-4]
-    if not owner or not repo or _NAME_RE.fullmatch(owner) is None or _NAME_RE.fullmatch(repo) is None:
+    if (
+        not owner
+        or not repo
+        or _NAME_RE.fullmatch(owner) is None
+        or _NAME_RE.fullmatch(repo) is None
+    ):
         raise GitHubPublicationGatewayError(
             "UNSUPPORTED_REPOSITORY",
             "GitHub publication repository identity is invalid.",
@@ -291,7 +303,7 @@ class GitHubPublicationGateway:
                 "per_page": "100",
             },
         )
-        payload = response.json()
+        payload = self._response_json(response)
         if not isinstance(payload, list):
             raise GitHubPublicationGatewayError(
                 "GITHUB_RESPONSE_INVALID",
@@ -304,7 +316,13 @@ class GitHubPublicationGateway:
             )
         if not payload:
             return None
-        return self._decode_pull_request(payload[0], intent)
+        pull_request = self._decode_pull_request(payload[0], intent)
+        if pull_request.state != "open" or not pull_request.draft:
+            raise GitHubPublicationGatewayError(
+                "REMOTE_PR_NOT_OPEN_DRAFT",
+                "The matching GitHub Pull Request is not an open Draft.",
+            )
+        return pull_request
 
     async def _create_pull_request(
         self,
@@ -328,11 +346,11 @@ class GitHubPublicationGateway:
             },
             expected_status=201,
         )
-        pull_request = self._decode_pull_request(response.json(), intent)
-        if not pull_request.draft:
+        pull_request = self._decode_pull_request(self._response_json(response), intent)
+        if pull_request.state != "open" or not pull_request.draft:
             raise GitHubPublicationGatewayError(
-                "REMOTE_PR_NOT_DRAFT",
-                "GitHub did not create the publication Pull Request as a Draft.",
+                "REMOTE_PR_NOT_OPEN_DRAFT",
+                "GitHub did not create the publication Pull Request as an open Draft.",
             )
         return pull_request
 
@@ -366,9 +384,20 @@ class GitHubPublicationGateway:
         if response.status_code != expected_status:
             raise GitHubPublicationGatewayError(
                 f"GITHUB_API_{response.status_code}",
-                f"GitHub API rejected the bounded publication request with HTTP {response.status_code}.",
+                "GitHub API rejected the bounded publication request with HTTP "
+                f"{response.status_code}.",
             )
         return response
+
+    @staticmethod
+    def _response_json(response: httpx.Response) -> object:
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise GitHubPublicationGatewayError(
+                "GITHUB_RESPONSE_INVALID",
+                "GitHub returned a non-JSON publication response.",
+            ) from exc
 
     @staticmethod
     def _decode_pull_request(
