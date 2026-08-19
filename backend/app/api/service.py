@@ -60,14 +60,6 @@ class ProductEvidenceStore(Protocol):
         default_branch: str,
         project_id: UUID | None = None,
     ) -> UUID: ...
-    async def start_run(
-        self,
-        *,
-        project_id: UUID,
-        tasks: Sequence,
-        base_commit: str,
-        run_id: UUID | None = None,
-    ) -> UUID: ...
     async def load_run(self, run_id: UUID) -> PersistedRunSnapshot: ...
     async def list_runtime_events(
         self,
@@ -80,7 +72,14 @@ class ProductEvidenceStore(Protocol):
 
 
 class ProductDAGStore(Protocol):
-    async def persist_dag(self, *, run_id: UUID, dag: TaskDAG) -> PersistedDAGSnapshot: ...
+    async def start_run(
+        self,
+        *,
+        project_id: UUID,
+        dag: TaskDAG,
+        base_commit: str,
+        run_id: UUID | None = None,
+    ) -> UUID: ...
     async def load_dag(self, run_id: UUID) -> PersistedDAGSnapshot: ...
     async def dispose(self) -> None: ...
 
@@ -166,14 +165,11 @@ class ProductRuntimeService:
                 f"managed workspace is not trustworthy for project {request.project_id}"
             ) from exc
 
-        run_id = await self._evidence_store.start_run(
+        dag = TaskDAG(tasks=(TaskNode(task=request.task, depends_on=()),))
+        run_id = await self._dag_store.start_run(
             project_id=request.project_id,
-            tasks=(request.task,),
+            dag=dag,
             base_commit=base_commit,
-        )
-        await self._dag_store.persist_dag(
-            run_id=run_id,
-            dag=TaskDAG(tasks=(TaskNode(task=request.task, depends_on=()),)),
         )
         try:
             receipt = await self._dispatcher.dispatch(run_id=run_id, task_id=request.task.task_id)
