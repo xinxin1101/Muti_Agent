@@ -70,7 +70,7 @@ class PostgresDAGStore:
             await self._engine.dispose()
 
     async def persist_dag(self, *, run_id: UUID, dag: TaskDAG) -> PersistedDAGSnapshot:
-        normalized = _normalize_dag(dag)
+        normalized = normalize_task_dag(dag)
         _, digest = canonical_payload(normalized)
 
         async with self._session_factory.begin() as session:
@@ -157,7 +157,7 @@ class PostgresDAGStore:
                 )
             task = _decode_task_contract(rows[0])
             dag = TaskDAG(tasks=(TaskNode(task=task, depends_on=()),))
-            normalized = _normalize_dag(dag)
+            normalized = normalize_task_dag(dag)
             _, digest = canonical_payload(normalized)
             return PersistedDAGSnapshot(
                 run_id=run_id,
@@ -220,7 +220,7 @@ class PostgresDAGStore:
             raise PersistenceCorruptionError(
                 f"persisted Run DAG failed TaskDAG validation for {run_id}: {exc}"
             ) from exc
-        normalized = _normalize_dag(dag)
+        normalized = normalize_task_dag(dag)
         payload, _ = canonical_payload(normalized)
         verify_payload_hash(payload, digest, label=f"Run {run_id} DAG")
         return normalized
@@ -239,7 +239,7 @@ def _decode_task_contract(row: TaskRow) -> TaskContract:
     return task
 
 
-def _normalize_dag(dag: TaskDAG) -> TaskDAG:
+def normalize_task_dag(dag: TaskDAG) -> TaskDAG:
     """Return one deterministic representation so the DAG hash ignores input ordering."""
 
     return TaskDAG(
