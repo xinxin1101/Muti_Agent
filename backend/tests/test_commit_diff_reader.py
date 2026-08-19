@@ -94,6 +94,41 @@ def test_reader_enforces_file_patch_and_blob_bounds(tmp_path: Path) -> None:
     assert result.files[0].patch_truncated is True
 
 
+def test_reader_disables_external_textconv_drivers(tmp_path: Path) -> None:
+    root = tmp_path / "textconv-repo"
+    root.mkdir()
+    _git(root, "init")
+    _git(root, "config", "user.name", "DevFlow Test")
+    _git(root, "config", "user.email", "devflow@example.com")
+    (root / ".gitattributes").write_text("data.txt diff=probe\n", encoding="utf-8")
+    (root / "data.txt").write_text("before\n", encoding="utf-8")
+    base = _commit(root, "base with diff driver")
+
+    (root / "data.txt").write_text("after\n", encoding="utf-8")
+    head = _commit(root, "head with changed data")
+
+    marker = tmp_path / "textconv-ran"
+    driver = tmp_path / "textconv-probe.sh"
+    driver.write_text(
+        "#!/bin/sh\n"
+        f"touch '{marker}'\n"
+        "cat \"$1\"\n",
+        encoding="utf-8",
+    )
+    driver.chmod(0o755)
+    _git(root, "config", "diff.probe.textconv", str(driver))
+
+    result = ReadOnlyCommitDiffReader(LocalGitWorkspace(root)).read(
+        base_commit=base,
+        head_commit=head,
+    )
+
+    assert marker.exists() is False
+    data = next(item for item in result.files if item.path == "data.txt")
+    assert "+after" in (data.patch or "")
+    assert "-before" in (data.patch or "")
+
+
 def test_reader_rejects_untrusted_or_missing_commit_evidence(tmp_path: Path) -> None:
     workspace, base, _head = _repository(tmp_path)
     reader = ReadOnlyCommitDiffReader(workspace)
