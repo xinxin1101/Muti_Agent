@@ -122,9 +122,9 @@ Both reject query selectors. POST additionally rejects every non-empty request b
 
 ## React boundary
 
-The Dashboard does not query publication eligibility for RUNNING or FAILED Runs. A persisted SUCCEEDED Run may display backend-selected publication facts and, when backend credentials are configured, one `Create Draft PR` action.
+The Dashboard does not query publication eligibility for RUNNING or FAILED Runs. A persisted SUCCEEDED Run may display backend-selected publication facts and, when backend credentials are configured, one Draft PR publication action.
 
-The UI exposes no text input for SHA/ref/branch/base/title/body/token. `PUBLISHING` is a read-only backend state; the browser disables duplicate actions and polls only the publication read model until that external projection changes. A successful publish updates only the publication query; it never changes the Run query or status.
+The UI exposes no text input for SHA/ref/branch/base/title/body/token. `PUBLISHING` is a read-only backend state and is polled as a projection only. The browser does **not** decide whether a claim is still live or expired: a retry request is allowed, and the backend PostgreSQL claim returns a conflict while live or performs a fenced takeover only after expiry. This preserves stale-claim recovery without moving claim authority into client time/state. A successful publish updates only the publication query; it never changes the Run query or status.
 
 ## Explicitly absent
 
