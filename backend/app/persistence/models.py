@@ -62,6 +62,7 @@ class RunRow(PersistenceBase):
     base_commit: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="RUNNING")
     event_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    dag_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     terminal_result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     terminal_result_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     started_at: Mapped[datetime] = mapped_column(
