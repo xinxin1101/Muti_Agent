@@ -177,8 +177,10 @@ class ProductRuntimeServiceWithGitHubPublication(ProductRuntimeService):
             (
                 "## DevFlow publication",
                 "",
-                "This Draft Pull Request publishes code already accepted by DevFlow runtime evidence.",
-                "GitHub state does not authorize verification, review, integration, or Run success.",
+                "This Draft Pull Request publishes code already accepted by "
+                "DevFlow runtime evidence.",
+                "GitHub state does not authorize verification, review, integration, "
+                "or Run success.",
                 "",
                 f"- Run: `{intent.run_id}`",
                 f"- Source basis: `{intent.source_basis.value}`",
