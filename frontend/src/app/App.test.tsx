@@ -44,6 +44,7 @@ function renderApp(path: string) {
 }
 
 beforeEach(() => {
+  vi.clearAllMocks();
   vi.mocked(productApi.listProjects).mockResolvedValue([project]);
   vi.mocked(productApi.listRuns).mockResolvedValue([run]);
   vi.mocked(productApi.getRun).mockResolvedValue({
@@ -57,6 +58,24 @@ beforeEach(() => {
         evidence_count: 2,
       },
     ],
+  });
+  vi.mocked(productApi.getRunDAG).mockResolvedValue({
+    run_id: run.run_id,
+    dag_sha256: "d".repeat(64),
+    topology_source: "PERSISTED",
+    topological_order: ["task-1"],
+    nodes: [
+      {
+        task_id: "task-1",
+        objective: "Build the product page.",
+        depends_on: [],
+        topological_index: 0,
+        layer: 0,
+        presentation_state: "READY",
+        state_basis: "DERIVED_DAG",
+      },
+    ],
+    edges: [],
   });
   vi.mocked(productApi.getTask).mockResolvedValue({
     run_id: run.run_id,
@@ -150,6 +169,9 @@ describe("App", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("RUNNING")).toBeInTheDocument();
     expect(screen.getByText("Build the product page.")).toBeInTheDocument();
+    expect(
+      screen.getByRole("img", { name: "Validated task dependency DAG" }),
+    ).toBeInTheDocument();
   });
 
   it("renders Task Detail contract and evidence metadata", async () => {
