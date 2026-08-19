@@ -28,7 +28,11 @@ from app.models.publication import (
 )
 from app.models.run import RunEvent, SingleTaskRunResult, TaskRunState
 from app.models.task import TaskContract
-from app.persistence import PostgresEvidenceStore, PostgresGitHubPublicationStore
+from app.persistence import (
+    PersistenceCorruptionError,
+    PostgresEvidenceStore,
+    PostgresGitHubPublicationStore,
+)
 from app.persistence.database import create_postgres_engine, create_session_factory
 from app.persistence.models import RunRow
 from app.persistence.types import (
@@ -164,7 +168,7 @@ def test_publication_requires_persisted_success_and_revalidates_git_parent(tmp_p
     assert intent.branch_name == f"devflow/run-{RUN_ID}"
 
     wrong_base = "d" * 40
-    with pytest.raises(Exception, match="accepted base"):
+    with pytest.raises(PersistenceCorruptionError, match="accepted base"):
         resolve_github_publication_intent(
             _snapshot(wrong_base, head, status=PersistedRunStatus.SUCCEEDED),
             workspace,
