@@ -5,14 +5,15 @@ This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The developmen
 ## Current position
 
 - Current phase: **Phase 4 — V1.0 Productization**
-- Completed item: **Step 4.2 — Project / New Run / Dashboard / Task Detail pages**
-- Next item: **Step 4.3 — SSE live status/log updates**
+- Completed item: **Step 4.3 — SSE live status/log updates**
+- Next item: **Step 4.4 — DAG visualization**
 - Phase 2 status: **ACCEPTED / COMPLETE**
 - Phase 3 status: **ACCEPTED / COMPLETE**
 - Phase 4 status: **IN PROGRESS**
 - Step 4.1 status: **ACCEPTED / COMPLETE**
 - Step 4.2 status: **ACCEPTED / COMPLETE**
-- Step 4.3 status: **NOT STARTED**
+- Step 4.3 status: **ACCEPTED / COMPLETE**
+- Step 4.4 status: **NOT STARTED**
 - V0.1 status: **ACCEPTED / COMPLETE**
 
 ---
@@ -243,8 +244,8 @@ Phase 4 turns the accepted runtime into an operable, observable, and evaluable p
 | --- | --- | --- | --- |
 | 4.1 | React / TypeScript UI Foundation | **ACCEPTED** | locked install + typecheck + lint + 3 UI tests + production build |
 | 4.2 | Project / New Run / Dashboard / Task Detail pages | **ACCEPTED** | Backend Quality: 293 passed; Frontend Quality: typecheck + lint + tests + build |
-| 4.3 | SSE live status/log updates | **NEXT / NOT STARTED** | — |
-| 4.4 | DAG visualization | **NOT STARTED** | — |
+| 4.3 | SSE live status/log updates | **ACCEPTED** | PostgreSQL sequence → SSE/Last-Event-ID + browser fail-closed validation; Backend Quality: 299 passed; Frontend Quality: typecheck + lint + tests + build |
+| 4.4 | DAG visualization | **NEXT / NOT STARTED** | — |
 | 4.5 | Diff viewer | **NOT STARTED** | — |
 | 4.6 | Run metrics | **NOT STARTED** | — |
 | 4.7 | GitHub branch + Draft PR integration | **NOT STARTED** | — |
@@ -409,19 +410,99 @@ Frozen Step 4.2 principle:
 
 ---
 
-## Gate before Step 4.3 — SSE Live Status / Logs
+## Step 4.3 — SSE Live Status / Logs — ACCEPTED
 
-The next roadmap item is **Step 4.3 — SSE live status/log updates**.
+Accepted through PR #28 candidate: `Phase 4 Step 4.3: add SSE live runtime timeline`.
 
-Step 4.3 may expose the already accepted structured runtime-event timeline as a browser-consumable server-sent event stream, but it must preserve these boundaries:
+Design / acceptance documents:
 
-- SSE is observability/transport only and never becomes a scheduler or success authority;
-- persisted structured runtime events remain a projection of accepted typed evidence/runtime mutations, not a second truth store;
-- the browser resumes with monotonic Run sequence/cursor semantics rather than inventing client-side ordering;
-- reconnects must be bounded and must not duplicate or skip accepted event history silently;
-- `run_token`, provider/Git/database/Redis credentials, raw prompts, raw verification outputs, and other sensitive evidence remain outside the SSE payload;
-- the initial stream should be Run-scoped and queryable from the existing structured event boundary;
-- DAG visualization remains Step 4.4 and must not be smuggled into Step 4.3;
-- diff viewer, metrics, and GitHub publication remain their dedicated later steps.
+- `docs/SSE_LIVE_EVENTS.md`
+- `docs/STEP_4_3_ACCEPTANCE.md`
 
-**Step 4.3 status: NOT STARTED.**
+### Accepted live-event flow
+
+```text
+accepted typed/runtime fact
+        ↓
+PostgreSQL runtime_events
+        ↓
+Run-scoped monotonic sequence
+        ↓
+PostgresEvidenceStore.list_runtime_events()
+        ↓
+read-only FastAPI SSE
+        ↓
+SSE id = sequence
+        ↓
+native EventSource / Last-Event-ID
+        ↓
+validated bounded React timeline
+```
+
+The stream does not become a scheduler or write path. It cannot acquire/renew leases, create or consume `run_token`, write evidence, advance integration, or declare a Run successful.
+
+No Redis Pub/Sub or worker-memory event bus was introduced. PostgreSQL remains the accepted event-history projection, and the SSE layer performs bounded incremental reads using the already accepted `after_sequence` query boundary.
+
+### Resume, heartbeat, and browser fencing
+
+Reconnect uses the furthest valid `Last-Event-ID` / `after_sequence` value and requests only persisted events with a greater Run sequence. No second cursor system exists.
+
+An unknown Run is preflighted before stream start so it returns HTTP 404 normally. Invalid cursors, cross-Run/non-monotonic server batches, sensitive nested attributes, and oversized SSE payloads fail closed.
+
+Heartbeat is only an SSE comment:
+
+```text
+: heartbeat after_sequence=<cursor>
+```
+
+It has no event id, consumes no runtime sequence, and creates no persistence evidence.
+
+The browser runtime-validates event shape, enums, hashes, Run identity, and sequence ordering before rendering. An exact duplicate of the latest sequence/event identity is idempotent; backward movement, sequence reuse with a different `event_id`, cross-Run data, or gaps fail closed and close that stream.
+
+EventSource is opened only after the existing REST Run query confirms the Run. SSE does not assign the Run status badge: `EVIDENCE_RECORDED` / `RUN_FINALIZED` only invalidate the REST query so typed persisted Run truth is re-read.
+
+The rendered timeline keeps at most the newest 500 accepted browser events and closes EventSource on unmount.
+
+### Final acceptance snapshot
+
+The hardened Step 4.3 code path passed:
+
+- PostgreSQL + Redis service startup: **PASS**;
+- Alembic full upgrade → downgrade base → upgrade head: **PASS**;
+- verification Docker image build: **PASS**;
+- Ruff: **PASS**;
+- backend pytest: **299 passed in 35.63s**;
+- SSE resume/order/sensitive-attribute/unknown-Run regressions: **PASS**;
+- Frontend Quality locked install: **PASS**;
+- TypeScript strict typecheck: **PASS**;
+- frontend lint: **PASS**;
+- runtime-event parser / EventSource ordering / cleanup regressions: **PASS**;
+- Vite production build: **PASS**;
+- Backend and Frontend workflow path gates cover Step 4.3 design/acceptance/progress documents;
+- both workflows retain read-only repository permissions.
+
+Frozen Step 4.3 principle:
+
+> **SSE may make accepted runtime history live; it may not become a second runtime history or a second success authority.**
+
+---
+
+## Gate before Step 4.4 — DAG Visualization
+
+The next roadmap item is **Step 4.4 — DAG visualization**.
+
+Step 4.4 may render the already validated task dependency graph and combine it with accepted Run/Task/SSE presentation state, but it must preserve these boundaries:
+
+- the DAG view is presentation only and never becomes scheduler truth;
+- graph nodes/edges come from accepted backend task/dependency data rather than browser-authored topology;
+- the browser may color or annotate nodes from accepted Run/Task/event state but may not mutate dependency truth or authorize execution;
+- SSE remains an observability feed and cannot create, remove, reorder, or unblock DAG dependencies;
+- graph rendering must handle malformed/unknown task references fail-closed rather than inventing edges;
+- no drag/drop or client-side edit may silently alter a persisted Task DAG;
+- scheduler readiness, topological execution, leases, `run_token`, verification, Reviewer decisions, integration state, and success remain backend-owned;
+- diff viewer remains Step 4.5;
+- run metrics remains Step 4.6;
+- GitHub branch / Draft PR publication remains Step 4.7;
+- benchmark/demo suite remains Step 4.8.
+
+**Step 4.4 status: NOT STARTED.**
