@@ -30,6 +30,44 @@ export type ProductRunDetail = ProductRun &
     tasks: readonly ProductTaskSummary[];
   }>;
 
+export type ProductEvidenceMetrics = Readonly<{
+  total_records: number;
+  developer_runs: number;
+  verification_attempts: number;
+  review_decisions: number;
+  repair_attempts: number;
+  failure_reports: number;
+  dispatch_events: number;
+  worker_executions: number;
+  merge_queue_snapshots: number;
+  merge_conflicts: number;
+  integration_gate_evaluations: number;
+  human_decisions: number;
+}>;
+
+export type ProductRuntimeEventMetrics = Readonly<{
+  total_events: number;
+  warning_events: number;
+  error_events: number;
+  lease_acquisitions: number;
+  lease_takeovers: number;
+  lease_releases: number;
+  latest_sequence: number;
+}>;
+
+export type ProductRunMetrics = Readonly<{
+  run_id: string;
+  project_id: string;
+  status: ProductRun["status"];
+  status_basis: "PERSISTED_RUN";
+  task_count: number;
+  started_at: string;
+  finished_at: string | null;
+  terminal_duration_ms: number | null;
+  evidence: ProductEvidenceMetrics;
+  runtime_events: ProductRuntimeEventMetrics;
+}>;
+
 export type ProductDAGNodeState =
   | "PENDING"
   | "READY"
