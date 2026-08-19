@@ -157,6 +157,7 @@ class ReadOnlyCommitDiffReader:
                     [
                         "diff",
                         "--no-ext-diff",
+                        "--no-textconv",
                         "--no-renames",
                         "--no-color",
                         "--unified=3",
@@ -204,7 +205,17 @@ class ReadOnlyCommitDiffReader:
 
     def _name_status(self, base: str, head: str) -> dict[str, CommitDiffFileStatus]:
         value = self._git_text(
-            ["diff", "--no-ext-diff", "--no-renames", "--name-status", "-z", base, head, "--"]
+            [
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-renames",
+                "--name-status",
+                "-z",
+                base,
+                head,
+                "--",
+            ]
         )
         tokens = [item for item in value.split("\0") if item]
         if len(tokens) % 2 != 0:
@@ -230,7 +241,17 @@ class ReadOnlyCommitDiffReader:
 
     def _numstat(self, base: str, head: str) -> dict[str, tuple[int | None, int | None, bool]]:
         value = self._git_text(
-            ["diff", "--no-ext-diff", "--no-renames", "--numstat", "-z", base, head, "--"]
+            [
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-renames",
+                "--numstat",
+                "-z",
+                base,
+                head,
+                "--",
+            ]
         )
         result: dict[str, tuple[int | None, int | None, bool]] = {}
         for record in (item for item in value.split("\0") if item):
