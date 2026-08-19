@@ -83,6 +83,7 @@ function renderDashboard() {
 }
 
 beforeEach(() => {
+  vi.clearAllMocks();
   FakeEventSource.instances = [];
   vi.stubGlobal(
     "EventSource",
