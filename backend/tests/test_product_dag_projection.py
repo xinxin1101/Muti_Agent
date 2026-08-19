@@ -4,7 +4,7 @@ import asyncio
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from app.api.models import ProductDAGNodeState, ProductDAGStateBasis, ProductProject
+from app.api.models import ProductDAGNodeState, ProductDAGStateBasis
 from app.api.service import ProductRuntimeService
 from app.models.dag import TaskDAG, TaskNode
 from app.models.run import RunEvent, TaskRunState
