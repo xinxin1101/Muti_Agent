@@ -68,7 +68,11 @@ Step 4.7 CI does not perform a live external GitHub mutation: GitHub REST behavi
 
 Merge review confirmed no unresolved review threads and no path from GitHub branch/PR/check state to Run success, verification, Reviewer approval, integration authorization, Human Gate, lease ownership, or `run_token` authority.
 
-Both `docs/GITHUB_PUBLICATION.md`, this acceptance document, and `docs/PROGRESS.md` are covered by Backend Quality and Frontend Quality path gates. The final acceptance/progress ledger head must therefore pass both workflows again after temporary bootstrap cleanup and before merge.
+Both `docs/GITHUB_PUBLICATION.md`, this acceptance document, and `docs/PROGRESS.md` are covered by Backend Quality and Frontend Quality path gates.
+
+## Acceptance ledger cleanup
+
+The one-time Step 4.7 ledger-bootstrap workflow used only to perform bounded in-repository text replacement was removed before final acceptance in commit `d1ca5f51ef835262260342872fe8ac605a148122`. The final merge head therefore retains the normal read-only Backend/Frontend quality workflows and no temporary `contents: write` bootstrap workflow. This acceptance update intentionally re-triggers both quality workflows after that cleanup so the final ledger head itself is validated before merge.
 
 Frozen Step 4.7 principle:
 
