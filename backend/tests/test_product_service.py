@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
+
+import pytest
 
 from app.api.models import (
     DispatchStatus,
@@ -72,13 +75,16 @@ class FakeStore:
 
 
 class FakeDAGStore:
-    def __init__(self) -> None:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
         self.persisted: tuple[UUID, TaskDAG] | None = None
 
     async def dispose(self) -> None:
         return None
 
     async def persist_dag(self, *, run_id: UUID, dag: TaskDAG):
+        if self.fail:
+            raise RuntimeError("DAG freeze failed")
         self.persisted = (run_id, dag)
         return None
 
@@ -126,7 +132,11 @@ class FakeDispatcher:
         )
 
 
-def _service(*, dispatcher: FakeDispatcher | None = None):
+def _service(
+    *,
+    dispatcher: FakeDispatcher | None = None,
+    dag_store: FakeDAGStore | None = None,
+):
     project_id = uuid4()
     project = ProductProject(
         project_id=project_id,
@@ -137,23 +147,21 @@ def _service(*, dispatcher: FakeDispatcher | None = None):
         workspace_ready=False,
     )
     store = FakeStore(project_id)
-    dag_store = FakeDAGStore()
+    actual_dag_store = dag_store or FakeDAGStore()
     provisioner = FakeProvisioner()
     actual_dispatcher = dispatcher or FakeDispatcher()
     service = ProductRuntimeService(
         catalog=FakeCatalog(project),  # type: ignore[arg-type]
         evidence_store=store,  # type: ignore[arg-type]
-        dag_store=dag_store,  # type: ignore[arg-type]
+        dag_store=actual_dag_store,  # type: ignore[arg-type]
         provisioner=provisioner,
         workspace_resolver=FakeResolver(),  # type: ignore[arg-type]
         dispatcher=actual_dispatcher,
     )
-    return service, store, dag_store, provisioner, actual_dispatcher, project_id
+    return service, store, actual_dag_store, provisioner, actual_dispatcher, project_id
 
 
 def test_create_project_provisions_backend_managed_workspace() -> None:
-    import asyncio
-
     service, _store, _dag, provisioner, _dispatcher, project_id = _service()
     result = asyncio.run(
         service.create_project(
@@ -169,8 +177,6 @@ def test_create_project_provisions_backend_managed_workspace() -> None:
 
 
 def test_create_run_freezes_dag_before_dispatching_existing_runtime() -> None:
-    import asyncio
-
     service, store, dag_store, _provisioner, dispatcher, project_id = _service()
     result = asyncio.run(
         service.create_run(RunCreateRequest(project_id=project_id, task=_task()))
@@ -181,16 +187,29 @@ def test_create_run_freezes_dag_before_dispatching_existing_runtime() -> None:
     assert store.started_run_id is not None
     assert dag_store.persisted is not None
     assert dag_store.persisted[0] == store.started_run_id
-    assert dag_store.persisted[1].task_ids == ("service-task",)
+    assert dag_store.persisted[1].task_ids == ["service-task"]
     assert dag_store.persisted[1].node("service-task").depends_on == ()
     assert dispatcher.dispatched == (store.started_run_id, "service-task")
     assert result.dispatch_status is DispatchStatus.QUEUED
     assert result.base_commit == "c" * 40
 
 
-def test_broker_failure_is_reported_without_fabricating_runtime_success() -> None:
-    import asyncio
+def test_dag_freeze_failure_prevents_dispatch() -> None:
+    dag_store = FakeDAGStore(fail=True)
+    service, store, _dag, _provisioner, dispatcher, project_id = _service(
+        dag_store=dag_store
+    )
 
+    with pytest.raises(RuntimeError, match="DAG freeze failed"):
+        asyncio.run(
+            service.create_run(RunCreateRequest(project_id=project_id, task=_task()))
+        )
+
+    assert store.started_run_id is not None
+    assert dispatcher.dispatched is None
+
+
+def test_broker_failure_is_reported_without_fabricating_runtime_success() -> None:
     dispatcher = FakeDispatcher(fail=True)
     service, _store, _dag, _provisioner, _dispatcher, project_id = _service(
         dispatcher=dispatcher
