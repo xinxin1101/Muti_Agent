@@ -5,8 +5,8 @@ This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The developmen
 ## Current position
 
 - Current phase: **Phase 4 — V1.0 Productization**
-- Completed item: **Step 4.5 — Diff viewer**
-- Next item: **Step 4.6 — Run metrics**
+- Completed item: **Step 4.6 — Run metrics**
+- Next item: **Step 4.7 — GitHub branch + Draft PR integration**
 - Phase 2 status: **ACCEPTED / COMPLETE**
 - Phase 3 status: **ACCEPTED / COMPLETE**
 - Phase 4 status: **IN PROGRESS**
@@ -15,7 +15,8 @@ This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The developmen
 - Step 4.3 status: **ACCEPTED / COMPLETE**
 - Step 4.4 status: **ACCEPTED / COMPLETE**
 - Step 4.5 status: **ACCEPTED / COMPLETE**
-- Step 4.6 status: **NOT STARTED**
+- Step 4.6 status: **ACCEPTED / COMPLETE**
+- Step 4.7 status: **NOT STARTED**
 - V0.1 status: **ACCEPTED / COMPLETE**
 
 ---
@@ -249,8 +250,8 @@ Phase 4 turns the accepted runtime into an operable, observable, and evaluable p
 | 4.3 | SSE live status/log updates | **ACCEPTED** | PostgreSQL sequence → SSE/Last-Event-ID + browser fail-closed validation; Backend Quality: 299 passed; Frontend Quality: typecheck + lint + tests + build |
 | 4.4 | DAG visualization | **ACCEPTED** | atomic/hash-validated DAG persistence + read-only typed SVG projection; Backend Quality: 307 passed; Frontend Quality: typecheck + lint + tests + build |
 | 4.5 | Diff viewer | **ACCEPTED** | evidence-bound commit pairs + bounded read-only Git diff; Backend Quality: 317 passed; Frontend Quality: 20 tests + typecheck + lint + build |
-| 4.6 | Run metrics | **NEXT / NOT STARTED** | — |
-| 4.7 | GitHub branch + Draft PR integration | **NOT STARTED** | — |
+| 4.6 | Run metrics | **ACCEPTED** | evidence/event descriptive projection + bounded scan; Backend Quality: 322 passed; Frontend Quality: 21 tests + typecheck + lint + build |
+| 4.7 | GitHub branch + Draft PR integration | **NEXT / NOT STARTED** | — |
 | 4.8 | Benchmark/demo suite | **NOT STARTED** | — |
 
 ## Step 4.1 — React / TypeScript UI Foundation — ACCEPTED
@@ -636,20 +637,102 @@ Frozen Step 4.5 principle:
 
 ---
 
-## Gate before Step 4.6 — Run Metrics
+## Step 4.6 — Run Metrics — ACCEPTED
 
-The next roadmap item is **Step 4.6 — Run metrics**.
+Accepted through PR #31 candidate: `Phase 4 Step 4.6: add evidence-bound Run Metrics`.
 
-Step 4.6 may aggregate already accepted typed runtime evidence/events into operational metrics, but it must preserve these boundaries:
+Design / acceptance documents:
 
-- metrics are observability/read-model projections only and never become scheduler, verification, Reviewer, integration, or Run-success authority;
-- metric values must come from typed persisted evidence/runtime-event timestamps and identities rather than browser counters or client timing;
-- counts must not be interpreted as success (for example, a verification count is not equivalent to verification passing);
-- durations must have a documented clock/source boundary and fail closed when required timestamps are contradictory or unavailable;
-- per-Run/per-Task aggregation must remain bounded and must not expose raw prompts, model outputs, `run_token`, credentials, or unbounded logs;
-- SSE may trigger metric refresh, but streamed client state may not increment authoritative counters directly;
-- Diff Viewer evidence remains read-only and cannot be converted into a metric-based Git/integration authorization path;
-- GitHub branch / Draft PR publication remains Step 4.7;
+- `docs/RUN_METRICS.md`
+- `docs/STEP_4_6_ACCEPTANCE.md`
+
+### Accepted Metrics authority chain
+
+```text
+typed / hash-validated Run evidence
+        +
+persisted monotonic runtime events
+        ↓
+bounded backend aggregation
+        ↓
+ProductRunMetrics
+        ↓
+GET-only product API
+        ↓
+React read-only RunMetrics
+        ↑
+SSE invalidation / refetch only
+```
+
+The Metrics layer is a descriptive read model. The DTO exposes persisted Run status with `status_basis = PERSISTED_RUN`; counters never compute or overwrite Run status. Verification, review, repair, failure, dispatch, worker, merge, integration-gate, Human Gate, warning/error, and lease counters describe accepted facts only.
+
+No `success_rate`, `pass_rate`, `approval_rate`, health score, weighted score, threshold, or browser-configurable success formula exists. In particular, a verification count is not verification success and a review count is not Reviewer approval.
+
+### Bounded and fail-closed aggregation
+
+Evidence counters come only from the already validated `PersistedRunSnapshot.evidence` projection. Runtime-event counters come only from persisted typed events belonging to the requested Run and require a contiguous sequence beginning at 1.
+
+Runtime-event aggregation reads at most 1,000 events per page and at most 10,000 events for one complete projection. A one-record overflow probe detects a 10,001st event; in that case Metrics returns unavailable rather than labeling a partial count as complete. Cross-Run events, sequence gaps, contradictory timestamps, and inconsistent aggregates fail closed.
+
+`terminal_duration_ms` is calculated only from persisted `finished_at - started_at`. Running Runs expose `null` rather than a browser-clock-derived duration.
+
+The API is GET-only and accepts no selectors:
+
+```text
+GET /api/v1/runs/{run_id}/metrics
+```
+
+There is no Metrics mutation endpoint, Metrics table, database migration, Metrics evidence/event write, scheduler write, finalization write, or Git mutation path.
+
+### Browser freshness boundary
+
+A validated SSE event invalidates the `run-metrics` TanStack Query and causes the browser to re-read the backend projection. EventSource never increments counters locally, so reconnects, duplicate delivery, and client lifecycle cannot become a second Metrics truth source.
+
+### Final acceptance snapshot
+
+The hardened Step 4.6 implementation head `1aa6d2554a7f7e8aa441ab4f7823af7e6b92f589` passed:
+
+- PostgreSQL + Redis service startup: **PASS**;
+- existing Alembic full upgrade → downgrade base → upgrade head: **PASS**;
+- no new database migration: **PASS**;
+- verification Docker image build: **PASS**;
+- Ruff: **PASS**;
+- persisted-status / no-success-score regressions: **PASS**;
+- evidence/runtime-event counter and integrity regressions: **PASS**;
+- terminal timestamp duration regression: **PASS**;
+- event-scan overflow unavailable regression: **PASS**;
+- GET-only / no-selector API regression: **PASS**;
+- warning-free ASGI/httpx API test transport: **PASS**;
+- backend pytest: **322 passed in 32.23s**;
+- Frontend Quality locked install: **PASS**;
+- TypeScript strict typecheck: **PASS**;
+- frontend lint: **PASS**;
+- Vitest: **21 passed across 5 test files**;
+- Metrics rendering and SSE refetch regressions: **PASS**;
+- existing DAG/SSE/Diff/Product-page regressions: **PASS**;
+- Vite production build: **PASS**.
+
+Frozen Step 4.6 principle:
+
+> **Typed evidence decides runtime truth; metrics only summarize that accepted truth.**
+
+---
+
+## Gate before Step 4.7 — GitHub Branch + Draft PR Integration
+
+The next roadmap item is **Step 4.7 — GitHub branch + Draft PR integration**.
+
+Step 4.7 may publish already accepted local Git/runtime facts to GitHub, but it must preserve these boundaries:
+
+- GitHub publication is an external projection of backend-validated Git/runtime evidence, not a new source of task or Run success;
+- the browser must not choose arbitrary commit SHAs, local filesystem paths, force-push targets, or default-branch mutations;
+- publication source commit/ref must come from validated task/integration Git evidence already owned by the backend;
+- GitHub credentials remain backend-only and must never enter browser DTOs, runtime events, logs, prompts, or persisted generic evidence payloads;
+- branch creation/push and Draft PR creation must be bounded, auditable, and idempotent so retries cannot create uncontrolled duplicate branches/PRs;
+- publication must be restricted to a dedicated DevFlow-owned branch namespace and must not force-push, delete remote refs, or directly update the repository default branch;
+- a successful GitHub API response does not authorize verification, Reviewer approval, integration success, or Run finalization;
+- GitHub failure must preserve accepted local Git/runtime truth and return an explicit publication failure rather than rewriting prior evidence;
+- existing Diff Viewer remains read-only and Metrics remains descriptive; neither may become a publication authorization shortcut;
 - benchmark/demo suite remains Step 4.8.
 
-**Step 4.6 status: NOT STARTED.**
+**Step 4.7 status: NOT STARTED.**
