@@ -9,16 +9,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import StreamingResponse
 
 from app.api.models import (
+    ProductDiffKind,
     ProductProject,
     ProductRun,
     ProductRunDAG,
     ProductRunDetail,
     ProductTaskDetail,
+    ProductTaskDiff,
     ProjectCreateRequest,
     RunCreateRequest,
     RunLaunchResponse,
 )
-from app.api.service import ProductRuntimeService, ProductWorkspaceNotReadyError
+from app.api.service import (
+    ProductDiffUnavailableError,
+    ProductRuntimeService,
+    ProductWorkspaceNotReadyError,
+)
 from app.api.sse import (
     SSE_BATCH_LIMIT,
     RuntimeEventStreamSafetyError,
@@ -183,6 +189,36 @@ def create_app(service: ProductRuntimeService, *, close_service: bool = False) -
     async def get_task(run_id: UUID, task_id: str) -> ProductTaskDetail:
         try:
             return await service.get_task(run_id, task_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get(
+        "/api/v1/runs/{run_id}/tasks/{task_id}/diff",
+        response_model=ProductTaskDiff,
+    )
+    async def get_task_diff(
+        request: Request,
+        run_id: UUID,
+        task_id: str,
+        kind: Annotated[ProductDiffKind, Query()] = ProductDiffKind.TASK,
+    ) -> ProductTaskDiff:
+        unexpected = sorted(set(request.query_params.keys()) - {"kind"})
+        if unexpected or len(request.query_params.getlist("kind")) > 1:
+            raise HTTPException(
+                status_code=400,
+                detail="diff requests accept only one optional 'kind' selector",
+            )
+        try:
+            return await service.get_task_diff(run_id, task_id, kind=kind)
+        except ProductDiffUnavailableError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ProductWorkspaceNotReadyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except PersistenceCorruptionError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail="persisted Git diff evidence failed integrity validation",
+            ) from exc
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 

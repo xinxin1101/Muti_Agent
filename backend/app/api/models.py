@@ -87,6 +87,61 @@ class ProductRunDAG(ProductModel):
     edges: tuple[ProductDAGEdge, ...]
 
 
+class ProductDiffKind(StrEnum):
+    TASK = "TASK"
+    INTEGRATION = "INTEGRATION"
+
+
+class ProductDiffEvidenceBasis(StrEnum):
+    WORKER_EXECUTION = "WORKER_EXECUTION"
+    MERGE_QUEUE_SNAPSHOT = "MERGE_QUEUE_SNAPSHOT"
+
+
+class ProductDiffFileStatus(StrEnum):
+    ADDED = "ADDED"
+    MODIFIED = "MODIFIED"
+    DELETED = "DELETED"
+    TYPE_CHANGED = "TYPE_CHANGED"
+
+
+class ProductDiffOmissionReason(StrEnum):
+    BINARY = "BINARY"
+    BLOB_LIMIT = "BLOB_LIMIT"
+    TOTAL_PATCH_LIMIT = "TOTAL_PATCH_LIMIT"
+
+
+class ProductDiffFile(ProductModel):
+    path: str = Field(min_length=1)
+    status: ProductDiffFileStatus
+    additions: int | None = Field(default=None, ge=0)
+    deletions: int | None = Field(default=None, ge=0)
+    binary: bool
+    patch: str | None = None
+    patch_bytes: int = Field(ge=0)
+    patch_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    patch_truncated: bool
+    patch_omitted_reason: ProductDiffOmissionReason | None = None
+
+
+class ProductTaskDiff(ProductModel):
+    run_id: UUID
+    project_id: UUID
+    task_id: str = Field(min_length=1, max_length=128)
+    diff_kind: ProductDiffKind
+    evidence_basis: ProductDiffEvidenceBasis
+    source_evidence_id: int = Field(ge=1)
+    source_evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    base_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    head_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    changed_file_count: int = Field(ge=0)
+    additions: int = Field(ge=0)
+    deletions: int = Field(ge=0)
+    files: tuple[ProductDiffFile, ...]
+    omitted_file_count: int = Field(ge=0)
+    patch_bytes: int = Field(ge=0)
+    truncated: bool
+
+
 class ProductEvidenceSummary(ProductModel):
     evidence_id: int = Field(ge=1)
     kind: PersistenceEvidenceKind

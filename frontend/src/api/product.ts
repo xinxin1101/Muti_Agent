@@ -1,10 +1,12 @@
 import { apiClient } from "./client";
 import type {
+  ProductDiffKind,
   ProductProject,
   ProductRun,
   ProductRunDAG,
   ProductRunDetail,
   ProductTaskDetail,
+  ProductTaskDiff,
   ProjectCreatePayload,
   RunCreatePayload,
   RunLaunchResponse,
@@ -51,5 +53,15 @@ export function getTask(
 ): Promise<ProductTaskDetail> {
   return apiClient.getJson<ProductTaskDetail>(
     `${API_PREFIX}/runs/${runId}/tasks/${encodeURIComponent(taskId)}`,
+  );
+}
+
+export function getTaskDiff(
+  runId: string,
+  taskId: string,
+  kind: ProductDiffKind = "TASK",
+): Promise<ProductTaskDiff> {
+  return apiClient.getJson<ProductTaskDiff>(
+    `${API_PREFIX}/runs/${runId}/tasks/${encodeURIComponent(taskId)}/diff?kind=${kind}`,
   );
 }

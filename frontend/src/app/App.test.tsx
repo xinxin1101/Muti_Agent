@@ -104,6 +104,37 @@ beforeEach(() => {
       },
     ],
   });
+  vi.mocked(productApi.getTaskDiff).mockResolvedValue({
+    run_id: run.run_id,
+    project_id: project.project_id,
+    task_id: "task-1",
+    diff_kind: "TASK",
+    evidence_basis: "WORKER_EXECUTION",
+    source_evidence_id: 2,
+    source_evidence_sha256: "d".repeat(64),
+    base_commit: "a".repeat(40),
+    head_commit: "b".repeat(40),
+    changed_file_count: 1,
+    additions: 1,
+    deletions: 0,
+    files: [
+      {
+        path: "frontend/src/pages/TaskDetailPage.tsx",
+        status: "MODIFIED",
+        additions: 1,
+        deletions: 0,
+        binary: false,
+        patch: "+render backend diff\n",
+        patch_bytes: 21,
+        patch_sha256: "e".repeat(64),
+        patch_truncated: false,
+        patch_omitted_reason: null,
+      },
+    ],
+    omitted_file_count: 0,
+    patch_bytes: 21,
+    truncated: false,
+  });
 });
 
 describe("App", () => {
@@ -174,13 +205,14 @@ describe("App", () => {
     ).toBeInTheDocument();
   });
 
-  it("renders Task Detail contract and evidence metadata", async () => {
+  it("renders Task Detail contract, diff, and evidence metadata", async () => {
     renderApp(`/runs/${run.run_id}/tasks/task-1`);
     expect(
       await screen.findByRole("heading", { name: "task-1" }),
     ).toBeInTheDocument();
     expect(screen.getByText("VERIFICATION_RESULT")).toBeInTheDocument();
     expect(screen.getByText("frontend/src/pages/**")).toBeInTheDocument();
+    expect(await screen.findByLabelText("Read-only Git diff")).toBeInTheDocument();
   });
 
   it("renders a bounded not-found state", () => {

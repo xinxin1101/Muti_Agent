@@ -14,11 +14,16 @@ from app.api.models import (
     ProductDAGNode,
     ProductDAGNodeState,
     ProductDAGStateBasis,
+    ProductDiffEvidenceBasis,
+    ProductDiffFile,
+    ProductDiffFileStatus,
+    ProductDiffKind,
     ProductProject,
     ProductRun,
     ProductRunDAG,
     ProductRunDetail,
     ProductTaskDetail,
+    ProductTaskDiff,
     ProductTaskSummary,
     ProjectCreateRequest,
     RunCreateRequest,
@@ -158,6 +163,46 @@ class FakeProductService:
             evidence=(),
         )
 
+    async def get_task_diff(
+        self,
+        run_id: UUID,
+        task_id: str,
+        *,
+        kind: ProductDiffKind = ProductDiffKind.TASK,
+    ):
+        if run_id != self.run_id or task_id != "api-task":
+            raise ValueError("unknown task")
+        return ProductTaskDiff(
+            run_id=self.run_id,
+            project_id=self.project_id,
+            task_id=task_id,
+            diff_kind=kind,
+            evidence_basis=ProductDiffEvidenceBasis.WORKER_EXECUTION,
+            source_evidence_id=7,
+            source_evidence_sha256="e" * 64,
+            base_commit="a" * 40,
+            head_commit="b" * 40,
+            changed_file_count=1,
+            additions=1,
+            deletions=0,
+            files=(
+                ProductDiffFile(
+                    path="backend/app/api/app.py",
+                    status=ProductDiffFileStatus.MODIFIED,
+                    additions=1,
+                    deletions=0,
+                    binary=False,
+                    patch="+read only diff\n",
+                    patch_bytes=16,
+                    patch_sha256="f" * 64,
+                    patch_truncated=False,
+                ),
+            ),
+            omitted_file_count=0,
+            patch_bytes=16,
+            truncated=False,
+        )
+
 
 async def _request(method: str, path: str, *, service: FakeProductService, json=None):
     transport = httpx.ASGITransport(app=create_app(service))  # type: ignore[arg-type]
@@ -195,6 +240,47 @@ def test_product_routes_expose_typed_browser_contracts() -> None:
     )
     assert task.status_code == 200
     assert task.json()["task"]["verification_commands"] == ["pytest -q"]
+
+    diff = asyncio.run(
+        _request(
+            "GET",
+            f"/api/v1/runs/{service.run_id}/tasks/api-task/diff?kind=TASK",
+            service=service,
+        )
+    )
+    assert diff.status_code == 200
+    assert diff.json()["diff_kind"] == "TASK"
+    assert diff.json()["evidence_basis"] == "WORKER_EXECUTION"
+
+
+def test_diff_route_allows_only_the_evidence_kind_selector() -> None:
+    service = FakeProductService()
+    injected_sha = asyncio.run(
+        _request(
+            "GET",
+            f"/api/v1/runs/{service.run_id}/tasks/api-task/diff?kind=TASK&base_commit={'f' * 40}",
+            service=service,
+        )
+    )
+    assert injected_sha.status_code == 400
+
+    duplicate_kind = asyncio.run(
+        _request(
+            "GET",
+            f"/api/v1/runs/{service.run_id}/tasks/api-task/diff?kind=TASK&kind=INTEGRATION",
+            service=service,
+        )
+    )
+    assert duplicate_kind.status_code == 400
+
+    unknown_kind = asyncio.run(
+        _request(
+            "GET",
+            f"/api/v1/runs/{service.run_id}/tasks/api-task/diff?kind=ARBITRARY",
+            service=service,
+        )
+    )
+    assert unknown_kind.status_code == 422
 
 
 def test_project_and_run_creation_use_validated_requests() -> None:

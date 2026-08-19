@@ -12,6 +12,8 @@ on:
       - "docs/STEP_4_3_ACCEPTANCE.md"
       - "docs/DAG_VISUALIZATION.md"
       - "docs/STEP_4_4_ACCEPTANCE.md"
+      - "docs/DIFF_VIEWER.md"
+      - "docs/STEP_4_5_ACCEPTANCE.md"
       - "docs/PROGRESS.md"
       - ".github/workflows/frontend-quality.yml"
   push:
@@ -27,6 +29,8 @@ on:
       - "docs/STEP_4_3_ACCEPTANCE.md"
       - "docs/DAG_VISUALIZATION.md"
       - "docs/STEP_4_4_ACCEPTANCE.md"
+      - "docs/DIFF_VIEWER.md"
+      - "docs/STEP_4_5_ACCEPTANCE.md"
       - "docs/PROGRESS.md"
       - ".github/workflows/frontend-quality.yml"
 

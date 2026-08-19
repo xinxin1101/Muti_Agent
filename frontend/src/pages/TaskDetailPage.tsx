@@ -1,15 +1,25 @@
 import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import { Link, useParams } from "react-router";
 
-import { getTask } from "../api/product";
+import { getTask, getTaskDiff } from "../api/product";
+import { DiffViewer } from "../components/DiffViewer";
 import { StatusBadge } from "../components/StatusBadge";
+import type { ProductDiffKind } from "../types/product";
 
 export function TaskDetailPage() {
   const { runId = "", taskId = "" } = useParams();
+  const [diffKind, setDiffKind] = useState<ProductDiffKind>("TASK");
   const task = useQuery({
     queryKey: ["task", runId, taskId],
     queryFn: () => getTask(runId, taskId),
     enabled: Boolean(runId && taskId),
+  });
+  const diff = useQuery({
+    queryKey: ["task-diff", runId, taskId, diffKind],
+    queryFn: () => getTaskDiff(runId, taskId, diffKind),
+    enabled: Boolean(runId && taskId),
+    retry: false,
   });
 
   if (task.isLoading) {
@@ -57,6 +67,44 @@ export function TaskDetailPage() {
           </p>
         </div>
       </div>
+
+      <section className="space-y-4" aria-labelledby="diff-viewer-heading">
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <h2 id="diff-viewer-heading" className="text-xl font-semibold text-white">
+              Read-only code changes
+            </h2>
+            <p className="mt-1 text-sm text-slate-400">
+              Commit pairs are resolved from persisted backend evidence; the browser never supplies Git SHAs.
+            </p>
+          </div>
+          <div className="flex gap-2" aria-label="Diff evidence kind">
+            {(["TASK", "INTEGRATION"] as const).map((kind) => (
+              <button
+                key={kind}
+                type="button"
+                onClick={() => setDiffKind(kind)}
+                aria-pressed={diffKind === kind}
+                className={`rounded-lg border px-3 py-2 text-xs font-semibold ${
+                  diffKind === kind
+                    ? "border-cyan-500 bg-cyan-500/10 text-cyan-200"
+                    : "border-slate-700 text-slate-400"
+                }`}
+              >
+                {kind === "TASK" ? "Task changes" : "Integration changes"}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {diff.isLoading ? <p className="text-slate-500">Loading validated diff…</p> : null}
+        {diff.error ? (
+          <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4 text-sm text-slate-400">
+            {diff.error.message}
+          </div>
+        ) : null}
+        {diff.data ? <DiffViewer diff={diff.data} /> : null}
+      </section>
 
       <div className="space-y-3">
         <h2 className="text-xl font-semibold text-white">Evidence records</h2>

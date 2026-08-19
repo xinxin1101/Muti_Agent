@@ -65,6 +65,52 @@ export type ProductRunDAG = Readonly<{
   edges: readonly ProductDAGEdge[];
 }>;
 
+export type ProductDiffKind = "TASK" | "INTEGRATION";
+export type ProductDiffEvidenceBasis =
+  | "WORKER_EXECUTION"
+  | "MERGE_QUEUE_SNAPSHOT";
+export type ProductDiffFileStatus =
+  | "ADDED"
+  | "MODIFIED"
+  | "DELETED"
+  | "TYPE_CHANGED";
+export type ProductDiffOmissionReason =
+  | "BINARY"
+  | "BLOB_LIMIT"
+  | "TOTAL_PATCH_LIMIT";
+
+export type ProductDiffFile = Readonly<{
+  path: string;
+  status: ProductDiffFileStatus;
+  additions: number | null;
+  deletions: number | null;
+  binary: boolean;
+  patch: string | null;
+  patch_bytes: number;
+  patch_sha256: string | null;
+  patch_truncated: boolean;
+  patch_omitted_reason: ProductDiffOmissionReason | null;
+}>;
+
+export type ProductTaskDiff = Readonly<{
+  run_id: string;
+  project_id: string;
+  task_id: string;
+  diff_kind: ProductDiffKind;
+  evidence_basis: ProductDiffEvidenceBasis;
+  source_evidence_id: number;
+  source_evidence_sha256: string;
+  base_commit: string;
+  head_commit: string;
+  changed_file_count: number;
+  additions: number;
+  deletions: number;
+  files: readonly ProductDiffFile[];
+  omitted_file_count: number;
+  patch_bytes: number;
+  truncated: boolean;
+}>;
+
 export type TaskContractPayload = Readonly<{
   task_id: string;
   objective: string;
