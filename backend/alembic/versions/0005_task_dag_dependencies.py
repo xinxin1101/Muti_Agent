@@ -17,13 +17,14 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # NULL deliberately means "authoritative topology was never persisted".
+    # Step 4.4 must not rewrite historical multi-task runs as independent tasks.
     op.add_column(
         "tasks",
         sa.Column(
             "depends_on",
             postgresql.JSONB(astext_type=sa.Text()),
-            nullable=False,
-            server_default=sa.text("'[]'::jsonb"),
+            nullable=True,
         ),
     )
 
