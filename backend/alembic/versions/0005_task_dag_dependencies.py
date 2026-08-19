@@ -27,7 +27,12 @@ def upgrade() -> None:
             nullable=True,
         ),
     )
+    op.add_column(
+        "runs",
+        sa.Column("dag_sha256", sa.String(length=64), nullable=True),
+    )
 
 
 def downgrade() -> None:
+    op.drop_column("runs", "dag_sha256")
     op.drop_column("tasks", "depends_on")
