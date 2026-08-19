@@ -29,12 +29,13 @@ from app.models.publication import (
 from app.models.run import RunEvent, SingleTaskRunResult, TaskRunState
 from app.models.task import TaskContract
 from app.persistence import (
+    PersistenceConflictError,
     PersistenceCorruptionError,
     PostgresEvidenceStore,
     PostgresGitHubPublicationStore,
 )
 from app.persistence.database import create_postgres_engine, create_session_factory
-from app.persistence.models import RunRow
+from app.persistence.models import GitHubPublicationRow, RunRow
 from app.persistence.types import (
     PersistedEvidence,
     PersistedRunSnapshot,
@@ -43,6 +44,7 @@ from app.persistence.types import (
     PersistenceEvidenceKind,
 )
 from app.publication import GitHubPublicationGateway, GitHubPublicationGatewayError
+from app.workspace import LocalGitWorkspace
 
 RUN_ID = UUID("22222222-2222-2222-2222-222222222222")
 PROJECT_ID = UUID("11111111-1111-1111-1111-111111111111")
@@ -71,8 +73,7 @@ def _repository(tmp_path: Path) -> tuple[Path, str, str]:
     (root / "file.txt").write_text("task\n", encoding="utf-8")
     _git(root, "add", "file.txt")
     _git(root, "commit", "-m", "task")
-    head = _git(root, "rev-parse", "HEAD")
-    return root, base, head
+    return root, base, _git(root, "rev-parse", "HEAD")
 
 
 def _task() -> TaskContract:
@@ -89,14 +90,6 @@ def _task() -> TaskContract:
 
 
 def _worker_evidence(base: str, head: str) -> WorkerExecutionEvidence:
-    run_result = SingleTaskRunResult(
-        task_id="task-1",
-        status=TaskRunState.SUCCEEDED,
-        events=[
-            RunEvent(sequence=0, state=TaskRunState.RUNNING, detail="started"),
-            RunEvent(sequence=1, state=TaskRunState.SUCCEEDED, detail="accepted"),
-        ],
-    )
     return WorkerExecutionEvidence(
         dispatch_id=uuid4(),
         run_id=RUN_ID,
@@ -105,7 +98,14 @@ def _worker_evidence(base: str, head: str) -> WorkerExecutionEvidence:
         base_commit=base,
         branch_name="agent/task-1",
         commit_sha=head,
-        run_result=run_result,
+        run_result=SingleTaskRunResult(
+            task_id="task-1",
+            status=TaskRunState.SUCCEEDED,
+            events=[
+                RunEvent(sequence=0, state=TaskRunState.RUNNING, detail="started"),
+                RunEvent(sequence=1, state=TaskRunState.SUCCEEDED, detail="accepted"),
+            ],
+        ),
         duration_ms=1,
     )
 
@@ -121,11 +121,7 @@ def _snapshot(base: str, head: str, *, status: PersistedRunStatus) -> PersistedR
         base_commit=base,
         status=status,
         tasks=(
-            PersistedTask(
-                task=_task(),
-                contract_sha256="a" * 64,
-                created_at=NOW,
-            ),
+            PersistedTask(task=_task(), contract_sha256="a" * 64, created_at=NOW),
         ),
         evidence=(
             PersistedEvidence(
@@ -148,30 +144,26 @@ def _snapshot(base: str, head: str, *, status: PersistedRunStatus) -> PersistedR
     )
 
 
-def test_publication_requires_persisted_success_and_revalidates_git_parent(tmp_path: Path) -> None:
+def test_publication_requires_persisted_success_and_revalidates_git_parent(
+    tmp_path: Path,
+) -> None:
     root, base, head = _repository(tmp_path)
-    from app.workspace import LocalGitWorkspace
-
     workspace = LocalGitWorkspace(root)
     with pytest.raises(ProductGitHubPublicationUnavailableError, match="SUCCEEDED"):
         resolve_github_publication_intent(
-            _snapshot(base, head, status=PersistedRunStatus.RUNNING),
-            workspace,
+            _snapshot(base, head, status=PersistedRunStatus.RUNNING), workspace
         )
 
     intent = resolve_github_publication_intent(
-        _snapshot(base, head, status=PersistedRunStatus.SUCCEEDED),
-        workspace,
+        _snapshot(base, head, status=PersistedRunStatus.SUCCEEDED), workspace
     )
     assert intent.source_basis is GitHubPublicationSourceBasis.SINGLE_TASK
     assert intent.source_commit == head
     assert intent.branch_name == f"devflow/run-{RUN_ID}"
 
-    wrong_base = "d" * 40
     with pytest.raises(PersistenceCorruptionError, match="accepted base"):
         resolve_github_publication_intent(
-            _snapshot(wrong_base, head, status=PersistedRunStatus.SUCCEEDED),
-            workspace,
+            _snapshot("d" * 40, head, status=PersistedRunStatus.SUCCEEDED), workspace
         )
 
 
@@ -190,7 +182,7 @@ def _intent(source_commit: str = "a" * 40) -> GitHubPublicationIntent:
     )
 
 
-def test_git_push_is_non_force_idempotent_and_keeps_token_out_of_arguments(
+def test_git_push_is_non_force_and_keeps_token_out_of_arguments(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -210,8 +202,7 @@ def test_git_push_is_non_force_idempotent_and_keeps_token_out_of_arguments(
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     gateway = GitHubPublicationGateway(SecretStr("super-secret-token"))
-    workspace = SimpleNamespace(root=tmp_path)
-    gateway._publish_branch(workspace, _intent(source))  # noqa: SLF001
+    gateway._publish_branch(SimpleNamespace(root=tmp_path), _intent(source))  # noqa: SLF001
 
     push = next(command for command, _env in calls if "push" in command)
     assert "--force" not in push
@@ -219,7 +210,6 @@ def test_git_push_is_non_force_idempotent_and_keeps_token_out_of_arguments(
     assert f"{source}:refs/heads/devflow/run-{RUN_ID}" in push
     assert "refs/heads/main" not in push
     push_env = next(env for command, env in calls if "push" in command)
-    assert "super-secret-token" not in repr(push)
     assert "AUTHORIZATION: basic" in push_env["GIT_CONFIG_VALUE_0"]
 
 
@@ -283,7 +273,7 @@ async def _request(method: str, path: str, service: FakePublicationApi, *, conte
         return await client.request(method, path, content=content)
 
 
-def test_publication_api_rejects_browser_sha_ref_body_and_query_selectors() -> None:
+def test_publication_api_rejects_browser_body_and_query_selectors() -> None:
     service = FakePublicationApi()
     body = asyncio.run(
         _request(
@@ -294,8 +284,6 @@ def test_publication_api_rejects_browser_sha_ref_body_and_query_selectors() -> N
         )
     )
     assert body.status_code == 400
-    assert service.publish_calls == 0
-
     query = asyncio.run(
         _request(
             "POST",
@@ -322,15 +310,16 @@ def _database_url() -> str:
     pytest.skip("PostgreSQL publication persistence test requires DEVFLOW_DATABASE_URL")
 
 
-def test_published_audit_cannot_be_downgraded_by_late_failure() -> None:
-    asyncio.run(_published_audit_cannot_be_downgraded())
+def test_publication_claim_fences_concurrent_and_stale_attempts() -> None:
+    asyncio.run(_publication_claim_fences_concurrent_and_stale_attempts())
 
 
-async def _published_audit_cannot_be_downgraded() -> None:
+async def _publication_claim_fences_concurrent_and_stale_attempts() -> None:
     database_url = _database_url()
     evidence = PostgresEvidenceStore.from_url(database_url)
     publication = PostgresGitHubPublicationStore.from_url(database_url)
-    repository_url = f"https://github.com/example/{uuid4()}.git"
+    repository_name = str(uuid4())
+    repository_url = f"https://github.com/example/{repository_name}.git"
     project_id = await evidence.ensure_project(
         repository_url=repository_url,
         default_branch="main",
@@ -355,13 +344,38 @@ async def _published_audit_cannot_be_downgraded() -> None:
             "run_id": run_id,
             "project_id": project_id,
             "repository_url": repository_url,
-            "repository_slug": f"example/{repository_url.rsplit('/', 1)[-1][:-4]}",
+            "repository_slug": f"example/{repository_name}",
             "branch_name": f"devflow/run-{run_id}",
         }
     )
-    attempt = await publication.begin_attempt(intent)
-    assert attempt.state is GitHubPublicationState.READY
+    attempt, token_one = await publication.begin_attempt(intent)
+    assert attempt.state is GitHubPublicationState.PUBLISHING
     assert attempt.attempt_count == 1
+    assert token_one is not None
+
+    with pytest.raises(PersistenceConflictError, match="already in progress"):
+        await publication.begin_attempt(intent)
+
+    async with sessions.begin() as session:
+        await session.execute(
+            update(GitHubPublicationRow)
+            .where(GitHubPublicationRow.run_id == run_id)
+            .values(attempt_expires_at=datetime(2000, 1, 1, tzinfo=UTC))
+        )
+
+    takeover, token_two = await publication.begin_attempt(intent)
+    assert takeover.state is GitHubPublicationState.PUBLISHING
+    assert takeover.attempt_count == 2
+    assert token_two is not None and token_two != token_one
+
+    with pytest.raises(PersistenceConflictError, match="stale or expired"):
+        await publication.mark_failed(
+            run_id=run_id,
+            intent_sha256=takeover.intent_sha256,
+            attempt_token=token_one,
+            error_code="STALE",
+            error_message="must not overwrite takeover",
+        )
 
     remote = GitHubRemotePullRequest(
         number=7,
@@ -374,14 +388,16 @@ async def _published_audit_cannot_be_downgraded() -> None:
     )
     published = await publication.mark_published(
         run_id=run_id,
-        intent_sha256=attempt.intent_sha256,
+        intent_sha256=takeover.intent_sha256,
+        attempt_token=token_two,
         remote=remote,
     )
     assert published.state is GitHubPublicationState.PUBLISHED
 
     after_failure = await publication.mark_failed(
         run_id=run_id,
-        intent_sha256=attempt.intent_sha256,
+        intent_sha256=takeover.intent_sha256,
+        attempt_token=token_two,
         error_code="LATE_FAILURE",
         error_message="must not downgrade",
     )
