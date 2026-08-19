@@ -39,12 +39,13 @@ class ProductGitHubPublicationStore(Protocol):
     async def begin_attempt(
         self,
         intent: GitHubPublicationIntent,
-    ) -> PersistedGitHubPublication: ...
+    ) -> tuple[PersistedGitHubPublication, UUID | None]: ...
     async def mark_published(
         self,
         *,
         run_id: UUID,
         intent_sha256: str,
+        attempt_token: UUID,
         remote: GitHubRemotePullRequest,
     ) -> PersistedGitHubPublication: ...
     async def mark_failed(
@@ -52,6 +53,7 @@ class ProductGitHubPublicationStore(Protocol):
         *,
         run_id: UUID,
         intent_sha256: str,
+        attempt_token: UUID,
         error_code: str,
         error_message: str,
     ) -> PersistedGitHubPublication: ...
@@ -118,13 +120,15 @@ class ProductRuntimeServiceWithGitHubPublication(ProductRuntimeService):
                 "GitHub publication is not configured on the backend"
             )
 
-        attempt = await self._publication_store.begin_attempt(intent)
+        attempt, attempt_token = await self._publication_store.begin_attempt(intent)
         if attempt.state is GitHubPublicationState.PUBLISHED:
             return build_product_publication(
                 intent,
                 attempt,
                 publisher_configured=True,
             )
+        if attempt_token is None:
+            raise RuntimeError("active GitHub publication attempt is missing its backend claim")
         _, intent_sha256 = canonical_payload(intent)
 
         try:
@@ -138,6 +142,7 @@ class ProductRuntimeServiceWithGitHubPublication(ProductRuntimeService):
             failed = await self._publication_store.mark_failed(
                 run_id=run_id,
                 intent_sha256=intent_sha256,
+                attempt_token=attempt_token,
                 error_code=exc.code,
                 error_message=exc.public_message,
             )
@@ -155,6 +160,7 @@ class ProductRuntimeServiceWithGitHubPublication(ProductRuntimeService):
         published = await self._publication_store.mark_published(
             run_id=run_id,
             intent_sha256=intent_sha256,
+            attempt_token=attempt_token,
             remote=remote,
         )
         return build_product_publication(
