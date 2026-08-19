@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import update
 
 from app.models.dag import TaskDAG, TaskNode
+from app.models.events import RuntimeEventKind
 from app.models.task import TaskContract
 from app.persistence import (
     PersistedDAGSource,
@@ -56,6 +57,62 @@ def _dag() -> TaskDAG:
             TaskNode(task=c, depends_on=("A",)),
         )
     )
+
+
+def test_atomic_run_start_persists_dag_hash_edges_and_started_event() -> None:
+    asyncio.run(_atomic_run_start())
+
+
+async def _atomic_run_start() -> None:
+    database_url = _database_url()
+    dag = _dag()
+    evidence = PostgresEvidenceStore.from_url(database_url)
+    dag_store = PostgresDAGStore.from_url(database_url)
+    project_id = await evidence.ensure_project(
+        repository_url=f"https://example.test/{uuid4()}/atomic.git",
+        default_branch="main",
+    )
+
+    run_id = await dag_store.start_run(
+        project_id=project_id,
+        dag=dag,
+        base_commit="e" * 40,
+    )
+    persisted = await dag_store.load_dag(run_id)
+    events = await evidence.list_runtime_events(run_id)
+
+    assert persisted.source is PersistedDAGSource.PERSISTED
+    assert persisted.dag.topological_order() == ["A", "B", "C", "D"]
+    assert persisted.dag.node("D").depends_on == ("B", "C")
+    assert len(events) == 1
+    assert events[0].kind is RuntimeEventKind.RUN_STARTED
+    assert events[0].attributes["dag_sha256"] == persisted.dag_sha256
+
+    await evidence.dispose()
+    await dag_store.dispose()
+
+
+def test_atomic_run_start_rolls_back_identity_when_project_is_unknown() -> None:
+    asyncio.run(_atomic_run_start_rolls_back())
+
+
+async def _atomic_run_start_rolls_back() -> None:
+    database_url = _database_url()
+    dag_store = PostgresDAGStore.from_url(database_url)
+    candidate_run_id = uuid4()
+
+    with pytest.raises(ValueError, match="unknown persistence project"):
+        await dag_store.start_run(
+            project_id=uuid4(),
+            dag=_dag(),
+            base_commit="f" * 40,
+            run_id=candidate_run_id,
+        )
+
+    with pytest.raises(ValueError, match="unknown persistence run"):
+        await dag_store.load_dag(candidate_run_id)
+
+    await dag_store.dispose()
 
 
 def test_validated_dag_round_trip_is_idempotent_and_immutable() -> None:
