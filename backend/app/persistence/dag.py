@@ -1,19 +1,29 @@
 from __future__ import annotations
 
+import re
 from enum import StrEnum
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.models.dag import TaskDAG, TaskNode
+from app.models.events import (
+    RuntimeEventDraft,
+    RuntimeEventKind,
+    RuntimeEventSource,
+)
 from app.models.task import TaskContract
 from app.persistence.database import create_postgres_engine, create_session_factory
 from app.persistence.errors import PersistenceConflictError, PersistenceCorruptionError
-from app.persistence.models import RunRow, TaskRow
+from app.persistence.events import append_runtime_event
+from app.persistence.models import ProjectRow, RunRow, TaskRow
 from app.persistence.serialization import canonical_payload, verify_payload_hash
 from app.persistence.types import PersistedRunStatus
+
+_COMMIT_RE = re.compile(r"^[0-9a-f]{40,64}$")
 
 
 class PersistenceDAGUnavailableError(RuntimeError):
@@ -69,7 +79,83 @@ class PostgresDAGStore:
         if self._owns_engine:
             await self._engine.dispose()
 
+    async def start_run(
+        self,
+        *,
+        project_id: UUID,
+        dag: TaskDAG,
+        base_commit: str,
+        run_id: UUID | None = None,
+    ) -> UUID:
+        """Atomically persist Run identity, tasks, topology/hash, and RUN_STARTED."""
+
+        commit = base_commit.strip().lower()
+        if _COMMIT_RE.fullmatch(commit) is None:
+            raise ValueError("base_commit must be a 40-64 character lowercase Git object id")
+
+        normalized = normalize_task_dag(dag)
+        _, dag_digest = canonical_payload(normalized)
+        nodes = {node.task.task_id: node for node in normalized.tasks}
+        candidate_run_id = run_id or uuid4()
+
+        try:
+            async with self._session_factory.begin() as session:
+                project_exists = await session.scalar(
+                    select(ProjectRow.id).where(ProjectRow.id == project_id)
+                )
+                if project_exists is None:
+                    raise ValueError(f"unknown persistence project: {project_id}")
+
+                run = RunRow(
+                    id=candidate_run_id,
+                    project_id=project_id,
+                    base_commit=commit,
+                    status=PersistedRunStatus.RUNNING.value,
+                    event_sequence=0,
+                    dag_sha256=dag_digest,
+                )
+                session.add(run)
+                for task_id in normalized.topological_order():
+                    node = nodes[task_id]
+                    payload, contract_digest = canonical_payload(node.task)
+                    session.add(
+                        TaskRow(
+                            run_id=candidate_run_id,
+                            task_id=task_id,
+                            contract=payload,
+                            contract_sha256=contract_digest,
+                            depends_on=list(node.depends_on),
+                        )
+                    )
+
+                await session.flush()
+                await append_runtime_event(
+                    session,
+                    run=run,
+                    draft=RuntimeEventDraft(
+                        event_key="run:started",
+                        kind=RuntimeEventKind.RUN_STARTED,
+                        source=RuntimeEventSource.PERSISTENCE,
+                        message="Persisted run started.",
+                        attributes={
+                            "project_id": str(project_id),
+                            "base_commit": commit,
+                            "task_count": len(normalized.tasks),
+                            "dag_sha256": dag_digest,
+                        },
+                    ),
+                )
+        except IntegrityError as exc:
+            raise PersistenceConflictError(
+                "run identity already exists or violates DAG persistence constraints: "
+                f"{candidate_run_id}"
+            ) from exc
+
+        return candidate_run_id
+
     async def persist_dag(self, *, run_id: UUID, dag: TaskDAG) -> PersistedDAGSnapshot:
+        """Freeze topology for a still-running legacy Run that has no accepted DAG yet."""
+
         normalized = normalize_task_dag(dag)
         _, digest = canonical_payload(normalized)
 
