@@ -54,21 +54,12 @@ class FakeCatalog:
 class FakeStore:
     def __init__(self, project_id: UUID) -> None:
         self.project_id = project_id
-        self.started_run_id: UUID | None = None
-        self.started_base_commit: str | None = None
-        self.started_task: TaskContract | None = None
 
     async def dispose(self) -> None:
         return None
 
     async def ensure_project(self, *, repository_url: str, default_branch: str, project_id=None):
         return self.project_id
-
-    async def start_run(self, *, project_id, tasks, base_commit, run_id=None):
-        self.started_run_id = uuid4()
-        self.started_base_commit = base_commit
-        self.started_task = tasks[0]
-        return self.started_run_id
 
     async def load_run(self, run_id):
         raise AssertionError("not needed")
@@ -77,16 +68,29 @@ class FakeStore:
 class FakeDAGStore:
     def __init__(self, *, fail: bool = False) -> None:
         self.fail = fail
-        self.persisted: tuple[UUID, TaskDAG] | None = None
+        self.started_run_id: UUID | None = None
+        self.started_project_id: UUID | None = None
+        self.started_base_commit: str | None = None
+        self.started_dag: TaskDAG | None = None
 
     async def dispose(self) -> None:
         return None
 
-    async def persist_dag(self, *, run_id: UUID, dag: TaskDAG):
+    async def start_run(
+        self,
+        *,
+        project_id: UUID,
+        dag: TaskDAG,
+        base_commit: str,
+        run_id: UUID | None = None,
+    ) -> UUID:
         if self.fail:
-            raise RuntimeError("DAG freeze failed")
-        self.persisted = (run_id, dag)
-        return None
+            raise RuntimeError("atomic DAG Run start failed")
+        self.started_run_id = run_id or uuid4()
+        self.started_project_id = project_id
+        self.started_base_commit = base_commit
+        self.started_dag = dag
+        return self.started_run_id
 
     async def load_dag(self, run_id: UUID):
         raise AssertionError("not needed")
@@ -176,36 +180,36 @@ def test_create_project_provisions_backend_managed_workspace() -> None:
     assert result.workspace_ready is True
 
 
-def test_create_run_freezes_dag_before_dispatching_existing_runtime() -> None:
-    service, store, dag_store, _provisioner, dispatcher, project_id = _service()
+def test_create_run_atomically_freezes_dag_before_dispatch() -> None:
+    service, _store, dag_store, _provisioner, dispatcher, project_id = _service()
     result = asyncio.run(
         service.create_run(RunCreateRequest(project_id=project_id, task=_task()))
     )
 
-    assert store.started_base_commit == "c" * 40
-    assert store.started_task == _task()
-    assert store.started_run_id is not None
-    assert dag_store.persisted is not None
-    assert dag_store.persisted[0] == store.started_run_id
-    assert dag_store.persisted[1].task_ids == ["service-task"]
-    assert dag_store.persisted[1].node("service-task").depends_on == ()
-    assert dispatcher.dispatched == (store.started_run_id, "service-task")
+    assert dag_store.started_project_id == project_id
+    assert dag_store.started_base_commit == "c" * 40
+    assert dag_store.started_run_id is not None
+    assert dag_store.started_dag is not None
+    assert dag_store.started_dag.task_ids == ["service-task"]
+    assert dag_store.started_dag.node("service-task").depends_on == ()
+    assert dispatcher.dispatched == (dag_store.started_run_id, "service-task")
+    assert result.run_id == dag_store.started_run_id
     assert result.dispatch_status is DispatchStatus.QUEUED
     assert result.base_commit == "c" * 40
 
 
-def test_dag_freeze_failure_prevents_dispatch() -> None:
+def test_atomic_dag_run_start_failure_prevents_dispatch_and_run_identity() -> None:
     dag_store = FakeDAGStore(fail=True)
-    service, store, _dag, _provisioner, dispatcher, project_id = _service(
+    service, _store, _dag, _provisioner, dispatcher, project_id = _service(
         dag_store=dag_store
     )
 
-    with pytest.raises(RuntimeError, match="DAG freeze failed"):
+    with pytest.raises(RuntimeError, match="atomic DAG Run start failed"):
         asyncio.run(
             service.create_run(RunCreateRequest(project_id=project_id, task=_task()))
         )
 
-    assert store.started_run_id is not None
+    assert dag_store.started_run_id is None
     assert dispatcher.dispatched is None
 
 
