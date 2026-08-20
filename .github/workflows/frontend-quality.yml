@@ -21,6 +21,11 @@ on:
       - "docs/STEP_4_7_ACCEPTANCE.md"
       - "docs/BENCHMARK_DEMO_SUITE.md"
       - "docs/STEP_4_8_ACCEPTANCE.md"
+      - "docs/V1_1_ROADMAP.md"
+      - "docs/DURABLE_RECOVERY.md"
+      - "docs/STEP_5_1_ACCEPTANCE.md"
+      - "docs/DURABLE_DISPATCH_LEDGER.md"
+      - "docs/STEP_5_2_ACCEPTANCE.md"
       - "docs/PROGRESS.md"
       - ".github/workflows/frontend-quality.yml"
   push:
@@ -45,6 +50,11 @@ on:
       - "docs/STEP_4_7_ACCEPTANCE.md"
       - "docs/BENCHMARK_DEMO_SUITE.md"
       - "docs/STEP_4_8_ACCEPTANCE.md"
+      - "docs/V1_1_ROADMAP.md"
+      - "docs/DURABLE_RECOVERY.md"
+      - "docs/STEP_5_1_ACCEPTANCE.md"
+      - "docs/DURABLE_DISPATCH_LEDGER.md"
+      - "docs/STEP_5_2_ACCEPTANCE.md"
       - "docs/PROGRESS.md"
       - ".github/workflows/frontend-quality.yml"
 
