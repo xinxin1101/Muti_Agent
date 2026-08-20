@@ -1,5 +1,6 @@
 from app.dispatch.broker import create_redis_broker, reveal_redis_url
 from app.dispatch.dispatcher import DramatiqTaskDispatcher
+from app.dispatch.durable import DurableDramatiqTaskDispatcher
 from app.dispatch.errors import (
     TaskDispatchBrokerError,
     TaskDispatchError,
@@ -9,6 +10,7 @@ from app.dispatch.errors import (
 
 __all__ = [
     "DramatiqTaskDispatcher",
+    "DurableDramatiqTaskDispatcher",
     "TaskDispatchBrokerError",
     "TaskDispatchError",
     "TaskDispatchRejectedError",
