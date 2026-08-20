@@ -26,6 +26,8 @@ on:
       - "docs/STEP_5_1_ACCEPTANCE.md"
       - "docs/DURABLE_DISPATCH_LEDGER.md"
       - "docs/STEP_5_2_ACCEPTANCE.md"
+      - "docs/IDEMPOTENT_RECONCILER.md"
+      - "docs/STEP_5_3_ACCEPTANCE.md"
       - "docs/PROGRESS.md"
       - ".github/workflows/frontend-quality.yml"
   push:
@@ -55,6 +57,8 @@ on:
       - "docs/STEP_5_1_ACCEPTANCE.md"
       - "docs/DURABLE_DISPATCH_LEDGER.md"
       - "docs/STEP_5_2_ACCEPTANCE.md"
+      - "docs/IDEMPOTENT_RECONCILER.md"
+      - "docs/STEP_5_3_ACCEPTANCE.md"
       - "docs/PROGRESS.md"
       - ".github/workflows/frontend-quality.yml"
 

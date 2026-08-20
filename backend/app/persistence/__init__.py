@@ -17,6 +17,10 @@ from app.persistence.errors import (
 )
 from app.persistence.leases import PostgresTaskLeaseStore
 from app.persistence.publication import PostgresGitHubPublicationStore
+from app.persistence.reconciliation import (
+    PostgresTaskReconciliationStore,
+    PreparedDispatchPublication,
+)
 from app.persistence.repository import PostgresEvidenceStore
 from app.persistence.types import (
     ContextFingerprintReference,
@@ -46,6 +50,8 @@ __all__ = [
     "PostgresEvidenceStore",
     "PostgresGitHubPublicationStore",
     "PostgresTaskLeaseStore",
+    "PostgresTaskReconciliationStore",
+    "PreparedDispatchPublication",
     "StaleRunTokenError",
     "TaskLeaseConflictError",
     "TaskLeaseExpiredError",
