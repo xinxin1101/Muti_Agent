@@ -2,46 +2,91 @@
 
 ## Purpose
 
-Step 4.8 makes DevFlow reproducibly evaluable and demoable without adding a second runtime,
-verification path, success rule, or privileged demo mode.
+Step 4.8 makes DevFlow reproducibly evaluable and demoable without adding a second runtime, success rule, verifier, scheduler, or privileged demo path.
 
 Frozen principle:
 
 > **Benchmarks measure accepted runtime truth; they never create or replace runtime truth.**
 
-## Authority chain
+## Two deliberately separate execution modes
+
+### Deterministic control-plane demo
+
+```text
+versioned control-plane manifest
+        ↓
+devflow-benchmark demo
+        ↓
+scripted/fake provider responses
+        +
+real DevFlow control-plane components
+        ↓
+deterministic pytest scenarios
+```
+
+This mode is CI-safe and reproducible. It exercises the real control-plane components rather than a benchmark-only runtime.
+
+The required V1 scenarios are exactly:
+
+```text
+NORMAL_SUCCESS
+SCOPE_VIOLATION
+REVIEW_REPAIR
+INVALID_AGENT_OUTPUT
+PARALLEL_CONFLICT
+```
+
+The strengthened parallel-conflict scenario proves the full chain:
+
+```text
+ParallelWorkerCoordinator
+        ↓
+2 concurrent tasks
+        ↓
+isolated task worktrees
+        ↓
+independent task commits
+        ↓
+TopologicalMergeQueue
+        ↓
+real Git merge conflict
+        ↓
+GitMergeConflictClassifier
+        ↓
+structured conflicting path/type/stage evidence
+```
+
+The classifier observes and structures the conflict; it does not silently repair it or corrupt the base workspace.
+
+### Live stochastic benchmark
 
 ```text
 versioned BenchmarkSuite
         ↓
-external devflow-benchmark client
+devflow-benchmark run
         ↓
 existing Product API
         ↓
 existing Project / Run creation
         ↓
-existing Dramatiq worker + lease / heartbeat / run_token fencing
+Dramatiq worker + lease / heartbeat / run_token fencing
         ↓
 existing verification / Reviewer / Repair / Integration truth
         ↓
 persisted terminal Run
         ↓
-existing Metrics / Task Detail / Diff read models
+Metrics / Task Detail / Diff read models
         ↓
 bounded BenchmarkObservation
         ↓
-deterministic ground-truth comparison
-        ↓
-multi-dimensional BenchmarkReport
+deterministic offline evaluation
 ```
 
-The benchmark package has no database engine, persistence store, worker actor, scheduler, Git
-mutation primitive, verification override, Reviewer override, Human Gate mutation, GitHub publisher,
-or `run_token` capability.
+A live run may use SiliconFlow and therefore is intentionally separated from deterministic CI. CI does not require a paid SiliconFlow request.
 
 ## Versioned fixture identity
 
-A benchmark suite is strict Pydantic data with:
+A benchmark suite is strict Pydantic data containing:
 
 ```text
 schema_version
@@ -57,50 +102,40 @@ Each case freezes:
 case_id
 description
 credential-free public GitHub repository URL
-default branch
+default_branch
 expected_base_commit
 TaskContract
 ground-truth expectations
 tags
 ```
 
-`expected_base_commit` is **comparison data only**. It is not included in `RunCreateRequest`.
-The backend continues to derive `base_commit` from the managed workspace as accepted in Step 4.2.
-
-After Run creation:
-
-```text
-backend launch.base_commit == fixture.expected_base_commit
-        ↓ yes
-continue benchmark observation
-
-backend launch.base_commit != fixture.expected_base_commit
-        ↓
-FIXTURE_DRIFT
-        ↓
-NOT_EVALUATED
-```
-
-A drifted fixture never silently changes the expected base and never receives a benchmark quality
-verdict.
-
-The committed V1 demo suite uses the stable public branch:
+The committed V1 fixture suite targets the stable branch:
 
 ```text
 benchmark-fixtures/v1-base
 ```
 
-at:
+at base:
 
 ```text
 d141eba7df1d2d5016de2589152d5ab2518778ab
 ```
 
-This isolates demo fixture identity from later `main` changes.
+`expected_base_commit` is comparison data only. It is never sent as `RunCreateRequest` authority. The backend still derives the real Run base from its managed Git workspace.
 
-## Same accepted runtime
+A mismatch becomes:
 
-The live runner uses only these existing Product API operations:
+```text
+FIXTURE_DRIFT
+        ↓
+NOT_EVALUATED
+```
+
+rather than silently rewriting the fixture or runtime base.
+
+## Product API boundary
+
+Live benchmark execution reuses only existing Product API reads/writes:
 
 ```text
 POST /api/v1/projects
@@ -111,59 +146,43 @@ GET  /api/v1/runs/{run_id}/tasks/{task_id}
 GET  /api/v1/runs/{run_id}/tasks/{task_id}/diff?kind=TASK
 ```
 
-There is no `/benchmark/run` runtime shortcut and no special worker queue.
-
-The `/runs` request body remains exactly:
+The `/runs` request remains only:
 
 ```text
 project_id
 task
 ```
 
-The benchmark client never sends:
+Benchmark code cannot author:
 
 ```text
 base_commit
 expected_base_commit
-run_token
-lease owner
+Run terminal status
 verification result
 Reviewer decision
-terminal Run status
-GitHub token
-publication branch
+lease owner
+run_token
+GitHub publication state
 ```
 
-The runner is sequential by default. Deterministic case order comes from the fixture file, rather
-than concurrency timing.
+There is no `/benchmark/run` shortcut, benchmark database table, benchmark worker, benchmark scheduler, benchmark verifier, or benchmark-only success transition.
 
-## Typed observations
+## Typed observation boundary
 
-Live Product facts are converted to a compact `BenchmarkObservation`.
-
-A terminal observation may contain only:
+Terminal observations are bounded projections of accepted Product facts:
 
 - suite/case identity;
-- Project / Run UUID;
+- Project / Run identity;
 - dispatch status;
 - backend-selected base commit;
 - persisted terminal Run status;
 - persisted `terminal_duration_ms`;
-- task-level evidence-kind identities;
+- typed evidence-kind identities;
 - descriptive Run Metrics counters;
-- bounded accepted Task Diff metadata and changed paths.
+- bounded evidence-bound Task Diff metadata.
 
-It does **not** include:
-
-- prompts;
-- raw model responses;
-- source context;
-- verifier stdout/stderr;
-- raw event attributes;
-- credentials;
-- `run_token`;
-- publication claim tokens;
-- raw GitHub responses.
+They deliberately exclude prompts, raw model responses, source context, verifier stdout/stderr, raw event attributes, credentials, `run_token`, raw GitHub responses, and unbounded evidence payloads.
 
 Non-terminal benchmark states are explicit:
 
@@ -174,80 +193,127 @@ TIMEOUT
 API_ERROR
 ```
 
-Each carries only a bounded code/message and becomes `NOT_EVALUATED`.
+Those states become `NOT_EVALUATED`; transport failure is never promoted to a fabricated runtime failure.
 
-## Ground-truth comparison
+## Development-plan evaluation metrics
 
-Step 4.8 deliberately does not create one quality score.
-
-Each terminal case is compared independently across:
-
-### Completion
+Step 4.8 records the raw descriptive metrics required by `docs/DEVELOPMENT_PLAN.md`:
 
 ```text
-persisted Run.status
-vs
-fixture terminal_status
+task success rate
+first-pass success rate
+success after repair
+average retry count
+Reviewer rejection rate
+scope violations detected
+mean terminal latency
+median terminal latency
+prompt token usage
+completion token usage
+estimated model cost when available
 ```
 
-The benchmark reads the terminal status. It cannot set it.
+These values are **evaluation outputs only**. They do not participate in Run finalization, scheduling, verification, Reviewer decisions, repair authorization, Integration/Human Gate decisions, or GitHub publication.
 
-### Evidence
+### Denominators
 
-The required typed evidence kinds must be present in Task Detail. The benchmark does not inspect
-raw evidence payloads and does not infer Reviewer/verification success from counts.
+- task success rate = successful terminal cases / terminal benchmark cases;
+- first-pass success rate = successful terminal cases with zero repair attempts / terminal benchmark cases;
+- repaired success rate = successful terminal cases with one or more repairs / terminal benchmark cases;
+- average retry count = total repair attempts / terminal benchmark cases;
+- Reviewer rejection rate = typed `CHANGES_REQUESTED` decisions / typed Review decisions.
 
-### Code delta
+Scope violations are reported as a typed detected count rather than a made-up rate.
 
-The fixture declares expected changed repository paths and one mode:
+### Source of Reviewer rejection and scope violation facts
 
-```text
-EXACT
-SUBSET
-```
-
-Comparison uses the existing evidence-bound Task Diff projection from Step 4.5.
-
-If the Product Diff is truncated, contains omitted files, or is unavailable, code-delta comparison
-is `NOT_EVALUATED`; bounded output is never mislabeled as complete ground truth.
-
-### Reliability
-
-Optional budgets compare descriptive accepted counters such as:
+Benchmark aggregation does not parse logs or model prose.
 
 ```text
-repair_attempts <= max_repair_attempts
-human_decisions <= max_human_decisions
-```
-
-These comparisons do not rewrite or reinterpret the Run result.
-
-### Latency
-
-Latency uses only Step 4.6 persisted:
-
-```text
-finished_at - started_at
+PersistedEvidence
         ↓
-terminal_duration_ms
+hash validation
+        ↓
+decode_evidence()
+        ↓
+ReviewDecision / FailureReport
+        ↓
+reviewer_rejections / scope_violations
 ```
 
-The benchmark never uses browser/client wall-clock time to manufacture terminal duration.
+`ReviewDecision.CHANGES_REQUESTED` increments Reviewer rejection count. `FailureReport.failure_type == SCOPE_VIOLATION` increments scope-violation count.
 
-### Cost / token usage
+## Token and cost availability
 
-The accepted Product Metrics projection does not currently expose an authoritative token/cost
-field. Therefore Step 4.8 reports:
+Token accounting is authoritative only where durable typed evidence actually contains usage.
+
+Current V1 evidence supports:
 
 ```text
+DeveloperRunResult.agent_usage
+RepairRunResult.agent_usage
+        ↓
+prompt_tokens
+completion_tokens
+total_tokens
+```
+
+The Metrics layer verifies:
+
+```text
+prompt_tokens + completion_tokens == total_tokens
+```
+
+and fails closed on contradictory persisted usage.
+
+Current reporting therefore states:
+
+```text
+token_usage = PARTIAL
+token_usage_scope = DEVELOPER_REPAIR_ONLY
+reviewer_token_usage_available = false
+estimated_cost_available = false
 cost_data = NOT_AVAILABLE
 ```
 
-It does not estimate cost from text length, logs, model output, or provider pricing.
+Reviewer token usage is not inferred because `ReviewDecision` does not currently carry durable token accounting. Model cost is not guessed from token count or current provider pricing.
 
-## Verdict semantics
+## Experiment identity
 
-A case can be:
+A live benchmark invocation must explicitly record an operator-declared execution identity:
+
+```text
+runtime_commit
+provider
+planner_model       optional when Planner is outside Product Run creation
+developer_model
+reviewer_model
+repair_model
+context_strategy
+verifier_identity
+```
+
+The identity basis is:
+
+```text
+OPERATOR_DECLARED
+```
+
+This records the experiment configuration without pretending the benchmark remotely attested it.
+
+`devflow-benchmark demo` separately records the Git runtime commit it actually executes.
+
+## Comparison dimensions
+
+Each case is evaluated independently across:
+
+1. completion — persisted Run status vs expected terminal status;
+2. evidence — required typed evidence kinds;
+3. code delta — existing evidence-bound Task Diff projection;
+4. reliability — configured repair/Human Gate budgets;
+5. latency — persisted terminal duration.
+
+A case verdict is one of:
 
 ```text
 MATCHED
@@ -255,113 +321,81 @@ MISMATCHED
 NOT_EVALUATED
 ```
 
-This is a **benchmark comparison verdict**, not a DevFlow Run state.
+That verdict is a read-only benchmark comparison. It is not a DevFlow Run state.
 
-There is no:
+The report also emits descriptive aggregate rates required by the evaluation plan, but it emits no health score, weighted score, or threshold that can become runtime authority.
 
-```text
-benchmark score > threshold
-        ↓
-Run SUCCEEDED
-```
-
-and no benchmark code path imports a persistence mutation interface to do so.
-
-The suite summary exposes counts per comparison dimension and case verdict. It emits no aggregate
-success score, health score, or weighted quality score.
-
-## Deterministic report identity
+## Deterministic identity and offline reevaluation
 
 Suite identity is a canonical SHA-256 over normalized typed fixture data.
 
-`BenchmarkReport.report_sha256` is computed over:
+`BenchmarkReport.report_sha256` covers:
 
 ```text
 suite identity
 execution configuration
 ordered case evaluations
-dimension summary
+descriptive summary/aggregates
 ```
 
-The report contains no generation timestamp. Given the same normalized suite + observation bundle,
-offline reevaluation produces the same report SHA-256.
-
-Live Runs are naturally allowed to produce different observed latency, repair counts, or model
-outcomes. Reproducibility means those differences are explicit facts under the same versioned
-fixture/configuration rather than hidden by an unstable scoring procedure.
+The report has no generation timestamp. Re-evaluating the same typed suite and observation bundle produces the same report identity.
 
 ## CLI
 
-The installed backend exposes:
-
 ```text
 devflow-benchmark validate
+devflow-benchmark demo
 devflow-benchmark run
 devflow-benchmark evaluate
 ```
 
-### Validate
+- `validate`: schema-validates/hashes the suite only.
+- `demo`: runs the five versioned deterministic control-plane scenarios through pytest.
+- `run`: executes live stochastic cases through the normal Product API and requires experiment identity.
+- `evaluate`: performs deterministic offline reevaluation with no runtime mutation.
 
-Schema-validates and hashes one suite. No network or runtime execution occurs.
+CLI exit status is benchmark-command/evaluation status only and is never fed back to Run finalization.
 
-### Run
+## URL and credential safety
 
-Runs each case through the normal Product API, stores bounded observations, then evaluates them.
+Fixture repositories are restricted to credential-free public GitHub HTTPS URLs. Benchmark API origins may be remote HTTPS or loopback HTTP; embedded credentials, selectors, and fragments are rejected.
 
-### Evaluate
+The benchmark package has no provider/GitHub token CLI option and does not receive `run_token`.
 
-Reevaluates a prior observation bundle entirely offline. This path performs no database, Git,
-GitHub, model, worker, or runtime mutation.
+## CI acceptance path
 
-CLI exit code describes benchmark-command/evaluation success only. It is not fed back into DevFlow
-Run finalization.
-
-## Endpoint and credential safety
-
-Fixture repository URLs are restricted to credential-free:
+Backend Quality executes:
 
 ```text
-https://github.com/<owner>/<repo>
+Alembic upgrade/downgrade/re-upgrade
+        ↓
+verification sandbox image build
+        ↓
+Ruff
+        ↓
+V1 benchmark fixture validation
+        ↓
+5 deterministic control-plane demos
+        ↓
+full pytest
 ```
 
-Benchmark API origins:
+Frontend Quality independently runs locked install, strict typecheck, lint, Vitest, and production build. Step 4.8 design/acceptance/progress files and benchmark fixtures are workflow-triggering paths for both workflows.
 
-- may use HTTPS remotely;
-- may use plaintext HTTP only on loopback;
-- may not contain username/password, query strings, or fragments.
-
-The benchmark CLI has no token option and sends no Authorization header.
-
-`httpx` is promoted to a runtime dependency because Step 4.7 GitHub publication already imports it
-in production and Step 4.8 also uses it for the Product API client. This closes the previous
-development-extra-only packaging gap without changing publication authority.
-
-## V1 demo cases
-
-The committed suite contains three bounded single-task examples:
-
-1. exact text marker creation;
-2. one typed Python `add()` function;
-3. one exact JSON contract.
-
-Each has a one-file writable scope and deterministic Python verification command. They exercise the
-same Developer → verifier → Reviewer → Repair/runtime path as ordinary Product Runs.
-
-The suite is opt-in for live execution. CI validates the fixture/schema/evaluator/client through
-deterministic tests and does **not** call SiliconFlow or perform a live GitHub publication.
+No live SiliconFlow call or live GitHub publication is required by CI.
 
 ## Explicitly absent
 
-- no benchmark database table;
-- no benchmark persistence mutation API;
-- no benchmark Run status;
-- no benchmark-only worker;
-- no benchmark-only verifier;
-- no Reviewer bypass;
-- no Human Gate bypass;
-- no lease or `run_token` bypass;
-- no privileged demo mode;
+- no benchmark runtime truth store;
+- no benchmark-only scheduler/worker/verifier;
+- no verification or Reviewer bypass;
+- no Human Gate or `run_token` bypass;
 - no benchmark-triggered GitHub publication;
-- no aggregate success score;
-- no inferred token/cost data;
+- no health/weighted score used as a runtime gate;
+- no inferred Reviewer token usage;
+- no inferred model cost;
 - no paid model call in CI.
+
+Frozen Step 4.8 principle:
+
+> **The benchmark may measure success, repair, failure, latency, and available usage evidence; only the accepted runtime decides what actually happened.**

@@ -51,7 +51,8 @@ permissions:
   contents: read
 
 jobs:
-  quality:
+  backend-quality:
+    name: Backend Quality
     runs-on: ubuntu-latest
     env:
       DEVFLOW_DATABASE_URL: postgresql+psycopg://devflow:devflow@localhost:5432/devflow_test

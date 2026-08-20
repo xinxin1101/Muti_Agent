@@ -52,7 +52,8 @@ permissions:
   contents: read
 
 jobs:
-  quality:
+  frontend-quality:
+    name: Frontend Quality
     runs-on: ubuntu-latest
     timeout-minutes: 15
 

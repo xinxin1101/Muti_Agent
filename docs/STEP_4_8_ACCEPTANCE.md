@@ -1,42 +1,162 @@
 # Step 4.8 Acceptance — Benchmark / Demo Suite
 
-Status: **CANDIDATE / PENDING CI**
+Status: **ACCEPTED / COMPLETE**
 
-Step 4.8 may be accepted only when the exact PR head proves:
+## Accepted scope
 
-- benchmark fixtures are strict, versioned, bounded, and canonically SHA-256 identified;
-- fixture repository URLs are credential-free public GitHub HTTPS URLs;
-- the V1 demo suite targets the stable `benchmark-fixtures/v1-base` fixture branch;
-- fixture `expected_base_commit` is comparison-only and is never sent to `RunCreateRequest`;
-- live execution uses the existing Project / Run Product API rather than a benchmark-only runtime;
-- benchmark code contains no persistence mutation store, scheduler, worker, verifier override,
-  Reviewer override, Integration/Human Gate mutation, GitHub publisher, or `run_token` capability;
-- backend-selected Run base mismatch becomes `FIXTURE_DRIFT / NOT_EVALUATED`;
-- broker unavailability, timeout, and bounded Product API failures are explicit non-terminal
-  benchmark observations rather than fabricated Run failures;
-- terminal benchmark observations use persisted Run status and persisted Run Metrics status
-  consistently;
-- evidence comparison uses typed evidence-kind identities rather than raw model/evidence payloads;
-- code-delta comparison uses the existing evidence-bound Task Diff projection;
-- incomplete/truncated/omitted Diff data cannot be labeled a complete code-delta comparison;
-- latency uses persisted `terminal_duration_ms`, not client/browser elapsed time;
-- reliability compares descriptive repair/Human Gate counters without rewriting runtime truth;
-- authoritative token/cost data is not available and is reported as `NOT_AVAILABLE`, never inferred;
-- report dimensions remain separate and no aggregate success/health/weighted score is emitted;
-- `MATCHED / MISMATCHED / NOT_EVALUATED` remains a benchmark verdict only and has no Run write path;
-- suite and report hashes are deterministic for semantically identical typed inputs;
-- Product API error messages retained in observations are bounded;
-- benchmark API base URLs reject embedded credentials/selectors and restrict plaintext HTTP to
-  loopback;
-- CLI exposes validate/run/evaluate without accepting provider/GitHub credentials;
-- offline evaluate performs no runtime, database, Git, GitHub, worker, or model mutation;
-- `httpx` is a production dependency, closing the Step 4.7 packaging gap;
-- committed demo fixture validation runs in Backend Quality;
-- Backend Quality and Frontend Quality cover Step 4.8 docs/progress on the same exact acceptance
-  head;
-- no live SiliconFlow call or live GitHub publication is required by CI;
-- `docs/PROGRESS.md` remains on Step 4.7 until these gates are green.
+Step 4.8 closes the Phase 4 / V1.0 roadmap with a versioned, bounded evaluation layer and a deterministic control-plane demo suite while preserving the existing runtime authority boundary.
 
-Frozen candidate principle:
+Frozen principle:
 
 > **Benchmarks measure accepted runtime truth; they never create or replace runtime truth.**
+
+## Acceptance evidence
+
+The accepted implementation proves all of the following:
+
+- benchmark suites are strict, versioned, bounded, and canonically SHA-256 identified;
+- fixture repository URLs are credential-free public GitHub HTTPS URLs;
+- the V1 live fixture suite targets stable `benchmark-fixtures/v1-base` at `d141eba7df1d2d5016de2589152d5ab2518778ab`;
+- fixture `expected_base_commit` is comparison-only and is never sent as `RunCreateRequest` authority;
+- live benchmark execution uses the existing Project/Run Product API and the ordinary Dramatiq/runtime path;
+- backend-selected base mismatch becomes `FIXTURE_DRIFT / NOT_EVALUATED` rather than fabricated failure or silent fixture mutation;
+- broker unavailability, timeout, and Product API failures remain explicit bounded non-terminal observations;
+- terminal observations use persisted Run status, persisted Run Metrics, typed evidence identities, and evidence-bound Task Diff;
+- incomplete/truncated/omitted Diff data cannot be mislabeled as a complete code-delta comparison;
+- latency uses persisted `terminal_duration_ms`, never browser/client elapsed time;
+- benchmark verdicts are read-only comparisons and cannot write Run status, evidence, leases, `run_token`, verification, Reviewer, Repair, Integration/Human Gate, or publication state;
+- report hashes remain deterministic for identical typed suite + observation inputs;
+- no benchmark database, scheduler, worker, verifier, Reviewer override, privileged demo mode, or runtime-success shortcut exists.
+
+## Development-plan metrics
+
+The final report provides the raw descriptive evaluation metrics required by `docs/DEVELOPMENT_PLAN.md`:
+
+- task success rate;
+- first-pass success rate;
+- success after repair;
+- average retry count;
+- Reviewer rejection rate;
+- scope violations detected;
+- mean terminal latency;
+- median terminal latency;
+- prompt token usage where durably available;
+- completion token usage where durably available;
+- estimated model cost only when authoritative data exists.
+
+These aggregates remain measurement only. No health score, weighted score, threshold, or aggregate value is allowed to finalize or rewrite runtime truth.
+
+The rate denominators are explicit: terminal benchmark cases for task/first-pass/repaired success and retry averages; typed Review decisions for Reviewer rejection rate.
+
+## Typed failure/review aggregation
+
+Reviewer rejection and scope violation statistics are not inferred from logs or model prose.
+
+```text
+PersistedEvidence
+        ↓
+hash validation + decode_evidence()
+        ↓
+ReviewDecision / FailureReport
+        ↓
+CHANGES_REQUESTED / SCOPE_VIOLATION
+        ↓
+descriptive counters
+```
+
+Corrupted typed evidence fails closed instead of being counted.
+
+## Token/cost availability
+
+Developer and Repair token usage is durably present in their typed evidence and is aggregated after consistency validation.
+
+Current authoritative coverage is therefore:
+
+```text
+token_usage = PARTIAL
+token_usage_scope = DEVELOPER_REPAIR_ONLY
+```
+
+Reviewer token usage is explicitly unavailable because `ReviewDecision` does not durably carry it. Estimated model cost is explicitly `NOT_AVAILABLE`; Step 4.8 does not infer it from text length, token totals, or changing provider prices.
+
+## Required deterministic demos
+
+`benchmarks/v1/control-plane-demo.json` contains exactly five versioned scenarios:
+
+1. **NORMAL_SUCCESS** — Developer change → deterministic verification PASS → Reviewer PASS → success without repair;
+2. **SCOPE_VIOLATION** — protected test tampering → Git changed paths → typed `SCOPE_VIOLATION`;
+3. **REVIEW_REPAIR** — hard checks PASS → Reviewer `CHANGES_REQUESTED` → targeted Repair → re-verification → Reviewer PASS;
+4. **INVALID_AGENT_OUTPUT** — invalid Planner structure → bounded schema repair → valid `TaskContract`;
+5. **PARALLEL_CONFLICT** — `ParallelWorkerCoordinator` runs two tasks concurrently in isolated worktrees → independent task commits → `TopologicalMergeQueue` → real Git conflict → `GitMergeConflictClassifier` structured conflict evidence.
+
+The strengthened Parallel Conflict demo demonstrates the actual parallel/worktree/merge-queue chain rather than only calling the classifier on preconstructed evidence.
+
+## Deterministic vs live separation
+
+```text
+devflow-benchmark demo
+    = deterministic scripted-provider control-plane proof
+
+devflow-benchmark run
+    = stochastic live Product API benchmark
+
+devflow-benchmark evaluate
+    = deterministic offline evaluation
+```
+
+CI executes `demo` but does not require a paid SiliconFlow request. Live model benchmarking remains opt-in and uses the normal Product API/runtime.
+
+## Experiment identity
+
+Live benchmark execution requires an explicit `OPERATOR_DECLARED` identity recording:
+
+- runtime commit;
+- provider;
+- Developer model;
+- Reviewer model;
+- Repair model;
+- context strategy;
+- verifier identity;
+- optional Planner model when applicable.
+
+The deterministic demo separately records the Git commit actually executed.
+
+## Final implementation-head quality evidence
+
+Pre-ledger implementation head:
+
+`7855d288da5f5688b1c1ff0d0248b64075c8c235`
+
+Backend Quality:
+
+- PostgreSQL + Redis services: **PASS**;
+- Alembic full upgrade → downgrade base → re-upgrade through `0006`: **PASS**;
+- verification sandbox image build: **PASS**;
+- Ruff: **PASS**;
+- V1 fixture validation: **PASS**;
+- five deterministic control-plane demos: **5 / 5 PASS**;
+- full backend pytest: **361 passed in 32.21s**.
+
+Frontend Quality on the same implementation head:
+
+- locked dependency install: **PASS**;
+- TypeScript strict typecheck: **PASS**;
+- lint: **PASS**;
+- Vitest: **PASS**;
+- Vite production build: **PASS**.
+
+PR #33 merge review found no unresolved review threads after the final hardening pass.
+
+## Acceptance-ledger gate
+
+This acceptance document and `docs/PROGRESS.md` are themselves Backend + Frontend workflow-triggering paths. The acceptance-ledger commit must therefore pass both workflows on its own exact head before PR #33 may leave Draft and merge.
+
+No live SiliconFlow request or live GitHub publication mutation is required for that final ledger gate.
+
+## V1.0 conclusion
+
+Step 4.8 is **ACCEPTED / COMPLETE**. With Steps 4.1–4.8 accepted, Phase 4 — V1.0 Productization is **ACCEPTED / COMPLETE** and DevFlow V1.0 is **ACCEPTED** subject only to the exact-head ledger CI and squash-merge mechanics recorded above.
+
+Final boundary:
+
+> **The benchmark may measure success, repair, failure, latency, and available usage evidence; only the accepted runtime decides what actually happened.**
