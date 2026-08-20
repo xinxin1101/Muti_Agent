@@ -263,6 +263,8 @@ PARALLEL_CONFLICT
 
 The hardened Parallel Conflict demo runs two tasks concurrently through `ParallelWorkerCoordinator`, creates isolated worktree commits, enters `TopologicalMergeQueue`, produces a real Git conflict, and structurally classifies it without corrupting the base workspace.
 
+The hardened Normal Success demo uses a protected golden pytest executed through the default Docker `DeterministicVerifier`, so the demonstration proves both scoped implementation and production-equivalent deterministic verification.
+
 ### Deterministic/live separation
 
 ```text
@@ -275,9 +277,9 @@ Live runs record an operator-declared experiment identity: runtime commit, provi
 
 ### Step 4.8 implementation-head acceptance evidence
 
-Implementation head before the acceptance-ledger commit:
+Final hardening implementation head before the acceptance-ledger commit:
 
-`7855d288da5f5688b1c1ff0d0248b64075c8c235`
+`f07e95fbfbcb6d5179925c41ce573d2cb63cd47d`
 
 Backend Quality:
 
@@ -287,7 +289,7 @@ Backend Quality:
 - Ruff: **PASS**;
 - V1 fixture validation: **PASS**;
 - deterministic control-plane demos: **5 / 5 PASS**;
-- pytest: **361 passed in 32.21s**.
+- pytest: **361 passed in 29.50s**.
 
 Frontend Quality on the same implementation head:
 
@@ -296,6 +298,8 @@ Frontend Quality on the same implementation head:
 - lint: **PASS**;
 - Vitest: **PASS**;
 - Vite production build: **PASS**.
+
+The final hardening pass also removed a pre-existing lease-lifecycle test race: heartbeat is now exercised while generation 1 is comfortably live, then the renewed short lease is deliberately allowed to expire before takeover. Production lease renewal/fencing semantics were not relaxed.
 
 PR #33 merge review had no unresolved review threads after hardening.
 

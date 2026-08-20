@@ -127,7 +127,7 @@ The deterministic demo separately records the Git commit actually executed.
 
 Final hardening implementation head before this acceptance-ledger-only update:
 
-`abc6729785223d7cde76dca72fb3a19f08a04a7e`
+`f07e95fbfbcb6d5179925c41ce573d2cb63cd47d`
 
 Backend Quality:
 
@@ -137,7 +137,7 @@ Backend Quality:
 - Ruff: **PASS**;
 - V1 fixture validation: **PASS**;
 - five deterministic control-plane demos: **5 / 5 PASS**;
-- full backend pytest: **361 passed in 34.22s**.
+- full backend pytest: **361 passed in 29.50s**.
 
 Frontend Quality on the same final hardening head:
 
@@ -147,7 +147,7 @@ Frontend Quality on the same final hardening head:
 - Vitest: **PASS**;
 - Vite production build: **PASS**.
 
-The acceptance sequence also hardened CI governance: the previously ambiguous job name `quality` was replaced with the unique required-check names **Backend Quality** and **Frontend Quality**. An intermediate ledger run then correctly exposed an environment-sensitive Normal Success verification command; that demo was replaced with a protected pytest + Docker verifier hard gate, after which the complete exact-head quality chain passed.
+The acceptance sequence also hardened CI governance: the previously ambiguous job name `quality` was replaced with the unique required-check names **Backend Quality** and **Frontend Quality**. An intermediate ledger run correctly exposed an environment-sensitive Normal Success verification command; that demo was replaced with a protected pytest + Docker verifier hard gate. A later full-pytest ledger run exposed a pre-existing lease-lifecycle timing race caused by an 80 ms acquisition window followed by a 50 ms renewed lease. Only the test timing was stabilized so heartbeat is proven while generation 1 is live and takeover is exercised only after the renewed lease deliberately expires; production `renew_task_lease()` still rejects expired generations fail-closed. The resulting exact implementation head above passed the complete quality chain.
 
 PR #33 merge review found no unresolved review threads after the hardening pass.
 
