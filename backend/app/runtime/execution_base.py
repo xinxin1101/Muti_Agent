@@ -16,7 +16,12 @@ from app.models.run_reconciliation import (
 from app.persistence.dag import PersistedDAGSnapshot
 from app.persistence.errors import PersistenceCorruptionError
 from app.persistence.types import PersistedEvidence, PersistedRunSnapshot, PersistenceEvidenceKind
-from app.workspace import CommitDiffError, LocalGitWorkspace, ReadOnlyCommitDiffReader, WorkspaceGitError
+from app.workspace import (
+    CommitDiffError,
+    LocalGitWorkspace,
+    ReadOnlyCommitDiffReader,
+    WorkspaceGitError,
+)
 
 _OID_RE = re.compile(r"^[0-9a-f]{40,64}$")
 _MAX_MERGE_ATTEMPTS = 1024
@@ -121,7 +126,8 @@ class EvidenceBoundTaskExecutionBaseResolver:
         evidence, latest = snapshots[-1]
         if latest.stopped:
             raise TaskExecutionBaseUnavailableError(
-                "integration queue is stopped by unresolved conflict; downstream dispatch is blocked"
+                "integration queue is stopped by unresolved conflict; "
+                "downstream dispatch is blocked"
             )
         missing = set(node.depends_on) - set(latest.integrated_task_ids)
         if missing:
@@ -177,7 +183,8 @@ class EvidenceBoundTaskExecutionBaseResolver:
             existing = pairs.get(execution.task_id)
             if existing is not None and existing != pair:
                 raise PersistenceCorruptionError(
-                    f"successful worker evidence defines conflicting commits for {execution.task_id!r}"
+                    "successful worker evidence defines conflicting commits for "
+                    f"{execution.task_id!r}"
                 )
             pairs[execution.task_id] = pair
         return pairs
@@ -208,7 +215,9 @@ class EvidenceBoundTaskExecutionBaseResolver:
                     "merge queue snapshot does not match the persisted Run base"
                 )
             if len(merge_snapshot.attempts) > _MAX_MERGE_ATTEMPTS:
-                raise PersistenceCorruptionError("merge queue evidence exceeds bounded attempt scan")
+                raise PersistenceCorruptionError(
+                    "merge queue evidence exceeds bounded attempt scan"
+                )
             cls._validate_merge_history(
                 merge_snapshot=merge_snapshot,
                 dag=persisted_dag.dag,
@@ -284,7 +293,8 @@ class EvidenceBoundTaskExecutionBaseResolver:
             worker_pair = successful_workers.get(attempt.task_id)
             if worker_pair != (attempt.task_base_commit, attempt.task_commit):
                 raise PersistenceCorruptionError(
-                    f"merge attempt for {attempt.task_id!r} lacks matching successful worker evidence"
+                    f"merge attempt for {attempt.task_id!r} lacks matching successful "
+                    "worker evidence"
                 )
 
             if not node.depends_on:
@@ -296,7 +306,8 @@ class EvidenceBoundTaskExecutionBaseResolver:
                 base_integrated = heads.get(attempt.task_base_commit)
                 if base_integrated is None or not set(node.depends_on).issubset(base_integrated):
                     raise PersistenceCorruptionError(
-                        "dependent task base is not a prior integration head containing its dependencies"
+                        "dependent task base is not a prior integration head "
+                        "containing its dependencies"
                     )
 
             if attempt.outcome is MergeAttemptOutcome.INTEGRATED:
