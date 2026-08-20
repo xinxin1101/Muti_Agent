@@ -4,21 +4,27 @@ This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The developmen
 
 ## Current position
 
-- Current phase: **Phase 4 — V1.0 Productization — ACCEPTED / COMPLETE**
-- Completed item: **Step 4.8 — Benchmark / Demo Suite**
-- Next item: **Post-V1.0 backlog — not yet committed**
+- Current phase: **Phase 5 — V1.1 Durable Agent Runtime — IN PROGRESS**
+- Completed item: **Step 5.1 — Recovery State Classifier — ACCEPTED / COMPLETE**
+- Next item: **Step 5.2 — Durable Dispatch Attempt Ledger**
 - Phase 1 status: **ACCEPTED / COMPLETE**
 - Phase 2 status: **ACCEPTED / COMPLETE**
 - Phase 3 status: **ACCEPTED / COMPLETE**
 - Phase 4 status: **ACCEPTED / COMPLETE**
+- Phase 5 status: **IN PROGRESS**
 - V0.1 status: **ACCEPTED / COMPLETE**
 - V0.2 status: **ACCEPTED / COMPLETE**
 - V0.3 status: **ACCEPTED / COMPLETE**
-- V1.0 status: **ACCEPTED**
+- V1.0 status: **ACCEPTED / COMPLETE**
+- V1.1 status: **IN PROGRESS**
 
 Frozen project principle:
 
 > **Agents propose; evidence decides.**
+
+Frozen V1.1 principle:
+
+> **Recovery may restore execution liveness from durable facts; it may not create, rewrite, or guess runtime truth.**
 
 ---
 
@@ -311,11 +317,11 @@ Frozen Step 4.8 boundary:
 
 ---
 
-# V1.0 — ACCEPTED
+# V1.0 — ACCEPTED / COMPLETE
 
 With Steps 4.1 through 4.8 accepted, **Phase 4 — V1.0 Productization is ACCEPTED / COMPLETE**.
 
-V1.0 now provides one coherent evidence-driven product path:
+V1.0 provides one coherent evidence-driven product path:
 
 ```text
 browser request
@@ -345,4 +351,82 @@ versioned benchmark/demo evaluation
 
 No browser state, benchmark aggregate, LLM self-report, event message, or publication result can replace the accepted runtime evidence chain.
 
-Post-V1.0 work requires a new deliberately scoped roadmap item rather than silently extending Phase 4.
+---
+
+# Phase 5 — V1.1 Durable Agent Runtime — IN PROGRESS
+
+Phase 5 is a deliberately separate Post-V1.0 roadmap. It strengthens long-running execution and crash recovery instead of extending the V1.0 productization scope.
+
+| Step | Capability | Status | Acceptance snapshot |
+| --- | --- | --- | --- |
+| 5.1 | Recovery State Classifier | **ACCEPTED / COMPLETE** | typed read-only durable recovery projection; implementation head `b4503968310cdc3e5e0cd27bfa062abfc5b253f9`; Backend 377 tests + 5/5 V1 demos |
+| 5.2 | Durable Dispatch Attempt Ledger | **NEXT / NOT STARTED** | — |
+| 5.3 | Idempotent Task Reconciler | **NOT STARTED** | — |
+| 5.4 | DAG-wide Run Reconciliation | **NOT STARTED** | — |
+| 5.5 | Durable Human Pause / Resume | **NOT STARTED** | — |
+| 5.6 | Causal Trace Correlation | **NOT STARTED** | — |
+| 5.7 | Operator Recovery / Approval Surface | **NOT STARTED** | — |
+| 5.8 | Chaos / Recovery Benchmark + V1.1 Acceptance | **NOT STARTED** | — |
+
+## Step 5.1 — Recovery State Classifier — ACCEPTED / COMPLETE
+
+Accepted architecture:
+
+```text
+PersistedRunSnapshot
+        +
+TaskLeaseSnapshot
+        +
+validated WORKER_EXECUTION / DISPATCH_EVENT evidence
+        ↓
+RecoveryStateClassifier
+        ↓
+TaskRecoveryAssessment
+        ↓
+RunRecoveryPlan
+```
+
+Accepted dispositions:
+
+```text
+NO_ACTION_RUN_TERMINAL
+WAIT_ACTIVE_OWNER
+RESUME_FROM_TERMINAL_EVIDENCE
+REDISPATCH_CANDIDATE_EXPIRED_GENERATION
+BLOCKED_UNOWNED_DISPATCH_AMBIGUITY
+BLOCKED_RELEASED_EVIDENCE_GAP
+```
+
+Step 5.1 performs no enqueue, lease mutation, evidence append, scheduler transition, Git mutation, Run finalization, or GitHub publication. A redispatch candidate remains a diagnosis only; future mutation requires fresh locked PostgreSQL revalidation.
+
+The final PostgreSQL integration hardening proves `RecoveryInspector` composes the real `PostgresEvidenceStore` and `PostgresTaskLeaseStore` without modifying Run truth, runtime events, lease ownership, generation, dispatch identity, or lifecycle timestamps.
+
+Implementation-head Backend Quality evidence:
+
+- exact head: `b4503968310cdc3e5e0cd27bfa062abfc5b253f9`;
+- PostgreSQL + Redis: **PASS**;
+- Alembic round trip: **PASS**;
+- verifier image: **PASS**;
+- Ruff: **PASS**;
+- V1 fixture validation: **PASS**;
+- deterministic control-plane demos: **5 / 5 PASS**;
+- pytest: **377 passed in 35.41s**.
+
+Design / acceptance:
+
+- `docs/V1_1_ROADMAP.md`
+- `docs/DURABLE_RECOVERY.md`
+- `docs/STEP_5_1_ACCEPTANCE.md`
+
+Next authority gap:
+
+```text
+RUNNING task
++ UNOWNED lease
+        ↓
+never dispatched ?
+        or
+broker accepted but worker has not acquired ownership ?
+```
+
+Step 5.2 must close that ambiguity with a durable dispatch-attempt ledger without pretending PostgreSQL can prove Redis delivery.
