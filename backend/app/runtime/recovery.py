@@ -72,6 +72,11 @@ class RecoveryStateClassifier:
             snapshot=snapshot,
             known_task_ids=set(task_ids),
         )
+        self._validate_unowned_worker_evidence(
+            lease_by_task=lease_by_task,
+            worker_evidence=worker_evidence,
+            dispatch_events=dispatch_events,
+        )
 
         assessments: list[TaskRecoveryAssessment] = []
         for task_id in task_ids:
@@ -190,15 +195,27 @@ class RecoveryStateClassifier:
         for task_id, task_dispatches in dispatches.items():
             task_workers = workers.get(task_id, {})
             for dispatch_id, phases in task_dispatches.items():
-                if (
-                    WorkerDispatchPhase.COMPLETED in phases
-                    and dispatch_id not in task_workers
-                ):
+                if WorkerDispatchPhase.COMPLETED in phases and dispatch_id not in task_workers:
                     raise PersistenceCorruptionError(
                         "COMPLETED dispatch evidence exists without terminal WORKER_EXECUTION "
                         f"evidence for dispatch {dispatch_id}"
                     )
         return workers, dispatches
+
+    @staticmethod
+    def _validate_unowned_worker_evidence(
+        *,
+        lease_by_task: dict[str, TaskLeaseSnapshot],
+        worker_evidence: dict[str, dict[UUID, tuple[int, WorkerExecutionEvidence]]],
+        dispatch_events: dict[str, dict[UUID, dict[WorkerDispatchPhase, int]]],
+    ) -> None:
+        for task_id, lease in lease_by_task.items():
+            if lease.state is not TaskLeaseState.UNOWNED:
+                continue
+            if worker_evidence.get(task_id) or dispatch_events.get(task_id):
+                raise PersistenceCorruptionError(
+                    f"UNOWNED task {task_id!r} contains worker-side evidence"
+                )
 
     @staticmethod
     def _validated_task_scope(

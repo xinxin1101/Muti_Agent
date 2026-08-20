@@ -46,15 +46,20 @@ class TaskRecoveryAssessment(BaseModel):
         )
         if (worker_values[0] is None) != (worker_values[1] is None):
             raise ValueError(
-                "worker execution status and evidence id must either both be present or both be absent"
+                "worker execution status and evidence id must either both be present "
+                "or both be absent"
             )
 
         if self.lease_state is TaskLeaseState.UNOWNED:
             if self.lease_generation != 0 or self.lease_dispatch_id is not None:
-                raise ValueError("UNOWNED recovery assessments require generation zero and no dispatch")
+                raise ValueError(
+                    "UNOWNED recovery assessments require generation zero and no dispatch"
+                )
         else:
             if self.lease_generation < 1 or self.lease_dispatch_id is None:
-                raise ValueError("owned recovery assessments require generation and dispatch identity")
+                raise ValueError(
+                    "owned recovery assessments require generation and dispatch identity"
+                )
 
         if self.disposition is RecoveryDisposition.WAIT_ACTIVE_OWNER:
             if self.lease_state is not TaskLeaseState.ACTIVE:
@@ -70,7 +75,9 @@ class TaskRecoveryAssessment(BaseModel):
                     "REDISPATCH_CANDIDATE_EXPIRED_GENERATION requires an EXPIRED lease"
                 )
             if self.worker_execution_status is not None:
-                raise ValueError("redispatch candidates must not already have terminal worker evidence")
+                raise ValueError(
+                    "redispatch candidates must not already have terminal worker evidence"
+                )
         elif self.disposition is RecoveryDisposition.BLOCKED_UNOWNED_DISPATCH_AMBIGUITY:
             if self.lease_state is not TaskLeaseState.UNOWNED:
                 raise ValueError("unowned dispatch ambiguity requires an UNOWNED lease")

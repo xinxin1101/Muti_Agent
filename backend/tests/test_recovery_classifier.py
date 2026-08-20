@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -28,7 +28,7 @@ from app.persistence.types import (
 )
 from app.runtime import RecoveryStateClassifier
 
-_NOW = datetime(2026, 8, 20, 6, 0, tzinfo=timezone.utc)
+_NOW = datetime(2026, 8, 20, 6, 0, tzinfo=UTC)
 _BASE_COMMIT = "a" * 40
 
 
@@ -197,6 +197,25 @@ def test_terminal_run_is_never_reopened_by_recovery() -> None:
     plan = _classify(snapshot, lease)
 
     assert plan.tasks[0].disposition is RecoveryDisposition.NO_ACTION_RUN_TERMINAL
+
+
+def test_terminal_run_still_fails_closed_on_unowned_worker_evidence() -> None:
+    run_id = uuid4()
+    dispatch_id = uuid4()
+    execution = _success_execution(
+        run_id=run_id,
+        task_id="RECOVERY-1",
+        dispatch_id=dispatch_id,
+    )
+    snapshot = _run(
+        run_id=run_id,
+        status=PersistedRunStatus.SUCCEEDED,
+        evidence=(_worker_evidence(execution),),
+    )
+    lease = _lease(run_id=run_id, state=TaskLeaseState.UNOWNED)
+
+    with pytest.raises(PersistenceCorruptionError, match="UNOWNED task"):
+        _classify(snapshot, lease)
 
 
 def test_active_owner_is_never_declared_recoverable() -> None:
