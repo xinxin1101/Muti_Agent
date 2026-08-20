@@ -22,6 +22,7 @@ from app.models.dispatch import (
 from app.models.failure import FailureReport, FailureSource, FailureType
 from app.models.lease import TaskLeaseSnapshot
 from app.models.run import SingleTaskRunResult, TaskRunState
+from app.models.run_reconciliation import TaskExecutionBase
 from app.models.task import TaskContract
 from app.persistence import PersistenceEvidenceKind
 from app.persistence.types import PersistedRunSnapshot, PersistedRunStatus
@@ -88,6 +89,15 @@ class WorkerEvidenceStore(Protocol):
         result: SingleTaskRunResult,
         run_token: UUID | None = None,
     ) -> None: ...
+
+
+class QueuedTaskExecutionBaseResolver(Protocol):
+    async def resolve(
+        self,
+        *,
+        snapshot: PersistedRunSnapshot,
+        task_id: str,
+    ) -> TaskExecutionBase: ...
 
 
 class ManagedProjectWorkspaceResolver:
@@ -271,9 +281,11 @@ class QueuedTaskWorker:
         *,
         store: WorkerEvidenceStore,
         backend: QueuedTaskExecutionBackend,
+        execution_base_resolver: QueuedTaskExecutionBaseResolver | None = None,
     ) -> None:
         self._store = store
         self._backend = backend
+        self._execution_base_resolver = execution_base_resolver
 
     async def execute(
         self,
@@ -286,6 +298,7 @@ class QueuedTaskWorker:
             raise WorkerExecutionBoundaryError("worker may execute only persisted RUNNING runs")
 
         task = self._task_from_snapshot(snapshot, envelope.task_id)
+        execution_base = await self._resolve_execution_base(snapshot, envelope.task_id)
         await self._record_dispatch_event(
             envelope,
             run_token=run_token,
@@ -298,7 +311,7 @@ class QueuedTaskWorker:
             run_id=snapshot.run_id,
             dispatch_id=envelope.dispatch_id,
             run_token=run_token,
-            base_commit=snapshot.base_commit,
+            base_commit=execution_base,
         )
         execution = raw_execution
         await self._persist_runtime_result(envelope, execution.run_result, run_token=run_token)
@@ -338,6 +351,27 @@ class QueuedTaskWorker:
                 run_token=run_token,
             )
         return execution
+
+    async def _resolve_execution_base(
+        self,
+        snapshot: PersistedRunSnapshot,
+        task_id: str,
+    ) -> str:
+        if self._execution_base_resolver is not None:
+            resolved = await self._execution_base_resolver.resolve(
+                snapshot=snapshot,
+                task_id=task_id,
+            )
+            if resolved.run_id != snapshot.run_id or resolved.task_id != task_id:
+                raise WorkerExecutionBoundaryError(
+                    "queued execution-base resolver returned mismatched Run/Task identity"
+                )
+            return resolved.commit_sha
+        if len(snapshot.tasks) != 1:
+            raise WorkerExecutionBoundaryError(
+                "multi-task queued execution requires an evidence-bound DAG execution-base resolver"
+            )
+        return snapshot.base_commit
 
     @staticmethod
     def _task_from_snapshot(snapshot: PersistedRunSnapshot, task_id: str) -> TaskContract:
