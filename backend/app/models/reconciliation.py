@@ -6,6 +6,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.models.dispatch import TaskDispatchReceipt
 from app.models.dispatch_attempt import PersistedDispatchAttempt
 
 
@@ -55,4 +56,28 @@ class TaskReconciliationDecision(BaseModel):
             raise ValueError("only a newly PREPARED_DISPATCH may authorize broker publication")
         if self.recovery_attempt:
             raise ValueError("only a newly PREPARED_DISPATCH may be marked as a recovery attempt")
+        return self
+
+
+class TaskReconciliationOutcome(BaseModel):
+    """Result returned by the reconciler after any authorized publication observation is durable."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    decision: TaskReconciliationDecision
+    receipt: TaskDispatchReceipt | None = None
+
+    @model_validator(mode="after")
+    def validate_outcome(self) -> TaskReconciliationOutcome:
+        if self.receipt is None:
+            return self
+        if self.decision.action is not TaskReconciliationAction.PREPARED_DISPATCH:
+            raise ValueError("only PREPARED_DISPATCH reconciliation may return a broker receipt")
+        if self.receipt.run_id != self.decision.run_id:
+            raise ValueError("reconciliation receipt Run identity mismatch")
+        if self.receipt.task_id != self.decision.task_id:
+            raise ValueError("reconciliation receipt Task identity mismatch")
+        attempt = self.decision.dispatch_attempt
+        if attempt is None or self.receipt.dispatch_id != attempt.dispatch_id:
+            raise ValueError("reconciliation receipt dispatch identity mismatch")
         return self
