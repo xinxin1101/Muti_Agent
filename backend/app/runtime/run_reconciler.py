@@ -172,7 +172,8 @@ class DAGRunReconciliationPlanner:
                     reconcile_task_ids.append(task_id)
             else:
                 raise PersistenceCorruptionError(
-                    f"unsupported lease state for DAG reconciliation: {assessment.lease_state.value}"
+                    "unsupported lease state for DAG reconciliation: "
+                    f"{assessment.lease_state.value}"
                 )
 
             records.append(
@@ -217,7 +218,9 @@ class DAGRunReconciliationPlanner:
         if persisted_dag.run_id != snapshot.run_id or recovery.run_id != snapshot.run_id:
             raise PersistenceCorruptionError("DAG reconciliation Run identities disagree")
         if recovery.run_status != snapshot.status.value:
-            raise PersistenceCorruptionError("recovery plan Run status disagrees with persisted Run")
+            raise PersistenceCorruptionError(
+                "recovery plan Run status disagrees with persisted Run"
+            )
         snapshot_task_ids = {item.task.task_id for item in snapshot.tasks}
         dag_task_ids = set(persisted_dag.dag.task_ids)
         recovery_task_ids = {item.task_id for item in recovery.tasks}
