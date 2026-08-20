@@ -7,10 +7,21 @@ from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
+from dramatiq.errors import BrokerConnectionError
 from sqlalchemy import select
 
-from app.models import TaskContract, TaskReconciliationAction
+from app.dispatch import TaskDispatchBrokerError
+from app.models import (
+    RunEvent,
+    SingleTaskRunResult,
+    TaskContract,
+    TaskReconciliationAction,
+    TaskRunState,
+    WorkerExecutionEvidence,
+    WorkerExecutionStatus,
+)
 from app.persistence import (
+    PersistenceEvidenceKind,
     PostgresDispatchAttemptStore,
     PostgresEvidenceStore,
     PostgresTaskLeaseStore,
@@ -76,6 +87,33 @@ async def _expire_current_generation(database_url: str, run_id: UUID, task_id: s
         await engine.dispose()
 
 
+def _success_execution(
+    *,
+    run_id: UUID,
+    task_id: str,
+    dispatch_id: UUID,
+) -> WorkerExecutionEvidence:
+    result = SingleTaskRunResult(
+        task_id=task_id,
+        status=TaskRunState.SUCCEEDED,
+        events=[
+            RunEvent(sequence=0, state=TaskRunState.PENDING, detail="Created."),
+            RunEvent(sequence=1, state=TaskRunState.SUCCEEDED, detail="Completed."),
+        ],
+    )
+    return WorkerExecutionEvidence(
+        dispatch_id=dispatch_id,
+        run_id=run_id,
+        task_id=task_id,
+        status=WorkerExecutionStatus.SUCCEEDED,
+        base_commit="a" * 40,
+        branch_name="devflow/reconciliation-terminal",
+        commit_sha="b" * 40,
+        run_result=result,
+        duration_ms=25,
+    )
+
+
 class _AckActor:
     queue_name = "devflow_tasks"
 
@@ -87,6 +125,17 @@ class _AckActor:
         self.calls += 1
         self.payloads.append(payload)
         return SimpleNamespace(message_id=f"reconcile-message-{self.calls}")
+
+
+class _UnavailableActor:
+    queue_name = "devflow_tasks"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def send(self, _payload):
+        self.calls += 1
+        raise BrokerConnectionError("simulated reconciliation broker failure")
 
 
 def test_unowned_reconciliation_is_idempotent_under_concurrency() -> None:
@@ -246,5 +295,106 @@ async def _active_generation_never_redispatches() -> None:
     finally:
         await reconciler.dispose()
         await lease_store.dispose()
+        await dispatch_store.dispose()
+        await evidence_store.dispose()
+
+
+def test_terminal_worker_evidence_is_resumed_without_rerun() -> None:
+    asyncio.run(_terminal_worker_evidence_is_resumed_without_rerun())
+
+
+async def _terminal_worker_evidence_is_resumed_without_rerun() -> None:
+    database_url = _database_url()
+    evidence_store = PostgresEvidenceStore.from_url(database_url)
+    dispatch_store = PostgresDispatchAttemptStore.from_url(database_url)
+    lease_store = PostgresTaskLeaseStore.from_url(database_url)
+    reconciliation_store = PostgresTaskReconciliationStore.from_url(database_url)
+    actor = _AckActor()
+    reconciler = IdempotentTaskReconciler(store=reconciliation_store, actor=actor)
+    try:
+        task = _task("TERMINAL-RESUME")
+        run_id = await _new_run(evidence_store, task)
+        dispatch_id = uuid4()
+        await dispatch_store.begin_initial_attempt(
+            dispatch_id=dispatch_id,
+            run_id=run_id,
+            task_id=task.task_id,
+        )
+        await dispatch_store.mark_enqueued(
+            dispatch_id=dispatch_id,
+            run_id=run_id,
+            task_id=task.task_id,
+            broker_message_id="terminal-message",
+            queue_name="devflow_tasks",
+        )
+        grant = await lease_store.acquire_task_lease(
+            run_id=run_id,
+            task_id=task.task_id,
+            owner_id="terminal-worker",
+            dispatch_id=dispatch_id,
+            lease_seconds=60,
+        )
+        execution = _success_execution(
+            run_id=run_id,
+            task_id=task.task_id,
+            dispatch_id=dispatch_id,
+        )
+        evidence_id = await evidence_store.append_evidence(
+            run_id=run_id,
+            task_id=task.task_id,
+            evidence_key=f"reconciliation:{dispatch_id}:execution",
+            kind=PersistenceEvidenceKind.WORKER_EXECUTION,
+            payload_model=execution,
+            stage="worker",
+            run_token=grant.run_token,
+        )
+
+        outcome = await reconciler.reconcile(run_id=run_id, task_id=task.task_id)
+
+        assert outcome.receipt is None
+        assert outcome.decision.action is TaskReconciliationAction.RESUME_TERMINAL_EVIDENCE
+        assert outcome.decision.terminal_worker_evidence_id == evidence_id
+        assert actor.calls == 0
+        attempts = await dispatch_store.list_for_task(run_id=run_id, task_id=task.task_id)
+        assert len(attempts) == 1
+    finally:
+        await reconciler.dispose()
+        await lease_store.dispose()
+        await dispatch_store.dispose()
+        await evidence_store.dispose()
+
+
+def test_publish_failed_attempt_is_not_implicitly_republished() -> None:
+    asyncio.run(_publish_failed_attempt_is_not_implicitly_republished())
+
+
+async def _publish_failed_attempt_is_not_implicitly_republished() -> None:
+    database_url = _database_url()
+    evidence_store = PostgresEvidenceStore.from_url(database_url)
+    dispatch_store = PostgresDispatchAttemptStore.from_url(database_url)
+    reconciliation_store = PostgresTaskReconciliationStore.from_url(database_url)
+    actor = _UnavailableActor()
+    reconciler = IdempotentTaskReconciler(store=reconciliation_store, actor=actor)
+    try:
+        task = _task("PUBLISH-FAILED")
+        run_id = await _new_run(evidence_store, task)
+
+        with pytest.raises(TaskDispatchBrokerError, match="broker could not accept"):
+            await reconciler.reconcile(run_id=run_id, task_id=task.task_id)
+
+        assert actor.calls == 1
+        attempts = await dispatch_store.list_for_task(run_id=run_id, task_id=task.task_id)
+        assert len(attempts) == 1
+        assert attempts[0].state.value == "PUBLISH_FAILED"
+
+        outcome = await reconciler.reconcile(run_id=run_id, task_id=task.task_id)
+
+        assert outcome.receipt is None
+        assert outcome.decision.action is TaskReconciliationAction.BLOCKED_PUBLISH_FAILED
+        assert actor.calls == 1
+        repeated = await dispatch_store.list_for_task(run_id=run_id, task_id=task.task_id)
+        assert repeated == attempts
+    finally:
+        await reconciler.dispose()
         await dispatch_store.dispose()
         await evidence_store.dispose()
