@@ -5,8 +5,8 @@ This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The developmen
 ## Current position
 
 - Current phase: **Phase 5 — V1.1 Durable Agent Runtime — IN PROGRESS**
-- Completed item: **Step 5.1 — Recovery State Classifier — ACCEPTED / COMPLETE**
-- Next item: **Step 5.2 — Durable Dispatch Attempt Ledger**
+- Completed item: **Step 5.2 — Durable Dispatch Attempt Ledger — ACCEPTED / COMPLETE**
+- Next item: **Step 5.3 — Idempotent Task Reconciler**
 - Phase 1 status: **ACCEPTED / COMPLETE**
 - Phase 2 status: **ACCEPTED / COMPLETE**
 - Phase 3 status: **ACCEPTED / COMPLETE**
@@ -360,8 +360,8 @@ Phase 5 is a deliberately separate Post-V1.0 roadmap. It strengthens long-runnin
 | Step | Capability | Status | Acceptance snapshot |
 | --- | --- | --- | --- |
 | 5.1 | Recovery State Classifier | **ACCEPTED / COMPLETE** | typed read-only durable recovery projection; implementation head `b4503968310cdc3e5e0cd27bfa062abfc5b253f9`; Backend 377 tests + 5/5 V1 demos |
-| 5.2 | Durable Dispatch Attempt Ledger | **NEXT / NOT STARTED** | — |
-| 5.3 | Idempotent Task Reconciler | **NOT STARTED** | — |
+| 5.2 | Durable Dispatch Attempt Ledger | **ACCEPTED / COMPLETE** | PostgreSQL-first REQUESTED/ENQUEUED/PUBLISH_FAILED ledger; crash ambiguity preserved; implementation head `30e92051aeae00e674010b66ecb8da329c793e0a`; Backend 380 tests + 5/5 V1 demos |
+| 5.3 | Idempotent Task Reconciler | **NEXT / NOT STARTED** | — |
 | 5.4 | DAG-wide Run Reconciliation | **NOT STARTED** | — |
 | 5.5 | Durable Human Pause / Resume | **NOT STARTED** | — |
 | 5.6 | Causal Trace Correlation | **NOT STARTED** | — |
@@ -418,15 +418,69 @@ Design / acceptance:
 - `docs/DURABLE_RECOVERY.md`
 - `docs/STEP_5_1_ACCEPTANCE.md`
 
-Next authority gap:
+## Step 5.2 — Durable Dispatch Attempt Ledger — ACCEPTED / COMPLETE
+
+Accepted architecture:
 
 ```text
-RUNNING task
-+ UNOWNED lease
+persisted RUNNING Run + Task
         ↓
-never dispatched ?
-        or
-broker accepted but worker has not acquired ownership ?
+PostgreSQL REQUESTED
+        ↓ commit before broker
+Dramatiq actor.send(stable dispatch_id)
+        ↓
+┌────────────────────────────┬──────────────────────────────┐
+│ acknowledgement observed   │ BrokerConnectionError        │
+↓                            ↓
+ENQUEUED                     PUBLISH_FAILED
 ```
 
-Step 5.2 must close that ambiguity with a durable dispatch-attempt ledger without pretending PostgreSQL can prove Redis delivery.
+If a process crashes after the broker may have accepted the message but before PostgreSQL can record the acknowledgement, the durable row remains `REQUESTED`. That state is an explicit unknown publication outcome, not a fabricated failure and not retry authorization.
+
+Accepted guarantees:
+
+- one stable `dispatch_id` per publication attempt;
+- PostgreSQL intent is committed before broker publication;
+- ordinary dispatch creates only attempt 1;
+- competing initial attempts for one Task serialize and fail closed;
+- exact ENQUEUED replay reconstructs a receipt without a second broker call;
+- REQUESTED/PUBLISH_FAILED replay never calls the broker implicitly;
+- terminal broker/failure facts are immutable;
+- known broker failure is durable but is not treated as proof of non-delivery;
+- PostgreSQL/Redis atomicity and exactly-once delivery are explicitly not claimed.
+
+Implementation-head acceptance evidence:
+
+- exact head: `30e92051aeae00e674010b66ecb8da329c793e0a`;
+- PostgreSQL + Redis: **PASS**;
+- Alembic `0001 → 0007 → base → 0007`: **PASS**;
+- verifier image: **PASS**;
+- Ruff: **PASS**;
+- V1 fixture validation: **PASS**;
+- deterministic control-plane demos: **5 / 5 PASS**;
+- pytest: **380 passed in 28.15s**;
+- Frontend Quality: **PASS**;
+- PR #35 review threads at acceptance: **0 unresolved**.
+
+Design / acceptance:
+
+- `docs/DURABLE_DISPATCH_LEDGER.md`
+- `docs/STEP_5_2_ACCEPTANCE.md`
+
+Frozen Step 5.2 boundary:
+
+> **PostgreSQL records dispatch intent and observed publication outcomes; it never pretends to be an atomic transaction with Redis.**
+
+Next authority transition:
+
+```text
+read-only recovery candidate
+        +
+durable dispatch-attempt history
+        ↓
+fresh locked PostgreSQL revalidation
+        ↓
+Step 5.3 may allocate a new recovery attempt only when safe
+```
+
+Step 5.3 is the first recovery phase allowed to mutate runtime state. It must not treat a stale recovery plan, a `REQUESTED` dual-write ambiguity, or a broker failure observation as standalone authorization for redispatch.
