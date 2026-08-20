@@ -5,8 +5,8 @@ This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The developmen
 ## Current position
 
 - Current phase: **Phase 5 — V1.1 Durable Agent Runtime — IN PROGRESS**
-- Completed item: **Step 5.2 — Durable Dispatch Attempt Ledger — ACCEPTED / COMPLETE**
-- Next item: **Step 5.3 — Idempotent Task Reconciler**
+- Completed item: **Step 5.3 — Idempotent Task Reconciler — ACCEPTED / COMPLETE**
+- Next item: **Step 5.4 — DAG-wide Run Reconciliation**
 - Phase 1 status: **ACCEPTED / COMPLETE**
 - Phase 2 status: **ACCEPTED / COMPLETE**
 - Phase 3 status: **ACCEPTED / COMPLETE**
@@ -361,8 +361,8 @@ Phase 5 is a deliberately separate Post-V1.0 roadmap. It strengthens long-runnin
 | --- | --- | --- | --- |
 | 5.1 | Recovery State Classifier | **ACCEPTED / COMPLETE** | typed read-only durable recovery projection; implementation head `b4503968310cdc3e5e0cd27bfa062abfc5b253f9`; Backend 377 tests + 5/5 V1 demos |
 | 5.2 | Durable Dispatch Attempt Ledger | **ACCEPTED / COMPLETE** | PostgreSQL-first REQUESTED/ENQUEUED/PUBLISH_FAILED ledger; crash ambiguity preserved; implementation head `30e92051aeae00e674010b66ecb8da329c793e0a`; Backend 380 tests + 5/5 V1 demos |
-| 5.3 | Idempotent Task Reconciler | **NEXT / NOT STARTED** | — |
-| 5.4 | DAG-wide Run Reconciliation | **NOT STARTED** | — |
+| 5.3 | Idempotent Task Reconciler | **ACCEPTED / COMPLETE** | fresh locked prepare + publication revalidation; concurrent one-send; generation N→N+1 remains lease-owned; implementation head `0d7586405853f19923b906b782ac6ab167886ffe`; Backend 385 tests + 5/5 V1 demos |
+| 5.4 | DAG-wide Run Reconciliation | **NEXT / NOT STARTED** | — |
 | 5.5 | Durable Human Pause / Resume | **NOT STARTED** | — |
 | 5.6 | Causal Trace Correlation | **NOT STARTED** | — |
 | 5.7 | Operator Recovery / Approval Surface | **NOT STARTED** | — |
@@ -471,16 +471,73 @@ Frozen Step 5.2 boundary:
 
 > **PostgreSQL records dispatch intent and observed publication outcomes; it never pretends to be an atomic transaction with Redis.**
 
+## Step 5.3 — Idempotent Task Reconciler — ACCEPTED / COMPLETE
+
+Accepted architecture:
+
+```text
+recovery candidate
+        ↓
+Txn A: lock + fresh DB-time revalidation
+        ↓
+durable REQUESTED
+        ↓ commit
+Txn B: re-lock + fresh revalidation
+        ↓
+hold authority locks across broker send
+        ↓
+ENQUEUED / PUBLISH_FAILED
+```
+
+Accepted guarantees:
+
+- a stale Step 5.1 diagnosis is never mutation authorization;
+- concurrent reconcilers publish at most one fresh dispatch for one Task;
+- ACTIVE owners are never raced by recovery;
+- EXPIRED generations without terminal worker evidence receive at most one fresh dispatch identity;
+- existing REQUESTED/PUBLISH_FAILED histories are not implicitly republished;
+- accepted terminal worker evidence is resumed rather than rerun;
+- worker evidence must be hash-valid, typed, and bound to durable dispatch history;
+- recovered ownership still flows through `PostgresTaskLeaseStore.acquire_task_lease()`;
+- generation advances N → N+1 only through that existing lease authority;
+- generation N+1 receives a fresh `run_token`;
+- the previous token remains fenced after takeover;
+- failure injection preserves `lease_acquired_at < heartbeat_at < lease_until < observed_at`; production lease validation was not weakened.
+
+Implementation-head acceptance evidence:
+
+- exact head: `0d7586405853f19923b906b782ac6ab167886ffe`;
+- PostgreSQL + Redis: **PASS**;
+- Alembic `0001 → 0007 → base → 0007`: **PASS**;
+- verifier image: **PASS**;
+- Ruff: **PASS**;
+- V1 fixture validation: **PASS**;
+- deterministic control-plane demos: **5 / 5 PASS**;
+- pytest: **385 passed in 35.08s**;
+- Frontend Quality: **PASS**;
+- PR #36 review threads at implementation acceptance: **0 unresolved**.
+
+Design / acceptance:
+
+- `docs/IDEMPOTENT_RECONCILER.md`
+- `docs/STEP_5_3_ACCEPTANCE.md`
+
+Frozen Step 5.3 boundary:
+
+> **A recovery diagnosis may nominate work; only fresh locked PostgreSQL facts may authorize a new dispatch attempt.**
+
 Next authority transition:
 
 ```text
-read-only recovery candidate
+validated persisted DAG
         +
-durable dispatch-attempt history
+accepted terminal task facts
+        +
+fresh per-task ownership/recovery authority
         ↓
-fresh locked PostgreSQL revalidation
+Step 5.4 reconstructs the legal scheduling frontier
         ↓
-Step 5.3 may allocate a new recovery attempt only when safe
+actual dispatch remains delegated to Step 5.3
 ```
 
-Step 5.3 is the first recovery phase allowed to mutate runtime state. It must not treat a stale recovery plan, a `REQUESTED` dual-write ambiguity, or a broker failure observation as standalone authorization for redispatch.
+Step 5.4 must not become a second scheduler truth: completed dependencies must never rerun, downstream tasks become eligible only after all accepted dependencies succeed, and every mutation must retain Step 5.3's fresh per-Task revalidation.
