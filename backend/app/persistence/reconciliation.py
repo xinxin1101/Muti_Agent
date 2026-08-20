@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
+from datetime import datetime
 from uuid import UUID, uuid4
 
 from pydantic import SecretStr, ValidationError
@@ -19,15 +21,94 @@ from app.models.reconciliation import (
 )
 from app.persistence.database import create_postgres_engine, create_session_factory
 from app.persistence.dispatch import DispatchAttemptRow, PostgresDispatchAttemptStore
-from app.persistence.errors import PersistenceCorruptionError
+from app.persistence.errors import PersistenceConflictError, PersistenceCorruptionError
 from app.persistence.fencing import database_time
 from app.persistence.models import EvidenceRow, RunRow, TaskRow
 from app.persistence.serialization import verify_payload_hash
 from app.persistence.types import PersistedRunStatus, PersistenceEvidenceKind
 
 
+class PreparedDispatchPublication:
+    """One locked publication window over an already-durable REQUESTED attempt.
+
+    The owning PostgreSQL transaction keeps Run, Task, and dispatch-attempt rows locked while the
+    bounded broker publication occurs. Broker outcome facts are written through this object into
+    the same transaction. Unexpected exceptions roll this transaction back and leave the earlier
+    REQUESTED commit intact, preserving publication ambiguity instead of inventing an outcome.
+    """
+
+    def __init__(
+        self,
+        *,
+        session: AsyncSession,
+        row: DispatchAttemptRow,
+    ) -> None:
+        self._session = session
+        self._row = row
+        self._resolved = False
+
+    @property
+    def dispatch_id(self) -> UUID:
+        return self._row.dispatch_id
+
+    async def mark_enqueued(
+        self,
+        *,
+        broker_message_id: str,
+        queue_name: str,
+    ) -> PersistedDispatchAttempt:
+        if self._resolved or self._row.state != DispatchAttemptState.REQUESTED.value:
+            raise PersistenceConflictError("prepared dispatch publication is already resolved")
+        message_id = self._required_text(
+            broker_message_id,
+            "broker_message_id",
+            max_length=128,
+        )
+        queue = self._required_text(queue_name, "queue_name", max_length=128)
+        observed_at = await database_time(self._session)
+        self._row.state = DispatchAttemptState.ENQUEUED.value
+        self._row.broker_message_id = message_id
+        self._row.queue_name = queue
+        self._row.error_code = None
+        self._row.error_message = None
+        self._row.resolved_at = observed_at
+        self._row.updated_at = observed_at
+        await self._session.flush()
+        self._resolved = True
+        return PostgresDispatchAttemptStore._decode(self._row)
+
+    async def mark_publish_failed(
+        self,
+        *,
+        error_code: str,
+        error_message: str,
+    ) -> PersistedDispatchAttempt:
+        if self._resolved or self._row.state != DispatchAttemptState.REQUESTED.value:
+            raise PersistenceConflictError("prepared dispatch publication is already resolved")
+        code = self._required_text(error_code, "error_code", max_length=64)
+        message = self._required_text(error_message, "error_message", max_length=512)
+        observed_at = await database_time(self._session)
+        self._row.state = DispatchAttemptState.PUBLISH_FAILED.value
+        self._row.broker_message_id = None
+        self._row.queue_name = None
+        self._row.error_code = code
+        self._row.error_message = message
+        self._row.resolved_at = observed_at
+        self._row.updated_at = observed_at
+        await self._session.flush()
+        self._resolved = True
+        return PostgresDispatchAttemptStore._decode(self._row)
+
+    @staticmethod
+    def _required_text(value: str, label: str, *, max_length: int) -> str:
+        normalized = value.strip()
+        if not normalized or len(normalized) > max_length:
+            raise ValueError(f"{label} must contain 1-{max_length} characters")
+        return normalized
+
+
 class PostgresTaskReconciliationStore:
-    """Locked PostgreSQL authority for preparing one idempotent task recovery action."""
+    """Locked PostgreSQL authority for preparing and publishing one task recovery action."""
 
     def __init__(
         self,
@@ -210,6 +291,103 @@ class PostgresTaskReconciliationStore:
                 recovery_attempt=True,
             )
 
+    @asynccontextmanager
+    async def guard_prepared_publication(
+        self,
+        *,
+        run_id: UUID,
+        task_id: str,
+        dispatch_id: UUID,
+    ) -> AsyncIterator[PreparedDispatchPublication]:
+        """Revalidate a prepared attempt and hold authority locks across broker publication.
+
+        REQUESTED was committed by `prepare_task()` before entering this guard. This second
+        transaction closes the prepare/send TOCTOU window while retaining the PostgreSQL-first
+        dual-write invariant. If the process dies after broker acceptance, this transaction rolls
+        back and the earlier REQUESTED row remains the honest durable fact.
+        """
+
+        task_name = self._required_text(task_id, "task_id", max_length=128)
+        async with self._session_factory.begin() as session:
+            run = await self._locked_run(session, run_id)
+            task = await self._locked_task(session, run_id, task_name)
+            observed_at = await database_time(session)
+            self._validate_task_lease_shape(task)
+            if run.status != PersistedRunStatus.RUNNING.value:
+                raise PersistenceConflictError(
+                    "prepared reconciliation became stale because the Run is no longer RUNNING"
+                )
+
+            rows = await self._locked_attempt_rows(session, run_id=run_id, task_id=task_name)
+            attempts = tuple(PostgresDispatchAttemptStore._decode(row) for row in rows)
+            self._validate_attempt_history(attempts)
+            if not rows or rows[-1].dispatch_id != dispatch_id:
+                raise PersistenceConflictError(
+                    "prepared reconciliation is stale because a different latest dispatch exists"
+                )
+            target_row = rows[-1]
+            target = attempts[-1]
+            if target.state is not DispatchAttemptState.REQUESTED:
+                raise PersistenceConflictError(
+                    "prepared reconciliation dispatch is no longer unresolved REQUESTED intent"
+                )
+
+            worker_evidence, dispatch_events = await self._validated_worker_side_evidence(
+                session,
+                run_id=run_id,
+                task_id=task_name,
+                attempts=attempts,
+            )
+            if target.dispatch_id in worker_evidence or target.dispatch_id in dispatch_events:
+                raise PersistenceConflictError(
+                    "prepared dispatch already has worker-side evidence and cannot be published again"
+                )
+
+            if task.lease_owner is None:
+                if worker_evidence or dispatch_events:
+                    raise PersistenceCorruptionError(
+                        f"UNOWNED task {task_name!r} contains worker-side evidence"
+                    )
+                if len(attempts) != 1 or target.attempt_number != 1:
+                    raise PersistenceConflictError(
+                        "UNOWNED publication guard requires the unique initial dispatch attempt"
+                    )
+            else:
+                assert task.lease_dispatch_id is not None
+                current_attempt = self._attempt_for_dispatch(attempts, task.lease_dispatch_id)
+                if current_attempt is None:
+                    raise PersistenceCorruptionError(
+                        "owned task lease refers to a dispatch missing from the durable ledger"
+                    )
+                if worker_evidence.get(task.lease_dispatch_id) is not None:
+                    raise PersistenceConflictError(
+                        "terminal worker evidence arrived after recovery prepare; rerun is forbidden"
+                    )
+                if task.lease_released_at is not None:
+                    raise PersistenceConflictError(
+                        "prepared recovery became stale because lease ownership is RELEASED"
+                    )
+                assert task.lease_until is not None
+                if task.lease_until > observed_at:
+                    raise PersistenceConflictError(
+                        "prepared recovery became stale because the prior generation is ACTIVE"
+                    )
+                if target.attempt_number != current_attempt.attempt_number + 1:
+                    raise PersistenceConflictError(
+                        "prepared recovery attempt is not exactly one generation-attempt ahead"
+                    )
+                newer = [
+                    attempt
+                    for attempt in attempts
+                    if attempt.attempt_number > current_attempt.attempt_number
+                ]
+                if len(newer) != 1 or newer[0].dispatch_id != target.dispatch_id:
+                    raise PersistenceConflictError(
+                        "prepared recovery no longer uniquely represents the next dispatch attempt"
+                    )
+
+            yield PreparedDispatchPublication(session=session, row=target_row)
+
     async def _validated_worker_side_evidence(
         self,
         session: AsyncSession,
@@ -302,7 +480,7 @@ class PostgresTaskReconciliationStore:
         *,
         run_id: UUID,
         task: TaskRow,
-        observed_at,
+        observed_at: datetime,
         attempt: PersistedDispatchAttempt,
         reason_prefix: str,
     ) -> TaskReconciliationDecision:
@@ -330,13 +508,13 @@ class PostgresTaskReconciliationStore:
             dispatch_attempt=attempt,
         )
 
-    async def _locked_attempts(
+    async def _locked_attempt_rows(
         self,
         session: AsyncSession,
         *,
         run_id: UUID,
         task_id: str,
-    ) -> tuple[PersistedDispatchAttempt, ...]:
+    ) -> tuple[DispatchAttemptRow, ...]:
         rows = (
             await session.execute(
                 select(DispatchAttemptRow)
@@ -348,6 +526,16 @@ class PostgresTaskReconciliationStore:
                 .with_for_update()
             )
         ).scalars().all()
+        return tuple(rows)
+
+    async def _locked_attempts(
+        self,
+        session: AsyncSession,
+        *,
+        run_id: UUID,
+        task_id: str,
+    ) -> tuple[PersistedDispatchAttempt, ...]:
+        rows = await self._locked_attempt_rows(session, run_id=run_id, task_id=task_id)
         return tuple(PostgresDispatchAttemptStore._decode(row) for row in rows)
 
     @staticmethod
@@ -395,7 +583,7 @@ class PostgresTaskReconciliationStore:
         run_id: UUID,
         task_id: str,
         attempt_number: int,
-        observed_at,
+        observed_at: datetime,
     ) -> PersistedDispatchAttempt:
         row = DispatchAttemptRow(
             dispatch_id=uuid4(),
@@ -441,7 +629,7 @@ class PostgresTaskReconciliationStore:
         *,
         run_id: UUID,
         task: TaskRow,
-        observed_at,
+        observed_at: datetime,
         action: TaskReconciliationAction,
         reason: str,
         terminal_worker_evidence_id: int | None = None,
