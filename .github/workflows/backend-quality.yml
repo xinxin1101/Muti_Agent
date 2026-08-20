@@ -22,6 +22,9 @@ on:
       - "docs/STEP_4_7_ACCEPTANCE.md"
       - "docs/BENCHMARK_DEMO_SUITE.md"
       - "docs/STEP_4_8_ACCEPTANCE.md"
+      - "docs/V1_1_ROADMAP.md"
+      - "docs/DURABLE_RECOVERY.md"
+      - "docs/STEP_5_1_ACCEPTANCE.md"
       - "docs/PROGRESS.md"
       - ".github/workflows/backend-quality.yml"
   pull_request:
@@ -44,6 +47,9 @@ on:
       - "docs/STEP_4_7_ACCEPTANCE.md"
       - "docs/BENCHMARK_DEMO_SUITE.md"
       - "docs/STEP_4_8_ACCEPTANCE.md"
+      - "docs/V1_1_ROADMAP.md"
+      - "docs/DURABLE_RECOVERY.md"
+      - "docs/STEP_5_1_ACCEPTANCE.md"
       - "docs/PROGRESS.md"
       - ".github/workflows/backend-quality.yml"
 
