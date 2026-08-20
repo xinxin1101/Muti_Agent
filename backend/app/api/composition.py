@@ -3,9 +3,10 @@ from __future__ import annotations
 from app.api.catalog import PostgresProductCatalog
 from app.api.github_publication import ProductRuntimeServiceWithGitHubPublication
 from app.core.settings import Settings
-from app.dispatch import DramatiqTaskDispatcher
+from app.dispatch import DurableDramatiqTaskDispatcher
 from app.persistence import (
     PostgresDAGStore,
+    PostgresDispatchAttemptStore,
     PostgresEvidenceStore,
     PostgresGitHubPublicationStore,
 )
@@ -28,6 +29,10 @@ def build_product_service(settings: Settings) -> ProductRuntimeServiceWithGitHub
         settings.database_url,
         echo=settings.database_echo,
     )
+    dispatch_store = PostgresDispatchAttemptStore.from_url(
+        settings.database_url,
+        echo=settings.database_echo,
+    )
     publication_store = PostgresGitHubPublicationStore.from_url(
         settings.database_url,
         echo=settings.database_echo,
@@ -39,7 +44,11 @@ def build_product_service(settings: Settings) -> ProductRuntimeServiceWithGitHub
     repository_root = settings.workspace_root / "repos"
     provisioner = ManagedProjectProvisioner(repository_root)
     resolver = ManagedProjectWorkspaceResolver(repository_root)
-    dispatcher = DramatiqTaskDispatcher(store=evidence_store, actor=execute_devflow_task)
+    dispatcher = DurableDramatiqTaskDispatcher(
+        run_store=evidence_store,
+        ledger=dispatch_store,
+        actor=execute_devflow_task,
+    )
     github_publisher = (
         None
         if settings.github_token is None
