@@ -33,7 +33,9 @@ def _task() -> TaskContract:
         readable_files=["src/**"],
         writable_files=["src/broker_failure.py"],
         readonly_files=["tests/**"],
-        acceptance_criteria=["Failed publication is durable but never treated as non-delivery proof."],
+        acceptance_criteria=[
+            "Failed publication is durable but never treated as non-delivery proof."
+        ],
         verification_commands=["pytest -q"],
         max_retries=1,
     )
