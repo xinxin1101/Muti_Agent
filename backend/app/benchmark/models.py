@@ -256,9 +256,12 @@ class BenchmarkDiffObservation(BenchmarkModel):
 
     @model_validator(mode="after")
     def validate_file_count(self) -> BenchmarkDiffObservation:
-        if not self.truncated and self.omitted_file_count == 0:
-            if self.changed_file_count != len(self.changed_files):
-                raise ValueError("complete benchmark diff observations require exact file counts")
+        if (
+            not self.truncated
+            and self.omitted_file_count == 0
+            and self.changed_file_count != len(self.changed_files)
+        ):
+            raise ValueError("complete benchmark diff observations require exact file counts")
         if len(self.changed_files) != len(set(self.changed_files)):
             raise ValueError("benchmark diff observations must not repeat changed files")
         return self
