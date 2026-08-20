@@ -5,6 +5,7 @@ from app.persistence.dag import (
     PostgresDAGStore,
 )
 from app.persistence.database import create_postgres_engine, create_session_factory
+from app.persistence.dispatch import PostgresDispatchAttemptStore
 from app.persistence.errors import (
     PersistenceConfigurationError,
     PersistenceConflictError,
@@ -41,6 +42,7 @@ __all__ = [
     "PersistedRunStatus",
     "PersistedTask",
     "PostgresDAGStore",
+    "PostgresDispatchAttemptStore",
     "PostgresEvidenceStore",
     "PostgresGitHubPublicationStore",
     "PostgresTaskLeaseStore",
