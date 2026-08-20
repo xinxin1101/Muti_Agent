@@ -340,7 +340,8 @@ class PostgresTaskReconciliationStore:
             )
             if target.dispatch_id in worker_evidence or target.dispatch_id in dispatch_events:
                 raise PersistenceConflictError(
-                    "prepared dispatch already has worker-side evidence and cannot be published again"
+                    "prepared dispatch already has worker-side evidence and cannot be "
+                    "published again"
                 )
 
             if task.lease_owner is None:
@@ -361,7 +362,8 @@ class PostgresTaskReconciliationStore:
                     )
                 if worker_evidence.get(task.lease_dispatch_id) is not None:
                     raise PersistenceConflictError(
-                        "terminal worker evidence arrived after recovery prepare; rerun is forbidden"
+                        "terminal worker evidence arrived after recovery prepare; rerun is "
+                        "forbidden"
                     )
                 if task.lease_released_at is not None:
                     raise PersistenceConflictError(
