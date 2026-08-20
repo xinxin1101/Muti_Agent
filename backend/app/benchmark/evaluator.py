@@ -13,8 +13,8 @@ from app.benchmark.models import (
     BenchmarkObservationBundle,
     BenchmarkObservationState,
     BenchmarkReport,
-    BenchmarkSummary,
     BenchmarkSuite,
+    BenchmarkSummary,
 )
 
 
@@ -57,7 +57,7 @@ def _evaluate_terminal_case(
 
     required = set(expectations.required_evidence_kinds)
     observed_kinds = set(observation.evidence_kinds)
-    missing = sorted((kind.value for kind in required - observed_kinds))
+    missing = sorted(kind.value for kind in required - observed_kinds)
     evidence_match = not missing
     evidence = _result(
         BenchmarkDimensionStatus.MATCH if evidence_match else BenchmarkDimensionStatus.MISMATCH,
