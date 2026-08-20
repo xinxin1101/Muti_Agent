@@ -56,7 +56,14 @@ def _git(root: Path, *arguments: str) -> None:
 def test_required_demo_normal_success(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     root.mkdir()
+    (root / "tests").mkdir()
     (root / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (root / "tests" / "test_value.py").write_text(
+        "from module import VALUE\n\n\n"
+        "def test_value():\n"
+        "    assert VALUE == 2\n",
+        encoding="utf-8",
+    )
     _git(root, "init")
     _git(root, "config", "user.email", "devflow-demo@example.com")
     _git(root, "config", "user.name", "DevFlow Demo")
@@ -103,15 +110,12 @@ def test_required_demo_normal_success(tmp_path: Path) -> None:
     )
     task = models.TaskContract(
         task_id="DEMO-NORMAL",
-        objective="Change VALUE from 1 to 2.",
-        readable_files=["module.py"],
+        objective="Change VALUE from 1 to 2 while preserving the protected test.",
+        readable_files=["module.py", "tests/**"],
         writable_files=["module.py"],
-        readonly_files=[],
-        acceptance_criteria=["module.py contains VALUE = 2"],
-        verification_commands=[
-            "python -c \"from pathlib import Path; "
-            "assert Path('module.py').read_text(encoding='utf-8') == 'VALUE = 2\\n'\""
-        ],
+        readonly_files=["tests/**"],
+        acceptance_criteria=["module.py contains VALUE = 2 and the protected test passes."],
+        verification_commands=["pytest -q"],
         max_retries=1,
     )
 
@@ -119,7 +123,9 @@ def test_required_demo_normal_success(tmp_path: Path) -> None:
         orchestrator.run(task, workspace=LocalGitWorkspace(root))
     )
 
-    assert result.status is TaskRunState.SUCCEEDED
+    assert result.status is TaskRunState.SUCCEEDED, [
+        failure.model_dump(mode="json") for failure in result.failures
+    ]
     assert result.repair_attempts == 0
     assert len(result.verifications) == 1
     assert result.verifications[0].passed is True
