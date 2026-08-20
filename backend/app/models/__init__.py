@@ -54,6 +54,11 @@ from app.models.integration_gate import (
 )
 from app.models.lease import TaskLeaseGrant, TaskLeaseSnapshot, TaskLeaseState
 from app.models.merge import MergeAttemptOutcome, MergeQueueAttempt, MergeQueueSnapshot
+from app.models.reconciliation import (
+    TaskReconciliationAction,
+    TaskReconciliationDecision,
+    TaskReconciliationOutcome,
+)
 from app.models.recovery import (
     RecoveryDisposition,
     RunRecoveryPlan,
@@ -155,6 +160,9 @@ __all__ = [
     "TaskLeaseSnapshot",
     "TaskLeaseState",
     "TaskNode",
+    "TaskReconciliationAction",
+    "TaskReconciliationDecision",
+    "TaskReconciliationOutcome",
     "TaskRecoveryAssessment",
     "TaskRunState",
     "TaskScheduleRecord",
