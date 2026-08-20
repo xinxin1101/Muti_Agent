@@ -7,6 +7,7 @@ on:
       - "agent/**"
     paths:
       - "backend/**"
+      - "benchmarks/**"
       - "docs/PRODUCT_PAGES.md"
       - "docs/STEP_4_2_ACCEPTANCE.md"
       - "docs/SSE_LIVE_EVENTS.md"
@@ -19,6 +20,8 @@ on:
       - "docs/STEP_4_6_ACCEPTANCE.md"
       - "docs/GITHUB_PUBLICATION.md"
       - "docs/STEP_4_7_ACCEPTANCE.md"
+      - "docs/BENCHMARK_DEMO_SUITE.md"
+      - "docs/STEP_4_8_ACCEPTANCE.md"
       - "docs/PROGRESS.md"
       - ".github/workflows/backend-quality.yml"
   pull_request:
@@ -26,6 +29,7 @@ on:
       - main
     paths:
       - "backend/**"
+      - "benchmarks/**"
       - "docs/PRODUCT_PAGES.md"
       - "docs/STEP_4_2_ACCEPTANCE.md"
       - "docs/SSE_LIVE_EVENTS.md"
@@ -38,6 +42,8 @@ on:
       - "docs/STEP_4_6_ACCEPTANCE.md"
       - "docs/GITHUB_PUBLICATION.md"
       - "docs/STEP_4_7_ACCEPTANCE.md"
+      - "docs/BENCHMARK_DEMO_SUITE.md"
+      - "docs/STEP_4_8_ACCEPTANCE.md"
       - "docs/PROGRESS.md"
       - ".github/workflows/backend-quality.yml"
 
@@ -109,6 +115,9 @@ jobs:
 
       - name: Run Ruff
         run: ruff check .
+
+      - name: Validate V1 benchmark fixtures
+        run: devflow-benchmark validate --suite ../benchmarks/v1/demo-suite.json
 
       - name: Run pytest
         run: pytest
