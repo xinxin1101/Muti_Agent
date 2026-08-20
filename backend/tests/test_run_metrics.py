@@ -51,6 +51,61 @@ def _task() -> PersistedTask:
     )
 
 
+def _typed_payload(kind: PersistenceEvidenceKind) -> dict[str, object]:
+    if kind is PersistenceEvidenceKind.DEVELOPER_RUN:
+        return {
+            "stop_reason": "MODEL_STOP",
+            "iterations": 2,
+            "tool_calls": 1,
+            "final_message": "done",
+            "changed_files": ["src/app.py"],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15,
+            },
+            "latency_ms": 12,
+        }
+    if kind is PersistenceEvidenceKind.REVIEW_DECISION:
+        return {
+            "decision": "CHANGES_REQUESTED",
+            "summary": "One semantic correction is required.",
+            "issues": [
+                {
+                    "severity": "medium",
+                    "message": "Correct the semantic requirement.",
+                    "file": "src/app.py",
+                    "line": 1,
+                }
+            ],
+        }
+    if kind is PersistenceEvidenceKind.REPAIR_RUN:
+        return {
+            "attempt": 1,
+            "failure_types": ["REVIEW_REJECTED"],
+            "stop_reason": "MODEL_STOP",
+            "iterations": 1,
+            "tool_calls": 1,
+            "final_message": "repaired",
+            "changed_files": ["src/app.py"],
+            "usage": {
+                "prompt_tokens": 3,
+                "completion_tokens": 2,
+                "total_tokens": 5,
+            },
+            "latency_ms": 7,
+        }
+    if kind is PersistenceEvidenceKind.FAILURE_REPORT:
+        return {
+            "failure_type": "SCOPE_VIOLATION",
+            "source": "verification",
+            "message": "Protected test changed.",
+            "retryable": False,
+            "evidence": ["tests/test_app.py"],
+        }
+    return {"test": True}
+
+
 def _evidence(evidence_id: int, kind: PersistenceEvidenceKind) -> PersistedEvidence:
     return PersistedEvidence(
         id=evidence_id,
@@ -60,7 +115,7 @@ def _evidence(evidence_id: int, kind: PersistenceEvidenceKind) -> PersistedEvide
         kind=kind,
         stage="test",
         schema_version=1,
-        payload={"test": True},
+        payload=_typed_payload(kind),
         payload_sha256="b" * 64,
         created_at=STARTED + timedelta(seconds=evidence_id),
     )
@@ -144,8 +199,18 @@ def test_metrics_count_work_without_deriving_success() -> None:
     assert metrics.terminal_duration_ms is None
     assert metrics.evidence.verification_attempts == 3
     assert metrics.evidence.review_decisions == 1
+    assert metrics.evidence.reviewer_rejections == 1
     assert metrics.evidence.repair_attempts == 1
     assert metrics.evidence.failure_reports == 1
+    assert metrics.evidence.scope_violations == 1
+    assert metrics.evidence.developer_prompt_tokens == 10
+    assert metrics.evidence.developer_completion_tokens == 5
+    assert metrics.evidence.developer_total_tokens == 15
+    assert metrics.evidence.repair_prompt_tokens == 3
+    assert metrics.evidence.repair_completion_tokens == 2
+    assert metrics.evidence.repair_total_tokens == 5
+    assert metrics.evidence.reviewer_token_usage_available is False
+    assert metrics.evidence.estimated_cost_available is False
     assert metrics.runtime_events.total_events == 5
     assert metrics.runtime_events.warning_events == 1
     assert metrics.runtime_events.error_events == 1
@@ -156,6 +221,28 @@ def test_metrics_count_work_without_deriving_success() -> None:
     assert "pass_rate" not in payload
     assert "approval_rate" not in payload
     assert "score" not in payload
+
+
+def test_metrics_fail_closed_on_inconsistent_typed_token_usage() -> None:
+    snapshot = _snapshot()
+    evidence = list(snapshot.evidence)
+    developer = evidence[0]
+    evidence[0] = developer.model_copy(
+        update={
+            "payload": {
+                **developer.payload,
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "total_tokens": 999,
+                },
+            }
+        }
+    )
+    corrupted = snapshot.model_copy(update={"evidence": tuple(evidence)})
+
+    with pytest.raises(PersistenceCorruptionError, match="token usage"):
+        build_run_metrics(corrupted, aggregate_runtime_events(RUN_ID, ()))
 
 
 def test_terminal_duration_uses_only_persisted_timestamps() -> None:
@@ -260,6 +347,8 @@ def test_metrics_api_is_get_only_and_rejects_browser_selectors() -> None:
     assert response.status_code == 200
     assert response.json()["status_basis"] == "PERSISTED_RUN"
     assert response.json()["evidence"]["verification_attempts"] == 3
+    assert response.json()["evidence"]["reviewer_rejections"] == 1
+    assert response.json()["evidence"]["scope_violations"] == 1
 
     injected = asyncio.run(
         _api_request("GET", f"/api/v1/runs/{RUN_ID}/metrics?success_rate=1")

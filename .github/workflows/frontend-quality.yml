@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "frontend/**"
+      - "benchmarks/**"
       - "docs/FRONTEND_FOUNDATION.md"
       - "docs/STEP_4_1_ACCEPTANCE.md"
       - "docs/PRODUCT_PAGES.md"
@@ -18,6 +19,8 @@ on:
       - "docs/STEP_4_6_ACCEPTANCE.md"
       - "docs/GITHUB_PUBLICATION.md"
       - "docs/STEP_4_7_ACCEPTANCE.md"
+      - "docs/BENCHMARK_DEMO_SUITE.md"
+      - "docs/STEP_4_8_ACCEPTANCE.md"
       - "docs/PROGRESS.md"
       - ".github/workflows/frontend-quality.yml"
   push:
@@ -25,6 +28,7 @@ on:
       - main
     paths:
       - "frontend/**"
+      - "benchmarks/**"
       - "docs/FRONTEND_FOUNDATION.md"
       - "docs/STEP_4_1_ACCEPTANCE.md"
       - "docs/PRODUCT_PAGES.md"
@@ -39,6 +43,8 @@ on:
       - "docs/STEP_4_6_ACCEPTANCE.md"
       - "docs/GITHUB_PUBLICATION.md"
       - "docs/STEP_4_7_ACCEPTANCE.md"
+      - "docs/BENCHMARK_DEMO_SUITE.md"
+      - "docs/STEP_4_8_ACCEPTANCE.md"
       - "docs/PROGRESS.md"
       - ".github/workflows/frontend-quality.yml"
 
@@ -46,7 +52,8 @@ permissions:
   contents: read
 
 jobs:
-  quality:
+  frontend-quality:
+    name: Frontend Quality
     runs-on: ubuntu-latest
     timeout-minutes: 15
 

@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "manifest_id": "devflow-v1-control-plane",
+  "manifest_version": "1.0.0",
+  "description": "Five deterministic V1 control-plane scenarios using the accepted runtime components and scripted providers. No live model, benchmark-only scheduler, or privileged demo runtime is used.",
+  "scenarios": [
+    {
+      "kind": "NORMAL_SUCCESS",
+      "description": "Developer edits within scope, deterministic verification passes, Reviewer passes, and no repair is required.",
+      "pytest_nodeid": "tests/test_v1_control_plane_demo.py::test_required_demo_normal_success"
+    },
+    {
+      "kind": "SCOPE_VIOLATION",
+      "description": "Protected test tampering is detected as a typed SCOPE_VIOLATION.",
+      "pytest_nodeid": "tests/test_workspace_scope.py::test_test_file_tampering_triggers_scope_violation"
+    },
+    {
+      "kind": "REVIEW_REPAIR",
+      "description": "Hard checks pass, semantic Reviewer requests changes, targeted repair re-verifies, and the run succeeds.",
+      "pytest_nodeid": "tests/test_orchestrator.py::test_semantic_review_rejection_repairs_then_reverifies_and_passes"
+    },
+    {
+      "kind": "INVALID_AGENT_OUTPUT",
+      "description": "Invalid Planner structure enters bounded schema repair before a valid TaskContract is accepted.",
+      "pytest_nodeid": "tests/test_planner_agent.py::test_planner_repairs_invalid_output_once"
+    },
+    {
+      "kind": "PARALLEL_CONFLICT",
+      "description": "Two tasks run concurrently in isolated worktrees, commit independently, enter the topological merge queue, and produce a Git conflict that is structurally classified.",
+      "pytest_nodeid": "tests/test_v1_control_plane_demo.py::test_required_demo_parallel_merge_conflict"
+    }
+  ]
+}

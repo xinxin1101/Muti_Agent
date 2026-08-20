@@ -1,0 +1,152 @@
+{
+  "schema_version": 1,
+  "suite_id": "devflow-v1-demo",
+  "suite_version": "1.0.0",
+  "description": "Three bounded single-task demo cases executed through the accepted DevFlow Product API against an immutable benchmark fixture branch.",
+  "cases": [
+    {
+      "case_id": "text-marker",
+      "description": "Create one exact text marker file and verify its contents.",
+      "repository_url": "https://github.com/xinxin1101/Muti_Agent",
+      "default_branch": "benchmark-fixtures/v1-base",
+      "expected_base_commit": "d141eba7df1d2d5016de2589152d5ab2518778ab",
+      "task": {
+        "task_id": "benchmark-text-marker",
+        "objective": "Create benchmark_demo_marker.txt containing exactly the line: DevFlow benchmark fixture v1",
+        "readable_files": [
+          "README.md"
+        ],
+        "writable_files": [
+          "benchmark_demo_marker.txt"
+        ],
+        "readonly_files": [
+          "README.md"
+        ],
+        "acceptance_criteria": [
+          "benchmark_demo_marker.txt exists.",
+          "The file contains exactly 'DevFlow benchmark fixture v1\\n'."
+        ],
+        "verification_commands": [
+          "python -c \"from pathlib import Path; assert Path('benchmark_demo_marker.txt').read_text(encoding='utf-8') == 'DevFlow benchmark fixture v1\\\\n'\""
+        ],
+        "max_retries": 2
+      },
+      "expectations": {
+        "terminal_status": "SUCCEEDED",
+        "required_evidence_kinds": [
+          "VERIFICATION_RESULT",
+          "REVIEW_DECISION",
+          "WORKER_EXECUTION"
+        ],
+        "changed_files": [
+          "benchmark_demo_marker.txt"
+        ],
+        "changed_files_mode": "EXACT",
+        "max_terminal_duration_ms": 600000,
+        "max_repair_attempts": 2,
+        "max_human_decisions": 0
+      },
+      "tags": [
+        "demo",
+        "single-file",
+        "deterministic-verification"
+      ]
+    },
+    {
+      "case_id": "typed-add",
+      "description": "Create a tiny typed Python function with deterministic import assertions.",
+      "repository_url": "https://github.com/xinxin1101/Muti_Agent",
+      "default_branch": "benchmark-fixtures/v1-base",
+      "expected_base_commit": "d141eba7df1d2d5016de2589152d5ab2518778ab",
+      "task": {
+        "task_id": "benchmark-typed-add",
+        "objective": "Create benchmark_demo_math.py with a typed add(a: int, b: int) -> int function that returns a + b.",
+        "readable_files": [
+          "README.md"
+        ],
+        "writable_files": [
+          "benchmark_demo_math.py"
+        ],
+        "readonly_files": [
+          "README.md"
+        ],
+        "acceptance_criteria": [
+          "benchmark_demo_math.py defines add(a: int, b: int) -> int.",
+          "add(2, 3) returns 5 and add(-2, 2) returns 0."
+        ],
+        "verification_commands": [
+          "python -c \"import benchmark_demo_math as m; assert m.add(2, 3) == 5; assert m.add(-2, 2) == 0\""
+        ],
+        "max_retries": 2
+      },
+      "expectations": {
+        "terminal_status": "SUCCEEDED",
+        "required_evidence_kinds": [
+          "VERIFICATION_RESULT",
+          "REVIEW_DECISION",
+          "WORKER_EXECUTION"
+        ],
+        "changed_files": [
+          "benchmark_demo_math.py"
+        ],
+        "changed_files_mode": "EXACT",
+        "max_terminal_duration_ms": 600000,
+        "max_repair_attempts": 2,
+        "max_human_decisions": 0
+      },
+      "tags": [
+        "demo",
+        "python",
+        "deterministic-verification"
+      ]
+    },
+    {
+      "case_id": "json-contract",
+      "description": "Create one bounded JSON artifact with deterministic structural validation.",
+      "repository_url": "https://github.com/xinxin1101/Muti_Agent",
+      "default_branch": "benchmark-fixtures/v1-base",
+      "expected_base_commit": "d141eba7df1d2d5016de2589152d5ab2518778ab",
+      "task": {
+        "task_id": "benchmark-json-contract",
+        "objective": "Create benchmark_demo_config.json containing an object with name='devflow', schema_version=1, and enabled=true.",
+        "readable_files": [
+          "README.md"
+        ],
+        "writable_files": [
+          "benchmark_demo_config.json"
+        ],
+        "readonly_files": [
+          "README.md"
+        ],
+        "acceptance_criteria": [
+          "benchmark_demo_config.json is valid JSON.",
+          "The JSON object is exactly {'name': 'devflow', 'schema_version': 1, 'enabled': true}."
+        ],
+        "verification_commands": [
+          "python -c \"import json; from pathlib import Path; data=json.loads(Path('benchmark_demo_config.json').read_text(encoding='utf-8')); assert data == {'name':'devflow','schema_version':1,'enabled':True}\""
+        ],
+        "max_retries": 2
+      },
+      "expectations": {
+        "terminal_status": "SUCCEEDED",
+        "required_evidence_kinds": [
+          "VERIFICATION_RESULT",
+          "REVIEW_DECISION",
+          "WORKER_EXECUTION"
+        ],
+        "changed_files": [
+          "benchmark_demo_config.json"
+        ],
+        "changed_files_mode": "EXACT",
+        "max_terminal_duration_ms": 600000,
+        "max_repair_attempts": 2,
+        "max_human_decisions": 0
+      },
+      "tags": [
+        "demo",
+        "json",
+        "deterministic-verification"
+      ]
+    }
+  ]
+}

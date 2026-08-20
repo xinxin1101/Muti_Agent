@@ -56,14 +56,24 @@ class ProductEvidenceMetrics(ProductModel):
     developer_runs: int = Field(ge=0)
     verification_attempts: int = Field(ge=0)
     review_decisions: int = Field(ge=0)
+    reviewer_rejections: int = Field(default=0, ge=0)
     repair_attempts: int = Field(ge=0)
     failure_reports: int = Field(ge=0)
+    scope_violations: int = Field(default=0, ge=0)
     dispatch_events: int = Field(ge=0)
     worker_executions: int = Field(ge=0)
     merge_queue_snapshots: int = Field(ge=0)
     merge_conflicts: int = Field(ge=0)
     integration_gate_evaluations: int = Field(ge=0)
     human_decisions: int = Field(ge=0)
+    developer_prompt_tokens: int = Field(default=0, ge=0)
+    developer_completion_tokens: int = Field(default=0, ge=0)
+    developer_total_tokens: int = Field(default=0, ge=0)
+    repair_prompt_tokens: int = Field(default=0, ge=0)
+    repair_completion_tokens: int = Field(default=0, ge=0)
+    repair_total_tokens: int = Field(default=0, ge=0)
+    reviewer_token_usage_available: bool = False
+    estimated_cost_available: bool = False
 
 
 class ProductRuntimeEventMetrics(ProductModel):
