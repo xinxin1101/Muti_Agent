@@ -82,6 +82,8 @@ async def _expire_current_generation(database_url: str, run_id: UUID, task_id: s
                 )
             ).scalar_one()
             observed_at = await database_time(session)
+            task.lease_acquired_at = observed_at - timedelta(seconds=4)
+            task.heartbeat_at = observed_at - timedelta(seconds=2)
             task.lease_until = observed_at - timedelta(seconds=1)
     finally:
         await engine.dispose()
