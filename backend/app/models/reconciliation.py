@@ -43,11 +43,17 @@ class TaskReconciliationDecision(BaseModel):
     def validate_decision_shape(self) -> TaskReconciliationDecision:
         if self.action is TaskReconciliationAction.PREPARED_DISPATCH:
             if self.dispatch_attempt is None or not self.publish_allowed:
-                raise ValueError("prepared reconciliation requires one publishable dispatch attempt")
+                raise ValueError(
+                    "prepared reconciliation requires one publishable dispatch attempt"
+                )
             if self.dispatch_attempt.run_id != self.run_id:
-                raise ValueError("prepared dispatch Run identity must match reconciliation decision")
+                raise ValueError(
+                    "prepared dispatch Run identity must match reconciliation decision"
+                )
             if self.dispatch_attempt.task_id != self.task_id:
-                raise ValueError("prepared dispatch Task identity must match reconciliation decision")
+                raise ValueError(
+                    "prepared dispatch Task identity must match reconciliation decision"
+                )
             if self.terminal_worker_evidence_id is not None:
                 raise ValueError("prepared dispatch cannot coexist with terminal worker evidence")
             return self
