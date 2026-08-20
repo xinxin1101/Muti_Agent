@@ -88,6 +88,9 @@ class ProductRuntimeServiceWithGitHubPublication(ProductRuntimeService):
 
     async def dispose(self) -> None:
         await super().dispose()
+        dispatcher_dispose = getattr(self._dispatcher, "dispose", None)
+        if dispatcher_dispose is not None:
+            await dispatcher_dispose()
         await self._publication_store.dispose()
         if self._github_publisher is not None:
             await self._github_publisher.dispose()
