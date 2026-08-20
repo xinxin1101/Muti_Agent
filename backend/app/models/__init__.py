@@ -54,6 +54,11 @@ from app.models.integration_gate import (
 )
 from app.models.lease import TaskLeaseGrant, TaskLeaseSnapshot, TaskLeaseState
 from app.models.merge import MergeAttemptOutcome, MergeQueueAttempt, MergeQueueSnapshot
+from app.models.recovery import (
+    RecoveryDisposition,
+    RunRecoveryPlan,
+    TaskRecoveryAssessment,
+)
 from app.models.repair import RepairRunResult, RepairStopReason
 from app.models.review import (
     ReviewDecision,
@@ -126,6 +131,7 @@ __all__ = [
     "MessageRole",
     "ParallelWorkerWaveResult",
     "PersistedRuntimeEvent",
+    "RecoveryDisposition",
     "RepairRunResult",
     "RepairStopReason",
     "ReviewDecision",
@@ -133,6 +139,7 @@ __all__ = [
     "ReviewOutcome",
     "ReviewSeverity",
     "RunEvent",
+    "RunRecoveryPlan",
     "RuntimeEventDraft",
     "RuntimeEventKind",
     "RuntimeEventLevel",
@@ -148,6 +155,7 @@ __all__ = [
     "TaskLeaseSnapshot",
     "TaskLeaseState",
     "TaskNode",
+    "TaskRecoveryAssessment",
     "TaskRunState",
     "TaskScheduleRecord",
     "TaskScheduleState",

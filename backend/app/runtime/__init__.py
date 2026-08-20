@@ -10,6 +10,7 @@ from app.runtime.integration_policy import (
     integration_policy_fingerprint,
 )
 from app.runtime.merge_queue import MergeQueueError, TopologicalMergeQueue
+from app.runtime.recovery import RecoveryInspector, RecoveryStateClassifier
 from app.runtime.scheduler import DAGScheduler
 from app.runtime.state_machine import TaskStateMachine
 
@@ -22,6 +23,8 @@ __all__ = [
     "IntegrationHumanGateError",
     "MergeConflictClassificationError",
     "MergeQueueError",
+    "RecoveryInspector",
+    "RecoveryStateClassifier",
     "TaskStateMachine",
     "TopologicalMergeQueue",
     "conflict_evidence_fingerprint",
