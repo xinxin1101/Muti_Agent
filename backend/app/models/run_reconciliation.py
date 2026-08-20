@@ -86,12 +86,11 @@ class DAGTaskReconciliationRecord(BaseModel):
             self.worker_execution_evidence_id is None
         ):
             raise ValueError("worker terminal status and evidence id must appear together")
-        if self.execution_base is not None:
-            if (
-                self.execution_base.run_id != self.run_id
-                or self.execution_base.task_id != self.task_id
-            ):
-                raise ValueError("execution-base identity must match the frontier task")
+        if self.execution_base is not None and (
+            self.execution_base.run_id != self.run_id
+            or self.execution_base.task_id != self.task_id
+        ):
+            raise ValueError("execution-base identity must match the frontier task")
         if self.frontier_state is DAGTaskFrontierState.SUCCEEDED:
             if self.worker_execution_status is not WorkerExecutionStatus.SUCCEEDED:
                 raise ValueError("SUCCEEDED frontier tasks require successful worker evidence")
