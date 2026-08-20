@@ -361,7 +361,7 @@ async def _lease_event_timeline() -> None:
         task_id=task.task_id,
         owner_id="worker-a",
         dispatch_id=dispatch_a,
-        lease_seconds=0.08,
+        lease_seconds=5.0,
     )
     await lease_store.renew_task_lease(
         run_id=run_id,
@@ -369,9 +369,12 @@ async def _lease_event_timeline() -> None:
         owner_id="worker-a",
         dispatch_id=dispatch_a,
         run_token=first.run_token,
-        lease_seconds=0.05,
+        lease_seconds=0.2,
     )
-    await asyncio.sleep(0.08)
+    # Keep acquisition comfortably live for the heartbeat, then intentionally expire only the
+    # renewed short lease before exercising takeover. This avoids CI/database scheduling races
+    # without weakening the production rule that expired generations cannot be resurrected.
+    await asyncio.sleep(0.3)
 
     dispatch_b = uuid4()
     second = await lease_store.acquire_task_lease(
