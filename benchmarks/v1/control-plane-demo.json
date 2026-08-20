@@ -26,8 +26,8 @@
     },
     {
       "kind": "PARALLEL_CONFLICT",
-      "description": "Independent task worktrees produce a merge conflict that is structurally classified from Git evidence.",
-      "pytest_nodeid": "tests/test_merge_conflict_classifier.py::test_content_conflict_has_paths_types_and_three_git_stages"
+      "description": "Two tasks run concurrently in isolated worktrees, commit independently, enter the topological merge queue, and produce a Git conflict that is structurally classified.",
+      "pytest_nodeid": "tests/test_v1_control_plane_demo.py::test_required_demo_parallel_merge_conflict"
     }
   ]
 }

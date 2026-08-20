@@ -86,8 +86,8 @@ def render_markdown(report: BenchmarkReport) -> str:
         f"- Mismatched: {report.summary.mismatched_cases}",
         f"- Not evaluated: {report.summary.not_evaluated_cases}",
         "",
-        "> Benchmark verdicts and aggregate rates are read-only measurements. "
-        "They never change DevFlow Run truth.",
+        "> Benchmark verdicts are read-only comparisons and aggregate rates are descriptive "
+        "measurements. They never change DevFlow Run truth.",
         "",
         "| Case | Verdict | Runtime | Completion | Evidence | Code delta | Reliability | Latency |",
         "| --- | --- | --- | --- | --- | --- | --- | --- |",
