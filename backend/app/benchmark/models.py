@@ -159,7 +159,7 @@ class BenchmarkExpectations(BenchmarkModel):
         return normalized
 
     @model_validator(mode="after")
-    def validate_terminal_expectation(self) -> "BenchmarkExpectations":
+    def validate_terminal_expectation(self) -> BenchmarkExpectations:
         if self.terminal_status is PersistedRunStatus.RUNNING:
             raise ValueError("benchmark ground truth must expect a terminal Run status")
         return self
@@ -223,7 +223,7 @@ class BenchmarkSuite(BenchmarkModel):
     cases: tuple[BenchmarkCase, ...] = Field(min_length=1, max_length=100)
 
     @model_validator(mode="after")
-    def validate_case_identity(self) -> "BenchmarkSuite":
+    def validate_case_identity(self) -> BenchmarkSuite:
         case_ids = [case.case_id for case in self.cases]
         if len(case_ids) != len(set(case_ids)):
             raise ValueError("benchmark suite case_id values must be unique")
@@ -282,7 +282,7 @@ class BenchmarkDiffObservation(BenchmarkModel):
     omitted_file_count: int = Field(ge=0)
 
     @model_validator(mode="after")
-    def validate_file_count(self) -> "BenchmarkDiffObservation":
+    def validate_file_count(self) -> BenchmarkDiffObservation:
         if (
             not self.truncated
             and self.omitted_file_count == 0
@@ -318,7 +318,7 @@ class BenchmarkObservation(BenchmarkModel):
     failure: BenchmarkFailure | None = None
 
     @model_validator(mode="after")
-    def validate_state_shape(self) -> "BenchmarkObservation":
+    def validate_state_shape(self) -> BenchmarkObservation:
         if len(self.evidence_kinds) != len(set(self.evidence_kinds)):
             raise ValueError("benchmark observation evidence kinds must be unique")
         if self.state is BenchmarkObservationState.TERMINAL:
@@ -374,7 +374,7 @@ class BenchmarkExecutionConfig(BenchmarkModel):
         return _validate_api_base_url(value)
 
     @model_validator(mode="after")
-    def validate_experiment_identity(self) -> "BenchmarkExecutionConfig":
+    def validate_experiment_identity(self) -> BenchmarkExecutionConfig:
         required = (
             self.runtime_commit,
             self.provider,
@@ -402,7 +402,7 @@ class BenchmarkObservationBundle(BenchmarkModel):
     observations: tuple[BenchmarkObservation, ...] = Field(min_length=1, max_length=100)
 
     @model_validator(mode="after")
-    def validate_observation_identity(self) -> "BenchmarkObservationBundle":
+    def validate_observation_identity(self) -> BenchmarkObservationBundle:
         case_ids = [item.case_id for item in self.observations]
         if len(case_ids) != len(set(case_ids)):
             raise ValueError("benchmark observation bundle case_id values must be unique")
@@ -474,7 +474,7 @@ class BenchmarkSummary(BenchmarkModel):
     cost_data: BenchmarkDataAvailability = BenchmarkDataAvailability.NOT_AVAILABLE
 
     @model_validator(mode="after")
-    def validate_case_totals(self) -> "BenchmarkSummary":
+    def validate_case_totals(self) -> BenchmarkSummary:
         if (
             self.matched_cases
             + self.mismatched_cases
@@ -517,7 +517,7 @@ class BenchmarkDemoManifest(BenchmarkModel):
     scenarios: tuple[BenchmarkDemoScenario, ...] = Field(min_length=5, max_length=20)
 
     @model_validator(mode="after")
-    def validate_required_scenarios(self) -> "BenchmarkDemoManifest":
+    def validate_required_scenarios(self) -> BenchmarkDemoManifest:
         kinds = [item.kind for item in self.scenarios]
         nodeids = [item.pytest_nodeid for item in self.scenarios]
         if len(kinds) != len(set(kinds)):
