@@ -243,7 +243,7 @@ def test_live_runner_uses_existing_product_api_without_browser_authored_sha() ->
         if request.url.path == f"/api/v1/runs/{RUN_ID}/tasks/task":
             return httpx.Response(200, json=_task_response(suite.cases[0].task))
         if request.url.path == f"/api/v1/runs/{RUN_ID}/tasks/task/diff":
-            assert request.url.params == {"kind": "TASK"}
+            assert dict(request.url.params) == {"kind": "TASK"}
             return httpx.Response(200, json=_diff_response())
         raise AssertionError(f"unexpected request: {request.method} {request.url}")
 
