@@ -119,5 +119,12 @@ jobs:
       - name: Validate V1 benchmark fixtures
         run: devflow-benchmark validate --suite ../benchmarks/v1/demo-suite.json
 
+      - name: Run deterministic V1 control-plane demos
+        run: >-
+          devflow-benchmark demo
+          --manifest ../benchmarks/v1/control-plane-demo.json
+          --repository-root .
+          --timeout-seconds 180
+
       - name: Run pytest
         run: pytest

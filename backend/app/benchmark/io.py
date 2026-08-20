@@ -61,20 +61,33 @@ def write_model(path: Path, value: BaseModel) -> None:
     temporary.replace(path)
 
 
+def _format_ratio(value: float | None) -> str:
+    return "NOT_AVAILABLE" if value is None else f"{value:.4f}"
+
+
 def render_markdown(report: BenchmarkReport) -> str:
+    aggregates = report.summary.aggregates
     lines = [
         f"# DevFlow Benchmark Report — {report.suite_id} {report.suite_version}",
         "",
         f"- Suite SHA-256: `{report.suite_sha256}`",
         f"- Report SHA-256: `{report.report_sha256}`",
         f"- API origin: `{report.execution.api_base_url}`",
+        f"- Experiment identity: **{report.execution.identity_basis.value}**",
+        f"- Runtime commit: `{report.execution.runtime_commit or 'NOT_RECORDED'}`",
+        f"- Provider: `{report.execution.provider or 'NOT_RECORDED'}`",
+        f"- Developer model: `{report.execution.developer_model or 'NOT_RECORDED'}`",
+        f"- Reviewer model: `{report.execution.reviewer_model or 'NOT_RECORDED'}`",
+        f"- Repair model: `{report.execution.repair_model or 'NOT_RECORDED'}`",
+        f"- Context strategy: `{report.execution.context_strategy or 'NOT_RECORDED'}`",
+        f"- Verifier: `{report.execution.verifier_identity or 'NOT_RECORDED'}`",
         f"- Cases: {report.summary.total_cases}",
         f"- Matched: {report.summary.matched_cases}",
         f"- Mismatched: {report.summary.mismatched_cases}",
         f"- Not evaluated: {report.summary.not_evaluated_cases}",
-        f"- Cost/token data: **{report.summary.cost_data.value}**",
         "",
-        "> Benchmark verdicts are read-only comparisons. They never change DevFlow Run truth.",
+        "> Benchmark verdicts and aggregate rates are read-only measurements. "
+        "They never change DevFlow Run truth.",
         "",
         "| Case | Verdict | Runtime | Completion | Evidence | Code delta | Reliability | Latency |",
         "| --- | --- | --- | --- | --- | --- | --- | --- |",
@@ -102,8 +115,50 @@ def render_markdown(report: BenchmarkReport) -> str:
                 f"- `{item.case_id}` failure/mismatch modes: "
                 + ", ".join(f"`{mode}`" for mode in item.failure_modes)
             )
+
     lines.extend(
         (
+            "",
+            "## Descriptive benchmark aggregates",
+            "",
+            f"- Terminal cases: {aggregates.terminal_cases}",
+            f"- Successful cases: {aggregates.successful_cases}",
+            f"- Task success rate: {_format_ratio(aggregates.task_success_rate)}",
+            f"- First-pass successes: {aggregates.first_pass_successes}",
+            f"- First-pass success rate: {_format_ratio(aggregates.first_pass_success_rate)}",
+            f"- Repaired successes: {aggregates.repaired_successes}",
+            f"- Repaired success rate: {_format_ratio(aggregates.repaired_success_rate)}",
+            f"- Total repair attempts: {aggregates.total_repair_attempts}",
+            f"- Average retry count: {_format_ratio(aggregates.average_retry_count)}",
+            f"- Reviewer decisions: {aggregates.review_decisions}",
+            f"- Reviewer rejections: {aggregates.reviewer_rejections}",
+            f"- Reviewer rejection rate: {_format_ratio(aggregates.reviewer_rejection_rate)}",
+            f"- Scope violations detected: {aggregates.scope_violations_detected}",
+            (
+                "- Mean terminal latency (ms): "
+                + (
+                    "NOT_AVAILABLE"
+                    if aggregates.mean_terminal_duration_ms is None
+                    else f"{aggregates.mean_terminal_duration_ms:.2f}"
+                )
+            ),
+            (
+                "- Median terminal latency (ms): "
+                + (
+                    "NOT_AVAILABLE"
+                    if aggregates.median_terminal_duration_ms is None
+                    else f"{aggregates.median_terminal_duration_ms:.2f}"
+                )
+            ),
+            f"- Prompt tokens observed: {aggregates.prompt_tokens_observed}",
+            f"- Completion tokens observed: {aggregates.completion_tokens_observed}",
+            f"- Total tokens observed: {aggregates.total_tokens_observed}",
+            f"- Token usage coverage: **{aggregates.token_usage.value}** "
+            f"(`{aggregates.token_usage_scope}`)",
+            f"- Estimated model cost: **{aggregates.cost_data.value}**",
+            "",
+            "Rates use terminal benchmark observations as their task denominator; "
+            "reviewer rejection rate uses typed review decisions as its denominator.",
             "",
             "## Dimension counts",
             "",
@@ -113,7 +168,7 @@ def render_markdown(report: BenchmarkReport) -> str:
             f"- Reliability matches: {report.summary.reliability_matches}",
             f"- Latency matches: {report.summary.latency_matches}",
             "",
-            "No aggregate success score is produced.",
+            "No aggregate health score, weighted score, or runtime success gate is produced.",
             "",
         )
     )

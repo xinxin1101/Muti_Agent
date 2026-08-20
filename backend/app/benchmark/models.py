@@ -45,7 +45,24 @@ class BenchmarkCaseVerdict(StrEnum):
 
 class BenchmarkDataAvailability(StrEnum):
     AVAILABLE = "AVAILABLE"
+    PARTIAL = "PARTIAL"
     NOT_AVAILABLE = "NOT_AVAILABLE"
+
+
+class BenchmarkExperimentIdentityBasis(StrEnum):
+    NOT_RECORDED = "NOT_RECORDED"
+    OPERATOR_DECLARED = "OPERATOR_DECLARED"
+
+
+class BenchmarkDemoScenarioKind(StrEnum):
+    NORMAL_SUCCESS = "NORMAL_SUCCESS"
+    SCOPE_VIOLATION = "SCOPE_VIOLATION"
+    REVIEW_REPAIR = "REVIEW_REPAIR"
+    INVALID_AGENT_OUTPUT = "INVALID_AGENT_OUTPUT"
+    PARALLEL_CONFLICT = "PARALLEL_CONFLICT"
+
+
+_REQUIRED_DEMO_KINDS = frozenset(BenchmarkDemoScenarioKind)
 
 
 def _validate_github_https_url(value: HttpUrl) -> HttpUrl:
@@ -142,7 +159,7 @@ class BenchmarkExpectations(BenchmarkModel):
         return normalized
 
     @model_validator(mode="after")
-    def validate_terminal_expectation(self) -> BenchmarkExpectations:
+    def validate_terminal_expectation(self) -> "BenchmarkExpectations":
         if self.terminal_status is PersistedRunStatus.RUNNING:
             raise ValueError("benchmark ground truth must expect a terminal Run status")
         return self
@@ -206,7 +223,7 @@ class BenchmarkSuite(BenchmarkModel):
     cases: tuple[BenchmarkCase, ...] = Field(min_length=1, max_length=100)
 
     @model_validator(mode="after")
-    def validate_case_identity(self) -> BenchmarkSuite:
+    def validate_case_identity(self) -> "BenchmarkSuite":
         case_ids = [case.case_id for case in self.cases]
         if len(case_ids) != len(set(case_ids)):
             raise ValueError("benchmark suite case_id values must be unique")
@@ -223,14 +240,24 @@ class BenchmarkEvidenceObservation(BenchmarkModel):
     developer_runs: int = Field(ge=0)
     verification_attempts: int = Field(ge=0)
     review_decisions: int = Field(ge=0)
+    reviewer_rejections: int = Field(default=0, ge=0)
     repair_attempts: int = Field(ge=0)
     failure_reports: int = Field(ge=0)
+    scope_violations: int = Field(default=0, ge=0)
     dispatch_events: int = Field(ge=0)
     worker_executions: int = Field(ge=0)
     merge_queue_snapshots: int = Field(ge=0)
     merge_conflicts: int = Field(ge=0)
     integration_gate_evaluations: int = Field(ge=0)
     human_decisions: int = Field(ge=0)
+    developer_prompt_tokens: int = Field(default=0, ge=0)
+    developer_completion_tokens: int = Field(default=0, ge=0)
+    developer_total_tokens: int = Field(default=0, ge=0)
+    repair_prompt_tokens: int = Field(default=0, ge=0)
+    repair_completion_tokens: int = Field(default=0, ge=0)
+    repair_total_tokens: int = Field(default=0, ge=0)
+    reviewer_token_usage_available: bool = False
+    estimated_cost_available: bool = False
 
 
 class BenchmarkRuntimeEventObservation(BenchmarkModel):
@@ -255,7 +282,7 @@ class BenchmarkDiffObservation(BenchmarkModel):
     omitted_file_count: int = Field(ge=0)
 
     @model_validator(mode="after")
-    def validate_file_count(self) -> BenchmarkDiffObservation:
+    def validate_file_count(self) -> "BenchmarkDiffObservation":
         if (
             not self.truncated
             and self.omitted_file_count == 0
@@ -291,7 +318,7 @@ class BenchmarkObservation(BenchmarkModel):
     failure: BenchmarkFailure | None = None
 
     @model_validator(mode="after")
-    def validate_state_shape(self) -> BenchmarkObservation:
+    def validate_state_shape(self) -> "BenchmarkObservation":
         if len(self.evidence_kinds) != len(set(self.evidence_kinds)):
             raise ValueError("benchmark observation evidence kinds must be unique")
         if self.state is BenchmarkObservationState.TERMINAL:
@@ -329,11 +356,41 @@ class BenchmarkExecutionConfig(BenchmarkModel):
     api_base_url: str = "http://127.0.0.1:8000"
     poll_interval_seconds: float = Field(default=1.0, ge=0.05, le=60.0)
     timeout_per_case_seconds: float = Field(default=900.0, ge=1.0, le=7200.0)
+    identity_basis: BenchmarkExperimentIdentityBasis = (
+        BenchmarkExperimentIdentityBasis.NOT_RECORDED
+    )
+    runtime_commit: str | None = Field(default=None, pattern=r"^[0-9a-f]{40,64}$")
+    provider: str | None = Field(default=None, min_length=1, max_length=128)
+    planner_model: str | None = Field(default=None, min_length=1, max_length=256)
+    developer_model: str | None = Field(default=None, min_length=1, max_length=256)
+    reviewer_model: str | None = Field(default=None, min_length=1, max_length=256)
+    repair_model: str | None = Field(default=None, min_length=1, max_length=256)
+    context_strategy: str | None = Field(default=None, min_length=1, max_length=256)
+    verifier_identity: str | None = Field(default=None, min_length=1, max_length=256)
 
     @field_validator("api_base_url")
     @classmethod
     def validate_api_base_url(cls, value: str) -> str:
         return _validate_api_base_url(value)
+
+    @model_validator(mode="after")
+    def validate_experiment_identity(self) -> "BenchmarkExecutionConfig":
+        required = (
+            self.runtime_commit,
+            self.provider,
+            self.developer_model,
+            self.reviewer_model,
+            self.repair_model,
+            self.context_strategy,
+            self.verifier_identity,
+        )
+        if self.identity_basis is BenchmarkExperimentIdentityBasis.NOT_RECORDED:
+            if any(value is not None for value in required) or self.planner_model is not None:
+                raise ValueError("NOT_RECORDED experiment identity cannot carry identity fields")
+            return self
+        if any(value is None for value in required):
+            raise ValueError("OPERATOR_DECLARED experiment identity requires all runtime fields")
+        return self
 
 
 class BenchmarkObservationBundle(BenchmarkModel):
@@ -345,7 +402,7 @@ class BenchmarkObservationBundle(BenchmarkModel):
     observations: tuple[BenchmarkObservation, ...] = Field(min_length=1, max_length=100)
 
     @model_validator(mode="after")
-    def validate_observation_identity(self) -> BenchmarkObservationBundle:
+    def validate_observation_identity(self) -> "BenchmarkObservationBundle":
         case_ids = [item.case_id for item in self.observations]
         if len(case_ids) != len(set(case_ids)):
             raise ValueError("benchmark observation bundle case_id values must be unique")
@@ -379,6 +436,30 @@ class BenchmarkCaseEvaluation(BenchmarkModel):
     failure_modes: tuple[str, ...] = ()
 
 
+class BenchmarkAggregateMetrics(BenchmarkModel):
+    terminal_cases: int = Field(ge=0)
+    successful_cases: int = Field(ge=0)
+    task_success_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    first_pass_successes: int = Field(ge=0)
+    first_pass_success_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    repaired_successes: int = Field(ge=0)
+    repaired_success_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    total_repair_attempts: int = Field(ge=0)
+    average_retry_count: float | None = Field(default=None, ge=0.0)
+    review_decisions: int = Field(ge=0)
+    reviewer_rejections: int = Field(ge=0)
+    reviewer_rejection_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    scope_violations_detected: int = Field(ge=0)
+    mean_terminal_duration_ms: float | None = Field(default=None, ge=0.0)
+    median_terminal_duration_ms: float | None = Field(default=None, ge=0.0)
+    prompt_tokens_observed: int = Field(ge=0)
+    completion_tokens_observed: int = Field(ge=0)
+    total_tokens_observed: int = Field(ge=0)
+    token_usage: BenchmarkDataAvailability = BenchmarkDataAvailability.PARTIAL
+    token_usage_scope: str = "DEVELOPER_REPAIR_ONLY"
+    cost_data: BenchmarkDataAvailability = BenchmarkDataAvailability.NOT_AVAILABLE
+
+
 class BenchmarkSummary(BenchmarkModel):
     total_cases: int = Field(ge=1)
     matched_cases: int = Field(ge=0)
@@ -389,10 +470,11 @@ class BenchmarkSummary(BenchmarkModel):
     code_delta_matches: int = Field(ge=0)
     reliability_matches: int = Field(ge=0)
     latency_matches: int = Field(ge=0)
+    aggregates: BenchmarkAggregateMetrics
     cost_data: BenchmarkDataAvailability = BenchmarkDataAvailability.NOT_AVAILABLE
 
     @model_validator(mode="after")
-    def validate_case_totals(self) -> BenchmarkSummary:
+    def validate_case_totals(self) -> "BenchmarkSummary":
         if (
             self.matched_cases
             + self.mismatched_cases
@@ -412,3 +494,46 @@ class BenchmarkReport(BenchmarkModel):
     cases: tuple[BenchmarkCaseEvaluation, ...]
     summary: BenchmarkSummary
     report_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class BenchmarkDemoScenario(BenchmarkModel):
+    kind: BenchmarkDemoScenarioKind
+    description: str = Field(min_length=1, max_length=1000)
+    pytest_nodeid: str = Field(
+        pattern=r"^tests/test_[A-Za-z0-9_]+\.py::test_[A-Za-z0-9_]+$",
+        max_length=256,
+    )
+
+
+class BenchmarkDemoManifest(BenchmarkModel):
+    schema_version: Literal[1] = 1
+    manifest_id: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+    )
+    manifest_version: str = Field(pattern=r"^[0-9]+\.[0-9]+\.[0-9]+$", max_length=32)
+    description: str = Field(min_length=1, max_length=4000)
+    scenarios: tuple[BenchmarkDemoScenario, ...] = Field(min_length=5, max_length=20)
+
+    @model_validator(mode="after")
+    def validate_required_scenarios(self) -> "BenchmarkDemoManifest":
+        kinds = [item.kind for item in self.scenarios]
+        nodeids = [item.pytest_nodeid for item in self.scenarios]
+        if len(kinds) != len(set(kinds)):
+            raise ValueError("control-plane demo scenario kinds must be unique")
+        if len(nodeids) != len(set(nodeids)):
+            raise ValueError("control-plane demo pytest nodeids must be unique")
+        if set(kinds) != _REQUIRED_DEMO_KINDS:
+            raise ValueError("control-plane demo manifest must contain the five required V1 demos")
+        return self
+
+
+class BenchmarkDemoResult(BenchmarkModel):
+    manifest_id: str
+    manifest_version: str
+    manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    runtime_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    scenario_count: int = Field(ge=5)
+    exit_code: int = Field(ge=0)
+    passed: bool

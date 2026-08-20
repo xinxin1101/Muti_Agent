@@ -9,13 +9,18 @@ from app.api.models import (
     ProductRunMetrics,
     ProductRuntimeEventMetrics,
 )
+from app.models.developer import DeveloperRunResult
 from app.models.events import (
     PersistedRuntimeEvent,
     RuntimeEventAggregate,
     RuntimeEventKind,
     RuntimeEventLevel,
 )
+from app.models.failure import FailureReport, FailureType
+from app.models.repair import RepairRunResult
+from app.models.review import ReviewDecision, ReviewOutcome
 from app.persistence.errors import PersistenceCorruptionError
+from app.persistence.serialization import decode_evidence
 from app.persistence.types import PersistedRunSnapshot, PersistenceEvidenceKind
 
 METRIC_EVENT_PAGE_SIZE = 1000
@@ -74,6 +79,74 @@ def aggregate_runtime_events(
         ) from exc
 
 
+def _validate_token_usage(prompt: int, completion: int, total: int, *, label: str) -> None:
+    if prompt + completion != total:
+        raise PersistenceCorruptionError(
+            f"{label} token usage is internally inconsistent"
+        )
+
+
+def _typed_evidence_metrics(snapshot: PersistedRunSnapshot) -> dict[str, int]:
+    reviewer_rejections = 0
+    scope_violations = 0
+    developer_prompt_tokens = 0
+    developer_completion_tokens = 0
+    developer_total_tokens = 0
+    repair_prompt_tokens = 0
+    repair_completion_tokens = 0
+    repair_total_tokens = 0
+
+    for item in snapshot.evidence:
+        if item.kind not in {
+            PersistenceEvidenceKind.DEVELOPER_RUN,
+            PersistenceEvidenceKind.REVIEW_DECISION,
+            PersistenceEvidenceKind.REPAIR_RUN,
+            PersistenceEvidenceKind.FAILURE_REPORT,
+        }:
+            continue
+
+        decoded = decode_evidence(item.kind, item.payload)
+        if isinstance(decoded, DeveloperRunResult):
+            usage = decoded.usage
+            _validate_token_usage(
+                usage.prompt_tokens,
+                usage.completion_tokens,
+                usage.total_tokens,
+                label="Developer",
+            )
+            developer_prompt_tokens += usage.prompt_tokens
+            developer_completion_tokens += usage.completion_tokens
+            developer_total_tokens += usage.total_tokens
+        elif isinstance(decoded, RepairRunResult):
+            usage = decoded.usage
+            _validate_token_usage(
+                usage.prompt_tokens,
+                usage.completion_tokens,
+                usage.total_tokens,
+                label="Repair",
+            )
+            repair_prompt_tokens += usage.prompt_tokens
+            repair_completion_tokens += usage.completion_tokens
+            repair_total_tokens += usage.total_tokens
+        elif isinstance(decoded, ReviewDecision):
+            if decoded.decision is ReviewOutcome.CHANGES_REQUESTED:
+                reviewer_rejections += 1
+        elif isinstance(decoded, FailureReport):
+            if decoded.failure_type is FailureType.SCOPE_VIOLATION:
+                scope_violations += 1
+
+    return {
+        "reviewer_rejections": reviewer_rejections,
+        "scope_violations": scope_violations,
+        "developer_prompt_tokens": developer_prompt_tokens,
+        "developer_completion_tokens": developer_completion_tokens,
+        "developer_total_tokens": developer_total_tokens,
+        "repair_prompt_tokens": repair_prompt_tokens,
+        "repair_completion_tokens": repair_completion_tokens,
+        "repair_total_tokens": repair_total_tokens,
+    }
+
+
 def build_run_metrics(
     snapshot: PersistedRunSnapshot,
     runtime_events: RuntimeEventAggregate,
@@ -81,6 +154,7 @@ def build_run_metrics(
     """Summarize accepted facts without deriving or authorizing Run success."""
 
     counts = Counter(item.kind for item in snapshot.evidence)
+    typed = _typed_evidence_metrics(snapshot)
     terminal_duration_ms: int | None = None
     if snapshot.finished_at is not None:
         elapsed = snapshot.finished_at - snapshot.started_at
@@ -103,14 +177,24 @@ def build_run_metrics(
             developer_runs=counts[PersistenceEvidenceKind.DEVELOPER_RUN],
             verification_attempts=counts[PersistenceEvidenceKind.VERIFICATION_RESULT],
             review_decisions=counts[PersistenceEvidenceKind.REVIEW_DECISION],
+            reviewer_rejections=typed["reviewer_rejections"],
             repair_attempts=counts[PersistenceEvidenceKind.REPAIR_RUN],
             failure_reports=counts[PersistenceEvidenceKind.FAILURE_REPORT],
+            scope_violations=typed["scope_violations"],
             dispatch_events=counts[PersistenceEvidenceKind.DISPATCH_EVENT],
             worker_executions=counts[PersistenceEvidenceKind.WORKER_EXECUTION],
             merge_queue_snapshots=counts[PersistenceEvidenceKind.MERGE_QUEUE_SNAPSHOT],
             merge_conflicts=counts[PersistenceEvidenceKind.MERGE_CONFLICT],
             integration_gate_evaluations=counts[PersistenceEvidenceKind.INTEGRATION_GATE],
             human_decisions=counts[PersistenceEvidenceKind.HUMAN_DECISION],
+            developer_prompt_tokens=typed["developer_prompt_tokens"],
+            developer_completion_tokens=typed["developer_completion_tokens"],
+            developer_total_tokens=typed["developer_total_tokens"],
+            repair_prompt_tokens=typed["repair_prompt_tokens"],
+            repair_completion_tokens=typed["repair_completion_tokens"],
+            repair_total_tokens=typed["repair_total_tokens"],
+            reviewer_token_usage_available=False,
+            estimated_cost_available=False,
         ),
         runtime_events=ProductRuntimeEventMetrics(
             total_events=runtime_events.total_events,

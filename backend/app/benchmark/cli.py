@@ -4,12 +4,14 @@ import argparse
 import asyncio
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
 from pydantic import ValidationError
 
 from app.benchmark.client import BenchmarkApiClient
+from app.benchmark.demo import load_demo_manifest, run_control_plane_demo
 from app.benchmark.evaluator import evaluate_suite
 from app.benchmark.io import (
     load_observations,
@@ -20,6 +22,7 @@ from app.benchmark.io import (
 from app.benchmark.models import (
     BenchmarkCaseVerdict,
     BenchmarkExecutionConfig,
+    BenchmarkExperimentIdentityBasis,
 )
 
 
@@ -36,6 +39,14 @@ def build_parser() -> argparse.ArgumentParser:
     validate = subparsers.add_parser("validate", help="Validate and hash one benchmark suite.")
     validate.add_argument("--suite", required=True, type=Path)
 
+    demo = subparsers.add_parser(
+        "demo",
+        help="Run the versioned deterministic control-plane demo manifest through pytest.",
+    )
+    demo.add_argument("--manifest", required=True, type=Path)
+    demo.add_argument("--repository-root", type=Path, default=Path("."))
+    demo.add_argument("--timeout-seconds", type=float, default=300.0)
+
     evaluate = subparsers.add_parser(
         "evaluate",
         help="Deterministically evaluate an existing observation bundle.",
@@ -47,8 +58,8 @@ def build_parser() -> argparse.ArgumentParser:
     run = subparsers.add_parser(
         "run",
         help=(
-            "Execute benchmark cases through the existing DevFlow Product API, "
-            "then evaluate them."
+            "Execute stochastic live-model benchmark cases through the existing DevFlow "
+            "Product API, then evaluate them."
         ),
     )
     run.add_argument("--suite", required=True, type=Path)
@@ -58,6 +69,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--poll-interval-seconds", type=float, default=1.0)
     run.add_argument("--timeout-per-case-seconds", type=float, default=900.0)
+    run.add_argument("--runtime-commit", required=True)
+    run.add_argument("--provider", required=True)
+    run.add_argument("--planner-model")
+    run.add_argument("--developer-model", required=True)
+    run.add_argument("--reviewer-model", required=True)
+    run.add_argument("--repair-model", required=True)
+    run.add_argument("--context-strategy", required=True)
+    run.add_argument("--verifier-identity", required=True)
     run.add_argument("--output", required=True, type=Path)
     return parser
 
@@ -76,6 +95,15 @@ async def _run_live(args: argparse.Namespace) -> int:
         api_base_url=args.api_base_url,
         poll_interval_seconds=args.poll_interval_seconds,
         timeout_per_case_seconds=args.timeout_per_case_seconds,
+        identity_basis=BenchmarkExperimentIdentityBasis.OPERATOR_DECLARED,
+        runtime_commit=args.runtime_commit,
+        provider=args.provider,
+        planner_model=args.planner_model,
+        developer_model=args.developer_model,
+        reviewer_model=args.reviewer_model,
+        repair_model=args.repair_model,
+        context_strategy=args.context_strategy,
+        verifier_identity=args.verifier_identity,
     )
     async with BenchmarkApiClient(execution) as client:
         observations = await client.run_suite(suite, suite_sha256)
@@ -93,6 +121,11 @@ async def _run_live(args: argparse.Namespace) -> int:
                 "matched_cases": report.summary.matched_cases,
                 "mismatched_cases": report.summary.mismatched_cases,
                 "not_evaluated_cases": report.summary.not_evaluated_cases,
+                "task_success_rate": report.summary.aggregates.task_success_rate,
+                "first_pass_success_rate": (
+                    report.summary.aggregates.first_pass_success_rate
+                ),
+                "repaired_success_rate": report.summary.aggregates.repaired_success_rate,
                 "output": str(args.output),
             },
             ensure_ascii=False,
@@ -123,6 +156,29 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
 
+        if args.command == "demo":
+            manifest, manifest_sha256 = load_demo_manifest(args.manifest)
+            result = run_control_plane_demo(
+                args.manifest,
+                repository_root=args.repository_root,
+                timeout_seconds=args.timeout_seconds,
+            )
+            print(
+                json.dumps(
+                    {
+                        "manifest_id": manifest.manifest_id,
+                        "manifest_version": manifest.manifest_version,
+                        "manifest_sha256": manifest_sha256,
+                        "runtime_commit": result.runtime_commit,
+                        "scenario_count": result.scenario_count,
+                        "passed": result.passed,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
+            return 0 if result.passed else 1
+
         if args.command == "evaluate":
             suite, suite_sha256 = load_suite(args.suite)
             observations = load_observations(args.observations)
@@ -135,6 +191,7 @@ def main(argv: list[str] | None = None) -> int:
                         "matched_cases": report.summary.matched_cases,
                         "mismatched_cases": report.summary.mismatched_cases,
                         "not_evaluated_cases": report.summary.not_evaluated_cases,
+                        "task_success_rate": report.summary.aggregates.task_success_rate,
                         "output": str(args.output),
                     },
                     ensure_ascii=False,
@@ -152,6 +209,7 @@ def main(argv: list[str] | None = None) -> int:
         ValueError,
         ValidationError,
         json.JSONDecodeError,
+        subprocess.TimeoutExpired,
     ) as exc:
         print(
             json.dumps(

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from statistics import mean, median
+
 from app.benchmark.io import canonical_sha256
 from app.benchmark.models import (
+    BenchmarkAggregateMetrics,
     BenchmarkCase,
     BenchmarkCaseEvaluation,
     BenchmarkCaseVerdict,
@@ -13,9 +16,10 @@ from app.benchmark.models import (
     BenchmarkObservationBundle,
     BenchmarkObservationState,
     BenchmarkReport,
-    BenchmarkSuite,
     BenchmarkSummary,
+    BenchmarkSuite,
 )
+from app.persistence.types import PersistedRunStatus
 
 
 def _result(
@@ -57,7 +61,7 @@ def _evaluate_terminal_case(
 
     required = set(expectations.required_evidence_kinds)
     observed_kinds = set(observation.evidence_kinds)
-    missing = sorted(kind.value for kind in required - observed_kinds)
+    missing = sorted((kind.value for kind in required - observed_kinds))
     evidence_match = not missing
     evidence = _result(
         BenchmarkDimensionStatus.MATCH if evidence_match else BenchmarkDimensionStatus.MISMATCH,
@@ -145,8 +149,12 @@ def _evaluate_terminal_case(
                 if reliability_match
                 else BenchmarkDimensionStatus.MISMATCH
             ),
-            expected="; ".join(f"{name} {expected}" for name, _, expected, _ in reliability_checks),
-            observed="; ".join(f"{name}={observed}" for name, _, _, observed in reliability_checks),
+            expected="; ".join(
+                f"{name} {expected}" for name, _, expected, _ in reliability_checks
+            ),
+            observed="; ".join(
+                f"{name}={observed}" for name, _, _, observed in reliability_checks
+            ),
         )
         if not reliability_match:
             failure_modes.append("RELIABILITY_BUDGET_MISMATCH")
@@ -179,12 +187,12 @@ def _evaluate_terminal_case(
     required_dimensions = (completion, evidence, code_delta)
     optional_dimensions = (reliability, latency)
     all_dimensions = (*required_dimensions, *optional_dimensions)
-    if any(
-        item.status is BenchmarkDimensionStatus.MISMATCH
-        for item in all_dimensions
-    ):
+    if any(item.status is BenchmarkDimensionStatus.MISMATCH for item in all_dimensions):
         verdict = BenchmarkCaseVerdict.MISMATCHED
-    elif any(item.status is BenchmarkDimensionStatus.NOT_EVALUATED for item in required_dimensions):
+    elif any(
+        item.status is BenchmarkDimensionStatus.NOT_EVALUATED
+        for item in required_dimensions
+    ):
         verdict = BenchmarkCaseVerdict.NOT_EVALUATED
     else:
         verdict = BenchmarkCaseVerdict.MATCHED
@@ -247,6 +255,102 @@ def _evaluate_non_terminal_case(
     )
 
 
+def _ratio(numerator: int, denominator: int) -> float | None:
+    return numerator / denominator if denominator else None
+
+
+def _aggregate_observations(
+    observations: tuple[BenchmarkObservation, ...],
+) -> BenchmarkAggregateMetrics:
+    terminal = [
+        item
+        for item in observations
+        if item.state is BenchmarkObservationState.TERMINAL
+    ]
+    successful = [
+        item for item in terminal if item.run_status is PersistedRunStatus.SUCCEEDED
+    ]
+    first_pass = [
+        item
+        for item in successful
+        if item.evidence is not None and item.evidence.repair_attempts == 0
+    ]
+    repaired = [
+        item
+        for item in successful
+        if item.evidence is not None and item.evidence.repair_attempts > 0
+    ]
+    total_repairs = sum(
+        item.evidence.repair_attempts
+        for item in terminal
+        if item.evidence is not None
+    )
+    review_decisions = sum(
+        item.evidence.review_decisions
+        for item in terminal
+        if item.evidence is not None
+    )
+    reviewer_rejections = sum(
+        item.evidence.reviewer_rejections
+        for item in terminal
+        if item.evidence is not None
+    )
+    scope_violations = sum(
+        item.evidence.scope_violations
+        for item in terminal
+        if item.evidence is not None
+    )
+    durations = [
+        item.terminal_duration_ms
+        for item in terminal
+        if item.terminal_duration_ms is not None
+    ]
+    prompt_tokens = sum(
+        item.evidence.developer_prompt_tokens + item.evidence.repair_prompt_tokens
+        for item in terminal
+        if item.evidence is not None
+    )
+    completion_tokens = sum(
+        item.evidence.developer_completion_tokens
+        + item.evidence.repair_completion_tokens
+        for item in terminal
+        if item.evidence is not None
+    )
+    total_tokens = sum(
+        item.evidence.developer_total_tokens + item.evidence.repair_total_tokens
+        for item in terminal
+        if item.evidence is not None
+    )
+
+    return BenchmarkAggregateMetrics(
+        terminal_cases=len(terminal),
+        successful_cases=len(successful),
+        task_success_rate=_ratio(len(successful), len(terminal)),
+        first_pass_successes=len(first_pass),
+        first_pass_success_rate=_ratio(len(first_pass), len(terminal)),
+        repaired_successes=len(repaired),
+        repaired_success_rate=_ratio(len(repaired), len(terminal)),
+        total_repair_attempts=total_repairs,
+        average_retry_count=_ratio(total_repairs, len(terminal)),
+        review_decisions=review_decisions,
+        reviewer_rejections=reviewer_rejections,
+        reviewer_rejection_rate=_ratio(reviewer_rejections, review_decisions),
+        scope_violations_detected=scope_violations,
+        mean_terminal_duration_ms=float(mean(durations)) if durations else None,
+        median_terminal_duration_ms=float(median(durations)) if durations else None,
+        prompt_tokens_observed=prompt_tokens,
+        completion_tokens_observed=completion_tokens,
+        total_tokens_observed=total_tokens,
+        token_usage=(
+            BenchmarkDataAvailability.PARTIAL
+            if terminal
+            else BenchmarkDataAvailability.NOT_AVAILABLE
+        ),
+        token_usage_scope="DEVELOPER_REPAIR_ONLY",
+        cost_data=BenchmarkDataAvailability.NOT_AVAILABLE,
+    )
+
+
 def evaluate_suite(
     suite: BenchmarkSuite,
     suite_sha256: str,
@@ -280,7 +384,9 @@ def evaluate_suite(
 
     summary = BenchmarkSummary(
         total_cases=len(evaluations),
-        matched_cases=sum(item.verdict is BenchmarkCaseVerdict.MATCHED for item in evaluations),
+        matched_cases=sum(
+            item.verdict is BenchmarkCaseVerdict.MATCHED for item in evaluations
+        ),
         mismatched_cases=sum(
             item.verdict is BenchmarkCaseVerdict.MISMATCHED for item in evaluations
         ),
@@ -288,20 +394,26 @@ def evaluate_suite(
             item.verdict is BenchmarkCaseVerdict.NOT_EVALUATED for item in evaluations
         ),
         completion_matches=sum(
-            item.completion.status is BenchmarkDimensionStatus.MATCH for item in evaluations
+            item.completion.status is BenchmarkDimensionStatus.MATCH
+            for item in evaluations
         ),
         evidence_matches=sum(
-            item.evidence.status is BenchmarkDimensionStatus.MATCH for item in evaluations
+            item.evidence.status is BenchmarkDimensionStatus.MATCH
+            for item in evaluations
         ),
         code_delta_matches=sum(
-            item.code_delta.status is BenchmarkDimensionStatus.MATCH for item in evaluations
+            item.code_delta.status is BenchmarkDimensionStatus.MATCH
+            for item in evaluations
         ),
         reliability_matches=sum(
-            item.reliability.status is BenchmarkDimensionStatus.MATCH for item in evaluations
+            item.reliability.status is BenchmarkDimensionStatus.MATCH
+            for item in evaluations
         ),
         latency_matches=sum(
-            item.latency.status is BenchmarkDimensionStatus.MATCH for item in evaluations
+            item.latency.status is BenchmarkDimensionStatus.MATCH
+            for item in evaluations
         ),
+        aggregates=_aggregate_observations(bundle.observations),
         cost_data=BenchmarkDataAvailability.NOT_AVAILABLE,
     )
     payload = {
