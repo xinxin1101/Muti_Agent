@@ -11,8 +11,9 @@ from app.core.settings import Settings, get_settings
 from app.models.dispatch import TaskDispatchEnvelope, WorkerExecutionEvidence
 from app.models.sandbox import DockerSandboxPolicy
 from app.models.task import TaskContract
-from app.persistence import PostgresEvidenceStore, PostgresTaskLeaseStore
+from app.persistence import PostgresDAGStore, PostgresEvidenceStore, PostgresTaskLeaseStore
 from app.providers.siliconflow import SiliconFlowDriver
+from app.runtime.execution_base import EvidenceBoundTaskExecutionBaseResolver
 from app.runtime.orchestrator import SingleTaskOrchestrator
 from app.verification import DeterministicVerifier, DockerSandboxRunner
 from app.workers.executor import (
@@ -84,19 +85,31 @@ async def execute_task_from_settings(
         settings.database_url,
         echo=settings.database_echo,
     )
+    dag_store = PostgresDAGStore.from_url(
+        settings.database_url,
+        echo=settings.database_echo,
+    )
     lease_store = PostgresTaskLeaseStore.from_url(
         settings.database_url,
         echo=settings.database_echo,
     )
     try:
         resolver = ManagedProjectWorkspaceResolver(settings.workspace_root / "repos")
+        execution_base_resolver = EvidenceBoundTaskExecutionBaseResolver(
+            dag_reader=dag_store,
+            workspace_resolver=resolver,
+        )
         backend = LocalQueuedTaskExecutionBackend(
             workspace_resolver=resolver,
             worktree_root=settings.workspace_root / "worktrees",
             runner_factory=build_runner_factory(settings),
             git_fence=lease_store,
         )
-        queued_worker = QueuedTaskWorker(store=evidence_store, backend=backend)
+        queued_worker = QueuedTaskWorker(
+            store=evidence_store,
+            backend=backend,
+            execution_base_resolver=execution_base_resolver,
+        )
         leased_worker = LeasedQueuedTaskWorker(
             worker=queued_worker,
             lease_store=lease_store,
@@ -107,4 +120,5 @@ async def execute_task_from_settings(
         return await leased_worker.execute(envelope)
     finally:
         await lease_store.dispose()
+        await dag_store.dispose()
         await evidence_store.dispose()

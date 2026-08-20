@@ -28,6 +28,8 @@ on:
       - "docs/STEP_5_2_ACCEPTANCE.md"
       - "docs/IDEMPOTENT_RECONCILER.md"
       - "docs/STEP_5_3_ACCEPTANCE.md"
+      - "docs/DAG_RUN_RECONCILIATION.md"
+      - "docs/STEP_5_4_ACCEPTANCE.md"
       - "docs/PROGRESS.md"
       - ".github/workflows/frontend-quality.yml"
   push:
@@ -59,6 +61,8 @@ on:
       - "docs/STEP_5_2_ACCEPTANCE.md"
       - "docs/IDEMPOTENT_RECONCILER.md"
       - "docs/STEP_5_3_ACCEPTANCE.md"
+      - "docs/DAG_RUN_RECONCILIATION.md"
+      - "docs/STEP_5_4_ACCEPTANCE.md"
       - "docs/PROGRESS.md"
       - ".github/workflows/frontend-quality.yml"
 

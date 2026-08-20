@@ -72,6 +72,14 @@ from app.models.review import (
     ReviewSeverity,
 )
 from app.models.run import AgentUsageSummary, RunEvent, SingleTaskRunResult, TaskRunState
+from app.models.run_reconciliation import (
+    DAGRunReconciliationOutcome,
+    DAGRunReconciliationPlan,
+    DAGTaskFrontierState,
+    DAGTaskReconciliationRecord,
+    TaskExecutionBase,
+    TaskExecutionBaseBasis,
+)
 from app.models.sandbox import DockerSandboxPolicy
 from app.models.scheduler import (
     SchedulerEvent,
@@ -112,6 +120,10 @@ __all__ = [
     "ContextTruncation",
     "ContextTruncationReason",
     "ContextUsage",
+    "DAGRunReconciliationOutcome",
+    "DAGRunReconciliationPlan",
+    "DAGTaskFrontierState",
+    "DAGTaskReconciliationRecord",
     "DeveloperRunResult",
     "DeveloperStopReason",
     "DockerSandboxPolicy",
@@ -156,6 +168,8 @@ __all__ = [
     "TaskDAG",
     "TaskDispatchEnvelope",
     "TaskDispatchReceipt",
+    "TaskExecutionBase",
+    "TaskExecutionBaseBasis",
     "TaskLeaseGrant",
     "TaskLeaseSnapshot",
     "TaskLeaseState",

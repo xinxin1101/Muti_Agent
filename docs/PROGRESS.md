@@ -5,8 +5,8 @@ This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The developmen
 ## Current position
 
 - Current phase: **Phase 5 — V1.1 Durable Agent Runtime — IN PROGRESS**
-- Completed item: **Step 5.3 — Idempotent Task Reconciler — ACCEPTED / COMPLETE**
-- Next item: **Step 5.4 — DAG-wide Run Reconciliation**
+- Completed item: **Step 5.4 — DAG-wide Run Reconciliation — ACCEPTED / COMPLETE**
+- Next item: **Step 5.5 — Durable Human Pause / Resume**
 - Phase 1 status: **ACCEPTED / COMPLETE**
 - Phase 2 status: **ACCEPTED / COMPLETE**
 - Phase 3 status: **ACCEPTED / COMPLETE**
@@ -362,8 +362,8 @@ Phase 5 is a deliberately separate Post-V1.0 roadmap. It strengthens long-runnin
 | 5.1 | Recovery State Classifier | **ACCEPTED / COMPLETE** | typed read-only durable recovery projection; implementation head `b4503968310cdc3e5e0cd27bfa062abfc5b253f9`; Backend 377 tests + 5/5 V1 demos |
 | 5.2 | Durable Dispatch Attempt Ledger | **ACCEPTED / COMPLETE** | PostgreSQL-first REQUESTED/ENQUEUED/PUBLISH_FAILED ledger; crash ambiguity preserved; implementation head `30e92051aeae00e674010b66ecb8da329c793e0a`; Backend 380 tests + 5/5 V1 demos |
 | 5.3 | Idempotent Task Reconciler | **ACCEPTED / COMPLETE** | fresh locked prepare + publication revalidation; concurrent one-send; generation N→N+1 remains lease-owned; implementation head `0d7586405853f19923b906b782ac6ab167886ffe`; Backend 385 tests + 5/5 V1 demos |
-| 5.4 | DAG-wide Run Reconciliation | **NEXT / NOT STARTED** | — |
-| 5.5 | Durable Human Pause / Resume | **NOT STARTED** | — |
+| 5.4 | DAG-wide Run Reconciliation | **ACCEPTED / COMPLETE** | persisted-DAG frontier reconstruction + integration-aware execution bases + Step 5.3-only dispatch authority; implementation head `16be10b49a563429f459e337410bcb2c94a1d3ae`; Backend 393 tests + 5/5 V1 demos |
+| 5.5 | Durable Human Pause / Resume | **NEXT / NOT STARTED** | — |
 | 5.6 | Causal Trace Correlation | **NOT STARTED** | — |
 | 5.7 | Operator Recovery / Approval Surface | **NOT STARTED** | — |
 | 5.8 | Chaos / Recovery Benchmark + V1.1 Acceptance | **NOT STARTED** | — |
@@ -541,3 +541,82 @@ actual dispatch remains delegated to Step 5.3
 ```
 
 Step 5.4 must not become a second scheduler truth: completed dependencies must never rerun, downstream tasks become eligible only after all accepted dependencies succeed, and every mutation must retain Step 5.3's fresh per-Task revalidation.
+
+## Step 5.4 — DAG-wide Run Reconciliation — ACCEPTED / COMPLETE
+
+Accepted architecture:
+
+```text
+validated persisted DAG
+        +
+accepted terminal WORKER_EXECUTION facts
+        +
+fresh DB-time ownership facts
+        +
+accepted cumulative integration evidence
+        ↓
+reconstruct legal DAG frontier
+        ↓
+prove dependency-aware execution base
+        ↓
+delegate candidates to Step 5.3
+```
+
+Accepted guarantees:
+
+- no second mutable/persisted scheduler truth was introduced;
+- `TaskDAG` remains the dependency/ready/blocked authority;
+- successful terminal Tasks are completed facts and never rerun by recovery;
+- failed terminal Tasks block descendants through existing DAG semantics;
+- ACTIVE ownership is never raced;
+- RELEASED ownership with missing terminal evidence remains blocked rather than silently reacquired;
+- a DAG-ready dependent Task waits until accepted integration evidence proves its code base contains all direct dependencies;
+- root Tasks use the frozen Run base;
+- dependent Tasks use an evidence-bound integration head;
+- merge snapshots are cumulative, deterministic, bounded, and cross-checked against successful Worker commit pairs;
+- managed Git revalidates exact task and integration parent chains;
+- queue payloads do not carry base SHA, branch, lease generation, or `run_token`;
+- multi-task queued workers fail closed without the dependency-aware base resolver;
+- only `RECONCILE_CANDIDATE` Tasks are nominated to Step 5.3;
+- Step 5.3 still performs fresh locked mutation authorization and provides per-Task exactly-one fresh publication under concurrency.
+
+Implementation-head acceptance evidence:
+
+- exact head: `16be10b49a563429f459e337410bcb2c94a1d3ae`;
+- PostgreSQL + Redis: **PASS**;
+- Alembic `0001 → 0007 → base → 0007`: **PASS**;
+- no Step 5.4 database migration required;
+- verification Docker image: **PASS**;
+- Ruff: **PASS**;
+- V1 fixture validation: **PASS**;
+- deterministic control-plane demos: **5 / 5 PASS**;
+- pytest: **393 passed in 35.07s**.
+
+Documentation/workflow hardening head `04b8d735b218d17196c766a725985f6115c3fe9f` independently passed Backend Quality with **393 passed in 39.44s** and Frontend Quality with locked install, typecheck, lint, tests, and production build.
+
+PR #37 merge review found no unresolved review threads and confirmed production composition injects managed-Git execution-base verification. Persisted evidence is loaded in ascending evidence-id order, so cumulative integration history has a deterministic durable order.
+
+Design / acceptance:
+
+- `docs/DAG_RUN_RECONCILIATION.md`
+- `docs/STEP_5_4_ACCEPTANCE.md`
+
+Frozen Step 5.4 boundary:
+
+> **Run reconciliation may reconstruct the scheduling frontier from validated DAG and accepted terminal task facts; it may not create a second scheduler truth.**
+
+Next authority transition:
+
+```text
+reconstructed legal scheduling frontier
+        +
+intentional Human pause fact
+        +
+accepted Human resume/decision evidence
+        ↓
+Step 5.5 must distinguish paused work from abandoned work
+        ↓
+recovery may resume only when durable policy permits
+```
+
+Step 5.5 must not represent an intentional Human Gate pause as an expired/abandoned worker generation, and browser/operator intent must not become durable resume authority until it has crossed an authenticated, typed, persisted decision boundary.
