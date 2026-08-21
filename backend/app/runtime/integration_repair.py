@@ -51,8 +51,8 @@ class IntegrationConflictRepairService:
     """Resolve one explicit Human-Gate conflict under a conflict-path-only Agent scope.
 
     Human authorization is necessary but never sufficient. The service reuses the exact accepted
-    Git conflict, grants the Developer Agent write access only to classified conflict paths, runs the
-    original TaskContract deterministic verification against the full merged tree, persists typed
+    Git conflict and grants the Developer Agent write access only to classified conflict paths.
+    It then runs original TaskContract verification against the full merged tree, persists typed
     repair evidence, and only then CAS-advances the integration ref.
     """
 
@@ -308,7 +308,9 @@ class IntegrationConflictRepairService:
             check=False,
         )
         if result.returncode != 0:
-            raise IntegrationRepairError("Git could not create isolated integration repair worktree")
+            raise IntegrationRepairError(
+                "Git could not create isolated integration repair worktree"
+            )
 
     def _remove_repair_worktree(self, workspace: LocalGitWorkspace, path: Path) -> None:
         if path.exists():
@@ -344,7 +346,9 @@ class IntegrationConflictRepairService:
         if update.returncode != 0:
             raise PersistenceConflictError("integration repair CAS update lost a concurrent race")
         if self._resolve_ref(workspace, integration_ref) != evidence.repair_commit:
-            raise PersistenceCorruptionError("integration ref did not land on persisted repair commit")
+            raise PersistenceCorruptionError(
+                "integration ref did not land on persisted repair commit"
+            )
 
     def _archive_live_gate_refs(
         self,
@@ -375,7 +379,9 @@ class IntegrationConflictRepairService:
             live = self._resolve_optional_ref(workspace, live_ref)
             archive = self._resolve_optional_ref(workspace, archive_ref)
             if archive is not None and archive != expected_oid:
-                raise PersistenceCorruptionError("integration repair archive ref changed unexpectedly")
+                raise PersistenceCorruptionError(
+                    "integration repair archive ref changed unexpectedly"
+                )
             if archive is None:
                 zero_oid = "0" * len(expected_oid)
                 created = self._git(
@@ -485,10 +491,15 @@ class IntegrationConflictRepairService:
     @staticmethod
     def _assert_base_clean(workspace: LocalGitWorkspace) -> None:
         if workspace.changed_files():
-            raise IntegrationRepairError("base workspace must remain clean before integration repair")
+            raise IntegrationRepairError(
+                "base workspace must remain clean before integration repair"
+            )
 
     def _resolve_ref(self, workspace: LocalGitWorkspace, ref: str) -> str:
-        value = self._git(workspace, ["rev-parse", "--verify", f"{ref}^{{commit}}"]).stdout.strip()
+        value = self._git(
+            workspace,
+            ["rev-parse", "--verify", f"{ref}^{{commit}}"],
+        ).stdout.strip()
         self._require_oid(value, label="Git ref")
         return value
 
