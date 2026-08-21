@@ -4,6 +4,7 @@ from typing import Protocol
 from uuid import UUID
 
 from app.models.dispatch import WorkerExecutionEvidence, WorkerExecutionStatus
+from app.models.integration_gate import IntegrationGateState
 from app.models.merge import MergeQueueSnapshot
 from app.models.multi_run import MultiTaskRunResult
 from app.models.run import TaskRunState
@@ -49,7 +50,7 @@ class MultiTaskWorkspaceResolver(Protocol):
 
 
 class DurableMultiAgentRunController:
-    """Advance one persisted DAG Run from durable facts after a worker finishes.
+    """Advance one persisted DAG Run from durable facts after a worker or human decision.
 
     The controller is deliberately event-driven rather than a resident in-memory scheduler. Each
     invocation reconstructs task state from PostgreSQL, recovers the object-level integration ref
@@ -145,13 +146,24 @@ class DurableMultiAgentRunController:
                 dag_store=self._dag_store,
                 workspace_resolver=self._workspace_resolver,
             )
-            await human_gate.persist_live_gate(
+            gate = await human_gate.persist_live_gate(
                 run_id=run_id,
                 queue_snapshot=merge_snapshot,
                 scheduler=scheduler,
                 conflict=conflict,
                 workspace=workspace,
             )
+            if gate.state is IntegrationGateState.ABORTED:
+                await self._finalize_human_abort_if_ready(
+                    run_id=run_id,
+                    dag=dag,
+                    executions=executions,
+                    aborted_task_id=gate.task_id,
+                    abort_fingerprint=gate.evidence_fingerprint,
+                    integration_head=merge_snapshot.head_commit,
+                )
+            # A pending or repair-authorized conflict remains intentionally paused here. A later
+            # bounded repair stage may act only after revalidating this same durable gate.
             return merge_snapshot
 
         failed = {
@@ -208,6 +220,53 @@ class DurableMultiAgentRunController:
         # because an in-memory scheduler believes their dependencies succeeded.
         await self._run_reconciler.reconcile_run(run_id)
         return merge_snapshot
+
+    async def _finalize_human_abort_if_ready(
+        self,
+        *,
+        run_id: UUID,
+        dag,
+        executions: dict[str, WorkerExecutionEvidence],
+        aborted_task_id: str,
+        abort_fingerprint: str,
+        integration_head: str,
+    ) -> None:
+        failed = {
+            task_id
+            for task_id, evidence in executions.items()
+            if evidence.status is WorkerExecutionStatus.FAILED
+        }
+        failure_roots = failed | {aborted_task_id}
+        blocked = set(dag.blocked_task_ids(failed_task_ids=failure_roots))
+        order = tuple(dag.topological_order())
+        terminal = set(executions) | blocked
+
+        # Do not append-close the Run while an already-dispatched independent sibling may still
+        # need to persist terminal worker evidence. Human ABORT stops new reconciliation dispatches
+        # immediately, but finalization waits until every remaining task is terminal or derived
+        # BLOCKED from failed/aborted upstream work.
+        if terminal != set(order):
+            return
+
+        succeeded = tuple(
+            task_id
+            for task_id in order
+            if task_id != aborted_task_id
+            and executions.get(task_id) is not None
+            and executions[task_id].status is WorkerExecutionStatus.SUCCEEDED
+        )
+        result = MultiTaskRunResult(
+            run_id=run_id,
+            status=TaskRunState.FAILED,
+            task_ids=order,
+            succeeded_task_ids=succeeded,
+            failed_task_ids=tuple(task_id for task_id in order if task_id in failed),
+            aborted_task_ids=(aborted_task_id,),
+            blocked_task_ids=tuple(task_id for task_id in order if task_id in blocked),
+            abort_evidence_fingerprints=(abort_fingerprint,),
+            integration_head=integration_head,
+        )
+        await self._completion_store.finalize_multi_task_run(result)
 
     @staticmethod
     def _terminal_executions(
