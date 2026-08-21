@@ -12,6 +12,8 @@ import pytest
 from app.agents import DeveloperAgent
 from app.models import (
     AgentResponse,
+    CheckResult,
+    CheckType,
     HumanGateDecision,
     MergeAttemptOutcome,
     RunEvent,
@@ -154,7 +156,16 @@ class FakeDriver:
 class PassingVerifier:
     def verify(self, task: TaskContract, *, workspace: LocalGitWorkspace) -> VerificationResult:
         del task, workspace
-        return VerificationResult(passed=True, checks=[])
+        return VerificationResult(
+            passed=True,
+            checks=[
+                CheckResult(
+                    check_type=CheckType.SCOPE,
+                    name="repair_scope",
+                    passed=True,
+                )
+            ],
+        )
 
 
 class FakeRepairWriter:
