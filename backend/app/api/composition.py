@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from app.agents.dag_planner import MultiTaskPlannerAgent
+from app.api.autonomous import AutonomousProductRuntimeService
 from app.api.catalog import PostgresProductCatalog
-from app.api.github_publication import ProductRuntimeServiceWithGitHubPublication
 from app.core.settings import Settings
 from app.dispatch import DurableDramatiqTaskDispatcher
 from app.persistence import (
@@ -10,12 +11,13 @@ from app.persistence import (
     PostgresEvidenceStore,
     PostgresGitHubPublicationStore,
 )
+from app.providers.siliconflow import SiliconFlowDriver
 from app.publication import GitHubPublicationGateway
 from app.workers.executor import ManagedProjectWorkspaceResolver
 from app.workspace import ManagedProjectProvisioner
 
 
-def build_product_service(settings: Settings) -> ProductRuntimeServiceWithGitHubPublication:
+def build_product_service(settings: Settings) -> AutonomousProductRuntimeService:
     if settings.database_url is None:
         raise ValueError("DEVFLOW_DATABASE_URL is required by the product API")
 
@@ -49,6 +51,14 @@ def build_product_service(settings: Settings) -> ProductRuntimeServiceWithGitHub
         ledger=dispatch_store,
         actor=execute_devflow_task,
     )
+    requirement_planner = (
+        None
+        if settings.siliconflow_api_key is None
+        else MultiTaskPlannerAgent(
+            driver=SiliconFlowDriver.from_settings(settings),
+            model=settings.planner_model,
+        )
+    )
     github_publisher = (
         None
         if settings.github_token is None
@@ -57,7 +67,7 @@ def build_product_service(settings: Settings) -> ProductRuntimeServiceWithGitHub
             timeout_seconds=settings.github_publication_timeout_seconds,
         )
     )
-    return ProductRuntimeServiceWithGitHubPublication(
+    return AutonomousProductRuntimeService(
         catalog=catalog,
         evidence_store=evidence_store,
         dag_store=dag_store,
@@ -66,4 +76,5 @@ def build_product_service(settings: Settings) -> ProductRuntimeServiceWithGitHub
         dispatcher=dispatcher,
         publication_store=publication_store,
         github_publisher=github_publisher,
+        requirement_planner=requirement_planner,
     )
