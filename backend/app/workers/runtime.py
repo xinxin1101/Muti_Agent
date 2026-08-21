@@ -11,10 +11,19 @@ from app.core.settings import Settings, get_settings
 from app.models.dispatch import TaskDispatchEnvelope, WorkerExecutionEvidence
 from app.models.sandbox import DockerSandboxPolicy
 from app.models.task import TaskContract
-from app.persistence import PostgresDAGStore, PostgresEvidenceStore, PostgresTaskLeaseStore
+from app.persistence import (
+    PostgresDAGStore,
+    PostgresEvidenceStore,
+    PostgresTaskLeaseStore,
+    PostgresTaskReconciliationStore,
+)
+from app.persistence.multi_completion import PostgresMultiTaskCompletionStore
 from app.providers.siliconflow import SiliconFlowDriver
 from app.runtime.execution_base import EvidenceBoundTaskExecutionBaseResolver
 from app.runtime.orchestrator import SingleTaskOrchestrator
+from app.runtime.product_controller import DurableMultiAgentRunController
+from app.runtime.reconciler import IdempotentTaskReconciler
+from app.runtime.run_reconciler import DAGRunReconciler
 from app.verification import DeterministicVerifier, DockerSandboxRunner
 from app.workers.executor import (
     LocalQueuedTaskExecutionBackend,
@@ -93,6 +102,15 @@ async def execute_task_from_settings(
         settings.database_url,
         echo=settings.database_echo,
     )
+    reconciliation_store = PostgresTaskReconciliationStore.from_url(
+        settings.database_url,
+        echo=settings.database_echo,
+    )
+    completion_store = PostgresMultiTaskCompletionStore.from_url(
+        settings.database_url,
+        echo=settings.database_echo,
+    )
+    task_reconciler = None
     try:
         resolver = ManagedProjectWorkspaceResolver(settings.workspace_root / "repos")
         execution_base_resolver = EvidenceBoundTaskExecutionBaseResolver(
@@ -117,8 +135,40 @@ async def execute_task_from_settings(
             lease_seconds=settings.worker_lease_seconds,
             heartbeat_interval_seconds=settings.worker_heartbeat_interval_seconds,
         )
-        return await leased_worker.execute(envelope)
+        result = await leased_worker.execute(envelope)
+
+        # Import only after app.workers.tasks has finished defining its actor. Importing it at
+        # module load time would create a runtime.py <-> tasks.py cycle.
+        from app.workers.tasks import execute_devflow_task
+
+        task_reconciler = IdempotentTaskReconciler(
+            store=reconciliation_store,
+            actor=execute_devflow_task,
+        )
+        run_reconciler = DAGRunReconciler(
+            run_reader=evidence_store,
+            dag_reader=dag_store,
+            lease_reader=lease_store,
+            task_reconciler=task_reconciler,
+            execution_base_resolver=execution_base_resolver,
+        )
+        controller = DurableMultiAgentRunController(
+            evidence_store=evidence_store,
+            dag_store=dag_store,
+            workspace_resolver=resolver,
+            run_reconciler=run_reconciler,
+            completion_store=completion_store,
+        )
+        await controller.advance(envelope.run_id)
+        return result
     finally:
+        # The task reconciler owns reconciliation_store once constructed. Before construction the
+        # store still needs to be disposed directly.
+        if task_reconciler is None:
+            await reconciliation_store.dispose()
+        else:
+            await task_reconciler.dispose()
+        await completion_store.dispose()
         await lease_store.dispose()
         await dag_store.dispose()
         await evidence_store.dispose()
