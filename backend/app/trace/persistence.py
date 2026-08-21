@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from app.models.events import RuntimeEventDraft, RuntimeEventKind, RuntimeEventLevel, RuntimeEventSource
+from app.models.events import (
+    RuntimeEventDraft,
+    RuntimeEventKind,
+    RuntimeEventLevel,
+    RuntimeEventSource,
+)
 from app.persistence.repository import PostgresEvidenceStore
 from app.persistence.types import PersistenceEvidenceKind
 
