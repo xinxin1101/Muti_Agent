@@ -12,6 +12,7 @@ from app.models.dispatch import WorkerDispatchEvent, WorkerExecutionEvidence
 from app.models.failure import FailureReport
 from app.models.integration_gate import HumanIntegrationDecision, IntegrationGateSnapshot
 from app.models.merge import MergeQueueSnapshot
+from app.models.multi_run import MultiTaskRunResult
 from app.models.repair import RepairRunResult
 from app.models.review import ReviewDecision
 from app.models.run import RunEvent, SingleTaskRunResult
@@ -34,6 +35,7 @@ EvidenceModel: TypeAlias = (
     | WorkerDispatchEvent
     | WorkerExecutionEvidence
 )
+TerminalRunResult: TypeAlias = SingleTaskRunResult | MultiTaskRunResult
 
 _EVIDENCE_MODELS: dict[PersistenceEvidenceKind, type[BaseModel]] = {
     PersistenceEvidenceKind.STATE_TRANSITION: RunEvent,
@@ -85,10 +87,17 @@ def decode_evidence(kind: PersistenceEvidenceKind, payload: dict) -> EvidenceMod
         ) from exc
 
 
-def decode_terminal_result(payload: dict) -> SingleTaskRunResult:
+def decode_terminal_result(payload: dict) -> TerminalRunResult:
+    single_error: ValueError | None = None
     try:
         return SingleTaskRunResult.model_validate(payload)
     except ValueError as exc:
+        single_error = exc
+
+    try:
+        return MultiTaskRunResult.model_validate(payload)
+    except ValueError as multi_error:
         raise PersistenceCorruptionError(
-            f"persisted terminal run result failed typed validation: {exc}"
-        ) from exc
+            "persisted terminal run result failed both single-task and multi-task typed "
+            f"validation: single={single_error}; multi={multi_error}"
+        ) from multi_error
