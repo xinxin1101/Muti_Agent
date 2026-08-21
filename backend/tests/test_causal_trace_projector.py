@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -345,8 +346,11 @@ def _fixture(*, batch_generation: int = 2):
     return snapshot, attempt, events
 
 
-@pytest.mark.asyncio
-async def test_projector_builds_full_diagnostic_causal_tree() -> None:
+def test_projector_builds_full_diagnostic_causal_tree() -> None:
+    asyncio.run(_projector_builds_full_diagnostic_causal_tree())
+
+
+async def _projector_builds_full_diagnostic_causal_tree() -> None:
     snapshot, attempt, events = _fixture()
     trace = await CausalTraceProjector(
         evidence_reader=_EvidenceReader(snapshot, events),
@@ -357,7 +361,10 @@ async def test_projector_builds_full_diagnostic_causal_tree() -> None:
     assert trace.privacy_mode == "METADATA_ONLY"
     assert trace.spans[0].kind is TraceSpanKind.RUN
 
-    by_kind = {kind: [span for span in trace.spans if span.kind is kind] for kind in TraceSpanKind}
+    by_kind = {
+        kind: [span for span in trace.spans if span.kind is kind]
+        for kind in TraceSpanKind
+    }
     assert len(by_kind[TraceSpanKind.TASK]) == 1
     assert len(by_kind[TraceSpanKind.DISPATCH]) == 1
     assert len(by_kind[TraceSpanKind.GENERATION]) == 1
@@ -384,8 +391,11 @@ async def test_projector_builds_full_diagnostic_causal_tree() -> None:
     assert "private repository content" not in serialized
 
 
-@pytest.mark.asyncio
-async def test_projector_rejects_generation_mismatch() -> None:
+def test_projector_rejects_generation_mismatch() -> None:
+    asyncio.run(_projector_rejects_generation_mismatch())
+
+
+async def _projector_rejects_generation_mismatch() -> None:
     snapshot, attempt, events = _fixture(batch_generation=1)
     projector = CausalTraceProjector(
         evidence_reader=_EvidenceReader(snapshot, events),
