@@ -82,6 +82,7 @@ export function NewRunPage() {
           <span>Requirement</span>
           <textarea
             required
+            aria-label="Requirement"
             rows={9}
             maxLength={12000}
             value={requirement}
