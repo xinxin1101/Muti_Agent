@@ -1,14 +1,14 @@
 # Step 5.6 Acceptance — Causal Trace Correlation
 
-Status: **ACCEPTED / COMPLETE, conditional on final ledger-head CI**
+Status: **ACCEPTED / COMPLETE**
 
 ## Frozen boundary
 
 > **Trace may explain accepted runtime history; it may not decide, repair, schedule, resume, verify, merge, finalize, or publish that history.**
 
-Step 5.6 is accepted at the implementation layer because DevFlow can now reconstruct a bounded queryable causal chain from Run to Agent/Tool/verification/review/repair/integration without promoting trace metadata into a second scheduler, retry system, success verdict, or Git authority.
+Step 5.6 is accepted because DevFlow can reconstruct a bounded queryable causal chain from Run to Agent/Tool/verification/review/repair/integration without promoting trace metadata into a second scheduler, retry system, success verdict, or Git authority.
 
-The status becomes fully effective only after the documentation/progress ledger head containing this acceptance file independently passes both Backend Quality and Frontend Quality.
+The implementation head and the complete candidate ledger containing design/progress/workflow-gate changes have both independently passed strict Backend and Frontend quality gates. The accepted-state head created by this status transition must also pass both workflows before PR #39 may leave Draft.
 
 ## Accepted architecture
 
@@ -260,15 +260,40 @@ Frontend Quality run **#212** (`32497790067`) on the same implementation head:
 
 The one Backend warning is an unrelated FastAPI/Starlette TestClient deprecation and is not a Step 5.6 failure.
 
-## Final ledger requirement
+## Candidate ledger-head acceptance evidence
 
-`docs/CAUSAL_TRACE_CORRELATION.md`, this acceptance file, `docs/PROGRESS.md`, and their workflow path gates are part of acceptance evidence, not untested prose.
+The complete candidate ledger head containing:
 
-Both Backend Quality and Frontend Quality path filters include the Step 5.6 design/acceptance ledgers. Therefore the final documentation/progress head containing the accepted status must itself independently pass both workflows.
+- `docs/CAUSAL_TRACE_CORRELATION.md`;
+- this acceptance ledger in pre-final status;
+- the Step 5.6 `docs/PROGRESS.md` entry;
+- Backend and Frontend workflow path gates;
 
-Until that final ledger head is green, this file's status is conditional and PR #39 must remain Draft.
+was:
 
-After the final ledger head is green, no further code/document mutation is required merely to embed that same head's workflow identifiers; doing so would manufacture an infinite self-referential CI loop. The green workflow results on the ledger head are the final external acceptance fact.
+`f0ca4d5f76cfc376d65cbc342648f01a8faf4939`
+
+Backend Quality run **#924** (`32498551791`) on that head:
+
+- PostgreSQL + Redis: **PASS**;
+- Alembic `base → 0007 → base → 0007`: **PASS**;
+- verification Docker image: **PASS**;
+- Ruff: **PASS**;
+- V1 fixture validation: **PASS**;
+- deterministic control-plane demos: **5 / 5 PASS**;
+- pytest: **412 passed, 1 warning in 37.64s**.
+
+Frontend Quality run **#217** (`32498551783`) on that head: **PASS**.
+
+PR #39 had **0 inline review threads** at the acceptance transition.
+
+## Final accepted-state verification
+
+This file now records the accepted status only after the implementation head and the complete candidate ledger head independently passed both quality workflows.
+
+Because this status transition itself changes an acceptance-ledger path, the resulting accepted-state head must independently pass Backend Quality and Frontend Quality once more. That final green accepted-state head is the terminal acceptance fact; no additional document mutation is required merely to copy its own workflow identifiers back into itself.
+
+PR #39 must remain Draft and unmerged through that final verification.
 
 ## Explicitly deferred
 
