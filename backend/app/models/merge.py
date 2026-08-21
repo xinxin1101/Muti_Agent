@@ -110,15 +110,21 @@ class MergeQueueSnapshot(BaseModel):
 
             if attempt.outcome is MergeAttemptOutcome.REPAIRED:
                 if pending_conflict is None or pending_conflict.task_id != attempt.task_id:
-                    raise ValueError("repaired integration must immediately resolve its task conflict")
+                    raise ValueError(
+                        "repaired integration must immediately resolve its task conflict"
+                    )
                 if (
                     pending_conflict.previous_integration_commit
                     != attempt.previous_integration_commit
                 ):
-                    raise ValueError("repair must chain from the same pre-conflict integration head")
+                    raise ValueError(
+                        "repair must chain from the same pre-conflict integration head"
+                    )
                 pending_conflict = None
             elif pending_conflict is not None:
-                raise ValueError("unresolved conflict must be repaired before another task integrates")
+                raise ValueError(
+                    "unresolved conflict must be repaired before another task integrates"
+                )
 
             if attempt.task_id in completed:
                 raise ValueError("a task may be integrated only once")
