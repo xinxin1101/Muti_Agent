@@ -13,7 +13,6 @@ from app.models.sandbox import DockerSandboxPolicy
 from app.models.task import TaskContract
 from app.persistence import (
     PostgresDAGStore,
-    PostgresEvidenceStore,
     PostgresTaskLeaseStore,
     PostgresTaskReconciliationStore,
 )
@@ -25,6 +24,7 @@ from app.runtime.product_controller import DurableMultiAgentRunController
 from app.runtime.reconciler import IdempotentTaskReconciler
 from app.runtime.repair_execution_base import RepairAwareEvidenceBoundTaskExecutionBaseResolver
 from app.runtime.run_reconciler import DAGRunReconciler
+from app.trace.persistence import TraceAwarePostgresEvidenceStore
 from app.trace.worker import (
     TraceAwareLocalQueuedTaskExecutionBackend,
     TraceAwareQueuedTaskWorker,
@@ -94,7 +94,7 @@ async def execute_task_from_settings(
     if settings.database_url is None:
         raise ValueError("DEVFLOW_DATABASE_URL is required by queued workers")
 
-    evidence_store = PostgresEvidenceStore.from_url(
+    evidence_store = TraceAwarePostgresEvidenceStore.from_url(
         settings.database_url,
         echo=settings.database_echo,
     )
