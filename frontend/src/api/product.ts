@@ -1,4 +1,3 @@
-import { apiClient } from "./client";
 import type { ProductGitHubPublication } from "../types/publication";
 import type {
   ProductDiffKind,
@@ -13,6 +12,7 @@ import type {
   RunCreatePayload,
   RunLaunchResponse,
 } from "../types/product";
+import { apiClient } from "./client";
 
 const API_PREFIX = "/api/v1";
 
@@ -39,6 +39,52 @@ export type RequirementRunLaunchResponse = Readonly<{
   initial_ready_task_ids: readonly string[];
   launch_state: "QUEUED" | "PARTIAL" | "BROKER_UNAVAILABLE";
   dispatches: readonly RequirementTaskDispatch[];
+}>;
+
+export type HumanGateDecisionName = "AUTHORIZE_REPAIR" | "ABORT";
+export type IntegrationGateStateName =
+  | "AUTO_REPAIR_CANDIDATE"
+  | "AWAITING_HUMAN"
+  | "REPAIR_AUTHORIZED"
+  | "ABORTED";
+
+export type HumanGateSnapshot = Readonly<{
+  task_id: string;
+  task_branch: string;
+  task_commit: string;
+  integration_ref: string;
+  integration_head: string;
+  conflict_ref: string;
+  conflict_marker_commit: string;
+  evidence_fingerprint: string;
+  policy_fingerprint: string;
+  policy: Readonly<{
+    route: "AUTO_REPAIR_CANDIDATE" | "HUMAN_REQUIRED";
+    evidence_fingerprint: string;
+    automatic_repair_enabled: boolean;
+    human_repair_authorizable: boolean;
+    conflicting_paths: readonly string[];
+    reasons: readonly string[];
+  }>;
+  state: IntegrationGateStateName;
+  human_decision: Readonly<{
+    decision: HumanGateDecisionName;
+    actor: string;
+    note: string;
+    decision_ref: string;
+    decision_commit: string;
+    evidence_fingerprint: string;
+    policy_fingerprint: string;
+    conflict_marker_commit: string;
+  }> | null;
+  repair_may_start: boolean;
+  integration_may_advance: false;
+}>;
+
+export type HumanGateDecisionPayload = Readonly<{
+  evidence_fingerprint: string;
+  decision: HumanGateDecisionName;
+  note?: string;
 }>;
 
 export function listProjects(): Promise<readonly ProductProject[]> {
@@ -73,6 +119,23 @@ export function createRequirementRun(
 ): Promise<RequirementRunLaunchResponse> {
   return apiClient.postJson<RequirementRunLaunchResponse, RequirementRunCreatePayload>(
     `${API_PREFIX}/runs/from-requirement`,
+    payload,
+  );
+}
+
+export function listHumanGates(runId: string): Promise<readonly HumanGateSnapshot[]> {
+  return apiClient.getJson<readonly HumanGateSnapshot[]>(
+    `${API_PREFIX}/runs/${runId}/human-gates`,
+  );
+}
+
+export function decideHumanGate(
+  runId: string,
+  taskId: string,
+  payload: HumanGateDecisionPayload,
+): Promise<HumanGateSnapshot> {
+  return apiClient.postJson<HumanGateSnapshot, HumanGateDecisionPayload>(
+    `${API_PREFIX}/runs/${runId}/human-gates/${encodeURIComponent(taskId)}/decision`,
     payload,
   );
 }
