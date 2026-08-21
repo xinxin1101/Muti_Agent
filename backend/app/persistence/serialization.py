@@ -17,6 +17,7 @@ from app.models.multi_run import MultiTaskRunResult
 from app.models.repair import RepairRunResult
 from app.models.review import ReviewDecision
 from app.models.run import RunEvent, SingleTaskRunResult
+from app.models.trace import TaskTraceBatch
 from app.models.verification import VerificationResult
 from app.persistence.errors import PersistenceCorruptionError
 from app.persistence.types import ContextFingerprintReference, PersistenceEvidenceKind
@@ -36,6 +37,7 @@ EvidenceModel: TypeAlias = (
     | ContextFingerprintReference
     | WorkerDispatchEvent
     | WorkerExecutionEvidence
+    | TaskTraceBatch
 )
 TerminalRunResult: TypeAlias = SingleTaskRunResult | MultiTaskRunResult
 
@@ -54,6 +56,7 @@ _EVIDENCE_MODELS: dict[PersistenceEvidenceKind, type[BaseModel]] = {
     PersistenceEvidenceKind.CONTEXT_REFERENCE: ContextFingerprintReference,
     PersistenceEvidenceKind.DISPATCH_EVENT: WorkerDispatchEvent,
     PersistenceEvidenceKind.WORKER_EXECUTION: WorkerExecutionEvidence,
+    PersistenceEvidenceKind.TRACE_BATCH: TaskTraceBatch,
 }
 
 
