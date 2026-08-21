@@ -4,13 +4,13 @@ from time import perf_counter
 from uuid import UUID, uuid4
 
 from app.models.agent import AgentResponse, AgentRole
+from app.models.tools import ToolExecutionResult
 from app.models.trace import (
     TaskTraceBatch,
     TraceBatchSpan,
     TraceSpanKind,
     TraceSpanStatus,
 )
-from app.models.tools import ToolExecutionResult
 from app.models.verification import VerificationResult
 
 
