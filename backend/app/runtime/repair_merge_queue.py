@@ -151,7 +151,9 @@ class RepairAwareTopologicalMergeQueue(TopologicalMergeQueue):
         decision_commit = repair["human_decision_commit"]
         self._require_full_oid(decision_commit, label="human decision commit")
         if self._commit_parents(decision_commit) != (marker,):
-            raise MergeQueueError("repair human decision commit is not bound to the conflict marker")
+            raise MergeQueueError(
+                "repair human decision commit is not bound to the conflict marker"
+            )
         if self._resolve_tree(decision_commit) != self._resolve_tree(marker):
             raise MergeQueueError("repair human decision commit unexpectedly changes tree state")
 
@@ -215,7 +217,9 @@ class RepairAwareTopologicalMergeQueue(TopologicalMergeQueue):
         if repaired is not None:
             if self._commit_parents(marker) != (repaired.previous_integration_commit,):
                 raise MergeQueueError("resolved conflict marker parent changed after repair")
-            if self._resolve_tree(marker) != self._resolve_tree(repaired.previous_integration_commit):
+            if self._resolve_tree(marker) != self._resolve_tree(
+                repaired.previous_integration_commit
+            ):
                 raise MergeQueueError("resolved conflict marker tree changed after repair")
             return
 
