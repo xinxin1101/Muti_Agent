@@ -12,6 +12,7 @@ import pytest
 from app.agents import DeveloperAgent
 from app.models import (
     AgentResponse,
+    HumanGateDecision,
     MergeAttemptOutcome,
     RunEvent,
     SingleTaskRunResult,
@@ -193,7 +194,7 @@ class FakeEvidenceStore:
     async def load_run(self, run_id: UUID) -> PersistedRunSnapshot:
         assert run_id == self.run_id
         now = datetime.now(UTC)
-        task_payload, task_digest = canonical_payload(self.task)
+        _, task_digest = canonical_payload(self.task)
         worker_payload, worker_digest = canonical_payload(self.worker)
         evidence = [
             PersistedEvidence(
@@ -292,7 +293,7 @@ def test_persisted_repair_resumes_after_crash_before_git_cas(
         scheduler=scheduler,
         evidence=conflict,
     ).record_human_decision(
-        decision="AUTHORIZE_REPAIR",
+        decision=HumanGateDecision.AUTHORIZE_REPAIR,
         actor="maintainer",
         note="Bounded repair approved",
     )
