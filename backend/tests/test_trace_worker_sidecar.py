@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
 from uuid import uuid4
-
-import pytest
 
 from app.models.agent import AgentResponse, AgentRole, TokenUsage
 from app.models.dispatch import TaskDispatchEnvelope
@@ -33,8 +33,13 @@ class _GenerationObservingWorker:
         return "accepted-runtime-result"
 
 
-@pytest.mark.asyncio
-async def test_trace_persistence_failure_does_not_escape_sidecar_boundary(tmp_path) -> None:
+def test_trace_persistence_failure_does_not_escape_sidecar_boundary(tmp_path: Path) -> None:
+    asyncio.run(_trace_persistence_failure_does_not_escape_sidecar_boundary(tmp_path))
+
+
+async def _trace_persistence_failure_does_not_escape_sidecar_boundary(
+    tmp_path: Path,
+) -> None:
     trace_store = _FailingTraceStore()
     backend = TraceAwareLocalQueuedTaskExecutionBackend(
         trace_store=trace_store,
@@ -67,8 +72,11 @@ async def test_trace_persistence_failure_does_not_escape_sidecar_boundary(tmp_pa
     assert trace_store.calls == 1
 
 
-@pytest.mark.asyncio
-async def test_generation_extension_is_diagnostic_and_context_is_reset() -> None:
+def test_generation_extension_is_diagnostic_and_context_is_reset() -> None:
+    asyncio.run(_generation_extension_is_diagnostic_and_context_is_reset())
+
+
+async def _generation_extension_is_diagnostic_and_context_is_reset() -> None:
     inner = _GenerationObservingWorker()
     worker = TraceAwareQueuedTaskWorker(inner)  # type: ignore[arg-type]
     envelope = TaskDispatchEnvelope(
