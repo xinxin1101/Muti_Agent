@@ -17,7 +17,7 @@ from app.persistence import (
     PostgresTaskLeaseStore,
     PostgresTaskReconciliationStore,
 )
-from app.persistence.multi_completion import PostgresMultiTaskCompletionStore
+from app.persistence.repair_completion import RepairAwarePostgresMultiTaskCompletionStore
 from app.providers.siliconflow import SiliconFlowDriver
 from app.publication import GitHubPublicationGateway
 from app.runtime.integration_repair import IntegrationConflictRepairService
@@ -38,7 +38,7 @@ class _ProductRunController:
         *,
         controller: DurableMultiAgentRunController,
         task_reconciler: IdempotentTaskReconciler,
-        completion_store: PostgresMultiTaskCompletionStore,
+        completion_store: RepairAwarePostgresMultiTaskCompletionStore,
         lease_store: PostgresTaskLeaseStore,
     ) -> None:
         self._controller = controller
@@ -89,7 +89,7 @@ def build_product_service(settings: Settings) -> AutonomousProductRuntimeService
         settings.database_url,
         echo=settings.database_echo,
     )
-    completion_store = PostgresMultiTaskCompletionStore.from_url(
+    completion_store = RepairAwarePostgresMultiTaskCompletionStore.from_url(
         settings.database_url,
         echo=settings.database_echo,
     )
