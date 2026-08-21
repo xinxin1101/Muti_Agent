@@ -15,7 +15,7 @@ from app.models.integration_repair import IntegrationConflictRepairEvidence
 from app.models.merge import MergeAttemptOutcome, MergeQueueAttempt, MergeQueueSnapshot
 from app.models.publication import GitHubPublicationSourceBasis
 from app.models.task import TaskContract
-from app.models.verification import VerificationResult
+from app.models.verification import CheckResult, CheckType, VerificationResult
 from app.persistence.errors import PersistenceCorruptionError
 from app.persistence.types import (
     PersistedEvidence,
@@ -107,6 +107,19 @@ def _task(task_id: str, path: str) -> TaskContract:
     )
 
 
+def _passing_verification() -> VerificationResult:
+    return VerificationResult(
+        passed=True,
+        checks=[
+            CheckResult(
+                check_type=CheckType.SCOPE,
+                name="repair_scope",
+                passed=True,
+            )
+        ],
+    )
+
+
 def _snapshot(
     commits: dict[str, str],
     *,
@@ -193,7 +206,7 @@ def _snapshot(
             tool_calls=1,
             changed_files=["one.txt"],
         ),
-        verification=VerificationResult(passed=True, checks=[]),
+        verification=_passing_verification(),
     )
 
     evidence = [
