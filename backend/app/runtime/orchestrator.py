@@ -85,12 +85,19 @@ class SingleTaskOrchestrator:
             )
 
         try:
-            developer_result = await self._developer.run(
-                task,
-                workspace=workspace,
-                context_packet=developer_context,
-                trace=trace,
-            )
+            if trace is None:
+                developer_result = await self._developer.run(
+                    task,
+                    workspace=workspace,
+                    context_packet=developer_context,
+                )
+            else:
+                developer_result = await self._developer.run(
+                    task,
+                    workspace=workspace,
+                    context_packet=developer_context,
+                    trace=trace,
+                )
         except AgentProviderError as exc:
             machine.transition(TaskRunState.FAILED, detail="Developer model provider failed.")
             return self._result(
@@ -235,13 +242,21 @@ class SingleTaskOrchestrator:
                 )
 
             try:
-                decision = await self._reviewer.review(
-                    task,
-                    verification,
-                    workspace=workspace,
-                    context_packet=reviewer_context,
-                    trace=trace,
-                )
+                if trace is None:
+                    decision = await self._reviewer.review(
+                        task,
+                        verification,
+                        workspace=workspace,
+                        context_packet=reviewer_context,
+                    )
+                else:
+                    decision = await self._reviewer.review(
+                        task,
+                        verification,
+                        workspace=workspace,
+                        context_packet=reviewer_context,
+                        trace=trace,
+                    )
             except InvalidReviewerOutputError as exc:
                 machine.transition(
                     TaskRunState.FAILED,
@@ -374,14 +389,23 @@ class SingleTaskOrchestrator:
             )
 
         try:
-            repair_result = await self._repair.repair(
-                task,
-                failures,
-                attempt=attempt,
-                workspace=workspace,
-                context_packet=repair_context,
-                trace=trace,
-            )
+            if trace is None:
+                repair_result = await self._repair.repair(
+                    task,
+                    failures,
+                    attempt=attempt,
+                    workspace=workspace,
+                    context_packet=repair_context,
+                )
+            else:
+                repair_result = await self._repair.repair(
+                    task,
+                    failures,
+                    attempt=attempt,
+                    workspace=workspace,
+                    context_packet=repair_context,
+                    trace=trace,
+                )
         except RepairBudgetExhaustedError as exc:
             machine.transition(
                 TaskRunState.FAILED,
