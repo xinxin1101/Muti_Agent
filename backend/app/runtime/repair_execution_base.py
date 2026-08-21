@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pydantic import ValidationError
 
-from app.models.dispatch import WorkerExecutionEvidence
 from app.models.integration_gate import HumanGateDecision, HumanIntegrationDecision
 from app.models.integration_repair import IntegrationConflictRepairEvidence
 from app.models.merge import MergeAttemptOutcome, MergeQueueSnapshot
@@ -10,8 +9,8 @@ from app.persistence.dag import PersistedDAGSnapshot
 from app.persistence.errors import PersistenceCorruptionError
 from app.persistence.types import PersistedEvidence, PersistedRunSnapshot, PersistenceEvidenceKind
 from app.runtime.execution_base import (
-    EvidenceBoundTaskExecutionBaseResolver,
     _MAX_MERGE_ATTEMPTS,
+    EvidenceBoundTaskExecutionBaseResolver,
 )
 from app.workspace import LocalGitWorkspace, ReadOnlyCommitDiffReader
 
@@ -19,7 +18,7 @@ from app.workspace import LocalGitWorkspace, ReadOnlyCommitDiffReader
 class RepairAwareEvidenceBoundTaskExecutionBaseResolver(
     EvidenceBoundTaskExecutionBaseResolver
 ):
-    """Step 5.4 execution-base resolver extended only for accepted REPAIRED integration evidence."""
+    """Step 5.4 resolver extended only for accepted REPAIRED integration evidence."""
 
     @classmethod
     def _validated_merge_snapshots(
@@ -119,7 +118,8 @@ class RepairAwareEvidenceBoundTaskExecutionBaseResolver(
             worker_pair = successful_workers.get(attempt.task_id)
             if worker_pair != (attempt.task_base_commit, attempt.task_commit):
                 raise PersistenceCorruptionError(
-                    f"merge attempt for {attempt.task_id!r} lacks matching successful worker evidence"
+                    f"merge attempt for {attempt.task_id!r} lacks matching successful "
+                    "worker evidence"
                 )
             if not node.depends_on:
                 if attempt.task_base_commit != run_base_commit:
@@ -130,7 +130,8 @@ class RepairAwareEvidenceBoundTaskExecutionBaseResolver(
                 base_integrated = heads.get(attempt.task_base_commit)
                 if base_integrated is None or not set(node.depends_on).issubset(base_integrated):
                     raise PersistenceCorruptionError(
-                        "dependent task base is not a prior integration head containing dependencies"
+                        "dependent task base is not a prior integration head containing "
+                        "dependencies"
                     )
             if not set(node.depends_on).issubset(integrated):
                 raise PersistenceCorruptionError(
@@ -161,7 +162,10 @@ class RepairAwareEvidenceBoundTaskExecutionBaseResolver(
                     raise PersistenceCorruptionError(
                         "repair does not chain from the conflicted integration head"
                     )
-                if attempt.integration_commit is None or attempt.conflict_evidence_fingerprint is None:
+                if (
+                    attempt.integration_commit is None
+                    or attempt.conflict_evidence_fingerprint is None
+                ):
                     raise PersistenceCorruptionError("repaired merge attempt lacks repair identity")
                 repair = repairs.get(
                     (attempt.task_id, attempt.conflict_evidence_fingerprint)
@@ -190,7 +194,9 @@ class RepairAwareEvidenceBoundTaskExecutionBaseResolver(
                     "merge queue snapshot violates deterministic topological task order"
                 )
             if attempt.integration_commit is None:
-                raise PersistenceCorruptionError("integrated merge attempt lacks integration commit")
+                raise PersistenceCorruptionError(
+                    "integrated merge attempt lacks integration commit"
+                )
             integrated.add(attempt.task_id)
             heads[attempt.integration_commit] = frozenset(integrated)
             last_index = index
