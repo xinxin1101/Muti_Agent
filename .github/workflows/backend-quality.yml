@@ -133,7 +133,7 @@ jobs:
         run: docker build -f docker/verification.Dockerfile -t devflow-verifier:py311 .
 
       - name: Run Ruff
-        run: ruff check --fix --diff .
+        run: ruff check .
 
       - name: Validate V1 benchmark fixtures
         run: devflow-benchmark validate --suite ../benchmarks/v1/demo-suite.json
