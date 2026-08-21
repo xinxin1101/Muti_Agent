@@ -23,7 +23,8 @@ from app.persistence.types import (
 from app.runtime.conflict_classifier import GitMergeConflictClassifier
 from app.runtime.durable_human_gate import DurableHumanGateService
 from app.runtime.generation_worktrees import GenerationBoundWorktreeView
-from app.runtime.merge_queue import MergeQueueError, TopologicalMergeQueue
+from app.runtime.merge_queue import MergeQueueError
+from app.runtime.repair_merge_queue import RepairAwareTopologicalMergeQueue
 from app.runtime.scheduler import DAGScheduler
 
 
@@ -49,6 +50,16 @@ class MultiTaskWorkspaceResolver(Protocol):
     def resolve(self, project_id: UUID): ...
 
 
+class MultiTaskConflictRepairer(Protocol):
+    async def repair(
+        self,
+        *,
+        run_id: UUID,
+        gate,
+        queue_snapshot: MergeQueueSnapshot,
+    ): ...
+
+
 class DurableMultiAgentRunController:
     """Advance one persisted DAG Run from durable facts after a worker or human decision.
 
@@ -66,12 +77,14 @@ class DurableMultiAgentRunController:
         workspace_resolver: MultiTaskWorkspaceResolver,
         run_reconciler: MultiTaskRunReconciler,
         completion_store: MultiTaskCompletionStore,
+        conflict_repairer: MultiTaskConflictRepairer | None = None,
     ) -> None:
         self._evidence_store = evidence_store
         self._dag_store = dag_store
         self._workspace_resolver = workspace_resolver
         self._run_reconciler = run_reconciler
         self._completion_store = completion_store
+        self._conflict_repairer = conflict_repairer
 
     async def advance(self, run_id: UUID) -> MergeQueueSnapshot | None:
         """Advance from fresh facts, retrying one benign concurrent controller race."""
@@ -105,7 +118,7 @@ class DurableMultiAgentRunController:
                 if evidence.status is WorkerExecutionStatus.SUCCEEDED
             },
         )
-        queue = TopologicalMergeQueue(
+        queue = RepairAwareTopologicalMergeQueue(
             scheduler=scheduler,
             worktrees=worktrees,  # type: ignore[arg-type]
             base_workspace=workspace,
@@ -162,8 +175,18 @@ class DurableMultiAgentRunController:
                     abort_fingerprint=gate.evidence_fingerprint,
                     integration_head=merge_snapshot.head_commit,
                 )
-            # A pending or repair-authorized conflict remains intentionally paused here. A later
-            # bounded repair stage may act only after revalidating this same durable gate.
+                return merge_snapshot
+            if gate.state is IntegrationGateState.REPAIR_AUTHORIZED:
+                if self._conflict_repairer is None:
+                    return merge_snapshot
+                await self._conflict_repairer.repair(
+                    run_id=run_id,
+                    gate=gate,
+                    queue_snapshot=merge_snapshot,
+                )
+                # Reconstruct again from persisted/Git facts. Never mutate the stopped in-memory
+                # queue into a successful state after the repair service returns.
+                return await self._advance_once(run_id)
             return merge_snapshot
 
         failed = {
@@ -324,7 +347,7 @@ class DurableMultiAgentRunController:
     def _integrate_available(
         *,
         scheduler: DAGScheduler,
-        queue: TopologicalMergeQueue,
+        queue: RepairAwareTopologicalMergeQueue,
         worktrees: GenerationBoundWorktreeView,
         executions: dict[str, WorkerExecutionEvidence],
     ) -> MergeQueueSnapshot:
