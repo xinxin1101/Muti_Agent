@@ -4,8 +4,8 @@ from uuid import UUID
 
 from app.agents.dag_planner import MultiTaskPlannerAgent
 from app.agents.developer import DeveloperAgent
-from app.api.autonomous import AutonomousProductRuntimeService
 from app.api.catalog import PostgresProductCatalog
+from app.api.trace import TraceableAutonomousProductRuntimeService
 from app.core.settings import Settings
 from app.dispatch import DurableDramatiqTaskDispatcher
 from app.models.sandbox import DockerSandboxPolicy
@@ -55,7 +55,7 @@ class _ProductRunController:
         await self._lease_store.dispose()
 
 
-def build_product_service(settings: Settings) -> AutonomousProductRuntimeService:
+def build_product_service(settings: Settings) -> TraceableAutonomousProductRuntimeService:
     if settings.database_url is None:
         raise ValueError("DEVFLOW_DATABASE_URL is required by the product API")
 
@@ -174,7 +174,7 @@ def build_product_service(settings: Settings) -> AutonomousProductRuntimeService
             timeout_seconds=settings.github_publication_timeout_seconds,
         )
     )
-    return AutonomousProductRuntimeService(
+    return TraceableAutonomousProductRuntimeService(
         catalog=catalog,
         evidence_store=evidence_store,
         dag_store=dag_store,
@@ -185,4 +185,5 @@ def build_product_service(settings: Settings) -> AutonomousProductRuntimeService
         github_publisher=github_publisher,
         requirement_planner=requirement_planner,
         run_controller=run_controller,
+        trace_dispatch_reader=dispatch_store,
     )
