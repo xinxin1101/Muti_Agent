@@ -2,12 +2,18 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useParams } from "react-router";
 
-import { getRun, getRunDAG, getRunMetrics } from "../api/product";
+import {
+  getRun,
+  getRunDAG,
+  getRunMetrics,
+  type RequirementRunLaunchResponse,
+} from "../api/product";
 import {
   parseRuntimeEventSummary,
   runtimeEventStreamUrl,
 } from "../api/runtime-events";
 import { GitHubPublication } from "../components/GitHubPublication";
+import { HumanGatePanel } from "../components/HumanGatePanel";
 import { RunDAG } from "../components/RunDAG";
 import { RunMetrics } from "../components/RunMetrics";
 import { StatusBadge } from "../components/StatusBadge";
@@ -15,7 +21,7 @@ import type { RunLaunchResponse } from "../types/product";
 import type { RuntimeEventSummary } from "../types/runtime";
 
 type LaunchState = Readonly<{
-  launch?: RunLaunchResponse;
+  launch?: RunLaunchResponse | RequirementRunLaunchResponse;
 }>;
 
 type StreamStatus =
@@ -119,6 +125,7 @@ export function RunDashboardPage() {
         ) {
           void queryClient.invalidateQueries({ queryKey: ["run", runId] });
           void queryClient.invalidateQueries({ queryKey: ["run-dag", runId] });
+          void queryClient.invalidateQueries({ queryKey: ["human-gates", runId] });
         }
       } catch (error) {
         source.close();
@@ -162,19 +169,9 @@ export function RunDashboardPage() {
         <StatusBadge status={run.data.status} />
       </div>
 
-      {launch ? (
-        <div
-          className={[
-            "rounded-xl border p-4 text-sm",
-            launch.dispatch_status === "QUEUED"
-              ? "border-emerald-400/20 bg-emerald-400/5 text-emerald-200"
-              : "border-amber-400/20 bg-amber-400/5 text-amber-100",
-          ].join(" ")}
-        >
-          Dispatch: {launch.dispatch_status}
-          {launch.detail ? ` · ${launch.detail}` : ""}
-        </div>
-      ) : null}
+      {launch ? <LaunchNotice launch={launch} /> : null}
+
+      <HumanGatePanel runId={runId} />
 
       <dl className="grid gap-4 rounded-xl border border-slate-800 bg-slate-900/50 p-5 md:grid-cols-3">
         <Metric label="Base commit" value={run.data.base_commit.slice(0, 12)} mono />
@@ -299,6 +296,42 @@ export function RunDashboardPage() {
         ))}
       </div>
     </section>
+  );
+}
+
+function LaunchNotice({
+  launch,
+}: {
+  launch: RunLaunchResponse | RequirementRunLaunchResponse;
+}) {
+  if ("launch_state" in launch) {
+    const queued = launch.dispatches.filter((item) => item.state === "QUEUED").length;
+    return (
+      <div
+        className={[
+          "rounded-xl border p-4 text-sm",
+          launch.launch_state === "QUEUED"
+            ? "border-emerald-400/20 bg-emerald-400/5 text-emerald-200"
+            : "border-amber-400/20 bg-amber-400/5 text-amber-100",
+        ].join(" ")}
+      >
+        Multi-Agent launch: {launch.launch_state} · {queued}/{launch.dispatches.length} root tasks queued
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={[
+        "rounded-xl border p-4 text-sm",
+        launch.dispatch_status === "QUEUED"
+          ? "border-emerald-400/20 bg-emerald-400/5 text-emerald-200"
+          : "border-amber-400/20 bg-amber-400/5 text-amber-100",
+      ].join(" ")}
+    >
+      Dispatch: {launch.dispatch_status}
+      {launch.detail ? ` · ${launch.detail}` : ""}
+    </div>
   );
 }
 
