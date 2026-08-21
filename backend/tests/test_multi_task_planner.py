@@ -3,8 +3,7 @@ import json
 
 import pytest
 
-from app.agents.dag_planner import MultiTaskPlannerAgent
-from app.agents.errors import InvalidPlannerOutputError
+from app.agents import dag_planner, errors
 from app.models.agent import AgentRequest, AgentResponse
 
 
@@ -59,7 +58,7 @@ def _response(payload: object) -> AgentResponse:
 
 def test_multi_task_planner_returns_validated_dag() -> None:
     driver = FakeDriver([_response(VALID_DAG)])
-    planner = MultiTaskPlannerAgent(driver=driver, model="test/planner")
+    planner = dag_planner.MultiTaskPlannerAgent(driver=driver, model="test/planner")
 
     dag = asyncio.run(
         planner.plan(
@@ -77,7 +76,7 @@ def test_multi_task_planner_returns_validated_dag() -> None:
 def test_multi_task_planner_repairs_invalid_dag_once() -> None:
     invalid = {"tasks": [{"task": TASK_B, "depends_on": ["missing-task"]}]}
     driver = FakeDriver([_response(invalid), _response(VALID_DAG)])
-    planner = MultiTaskPlannerAgent(
+    planner = dag_planner.MultiTaskPlannerAgent(
         driver=driver,
         model="test/planner",
         max_schema_repair_attempts=1,
@@ -106,20 +105,20 @@ def test_multi_task_planner_rejects_task_count_over_bound() -> None:
         ]
     }
     driver = FakeDriver([_response(oversized)])
-    planner = MultiTaskPlannerAgent(
+    planner = dag_planner.MultiTaskPlannerAgent(
         driver=driver,
         model="test/planner",
         max_tasks=2,
         max_schema_repair_attempts=0,
     )
 
-    with pytest.raises(InvalidPlannerOutputError):
+    with pytest.raises(errors.InvalidPlannerOutputError):
         asyncio.run(planner.plan("Split this work."))
 
 
 def test_multi_task_planner_rejects_empty_requirement_before_provider_call() -> None:
     driver = FakeDriver([])
-    planner = MultiTaskPlannerAgent(driver=driver, model="test/planner")
+    planner = dag_planner.MultiTaskPlannerAgent(driver=driver, model="test/planner")
 
     with pytest.raises(ValueError, match="requirement must not be empty"):
         asyncio.run(planner.plan("   "))
