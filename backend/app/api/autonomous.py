@@ -6,16 +6,23 @@ from typing import Protocol
 from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, status
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from app.agents.errors import InvalidPlannerOutputError
 from app.api.github_publication import ProductRuntimeServiceWithGitHubPublication
-from app.api.service import ProductWorkspaceNotReadyError
+from app.api.publication import _require_repaired_publication_authority
+from app.api.service import (
+    ProductDiffUnavailableError,
+    ProductWorkspaceNotReadyError,
+    _DiffCommitPair,
+)
 from app.dispatch.errors import TaskDispatchBrokerError
 from app.models.dag import TaskDAG
 from app.models.dispatch import TaskDispatchReceipt
 from app.models.integration_gate import HumanGateDecision, IntegrationGateSnapshot
+from app.models.merge import MergeAttemptOutcome, MergeQueueSnapshot
 from app.persistence.errors import PersistenceConflictError, PersistenceCorruptionError
+from app.persistence.types import PersistedRunSnapshot, PersistenceEvidenceKind
 from app.providers.errors import AgentProviderError
 from app.runtime.durable_human_gate import DurableHumanGateService
 from app.runtime.merge_queue import MergeQueueError
@@ -236,6 +243,66 @@ class AutonomousProductRuntimeService(ProductRuntimeServiceWithGitHubPublication
             raise ProductWorkspaceNotReadyError(
                 f"managed workspace is not trustworthy for project {project_id}"
             ) from exc
+
+    @staticmethod
+    def _integration_commit_pair(
+        snapshot: PersistedRunSnapshot,
+        task_id: str,
+    ) -> _DiffCommitPair:
+        candidates: list[_DiffCommitPair] = []
+        for evidence in snapshot.evidence:
+            if evidence.kind is not PersistenceEvidenceKind.MERGE_QUEUE_SNAPSHOT:
+                continue
+            try:
+                merge_snapshot = MergeQueueSnapshot.model_validate(evidence.payload)
+            except ValidationError as exc:
+                raise PersistenceCorruptionError(
+                    "persisted merge queue snapshot failed schema validation"
+                ) from exc
+            if merge_snapshot.run_base_commit != snapshot.base_commit:
+                raise PersistenceCorruptionError(
+                    "persisted merge queue snapshot does not match the Run base commit"
+                )
+            for attempt in merge_snapshot.attempts:
+                if attempt.task_id != task_id or attempt.outcome not in {
+                    MergeAttemptOutcome.INTEGRATED,
+                    MergeAttemptOutcome.REPAIRED,
+                }:
+                    continue
+                if attempt.integration_commit is None:
+                    raise PersistenceCorruptionError(
+                        "successful merge attempt lacks an integration commit"
+                    )
+                if attempt.outcome is MergeAttemptOutcome.REPAIRED:
+                    _require_repaired_publication_authority(snapshot, attempt)
+                candidates.append(
+                    _DiffCommitPair(
+                        base_commit=attempt.previous_integration_commit,
+                        head_commit=attempt.integration_commit,
+                        evidence_id=evidence.id,
+                        evidence_sha256=evidence.payload_sha256,
+                        task_commit=attempt.task_commit,
+                        task_base_commit=attempt.task_base_commit,
+                    )
+                )
+        if not candidates:
+            raise ProductDiffUnavailableError(
+                f"integration diff is not available for task {task_id!r}"
+            )
+        unique = {
+            (
+                item.base_commit,
+                item.head_commit,
+                item.task_commit,
+                item.task_base_commit,
+            )
+            for item in candidates
+        }
+        if len(unique) != 1:
+            raise PersistenceCorruptionError(
+                "persisted merge queue evidence defines conflicting integration commit pairs"
+            )
+        return max(candidates, key=lambda item: item.evidence_id)
 
     async def _dispatch_initial_task(
         self,
