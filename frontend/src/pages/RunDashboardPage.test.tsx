@@ -64,6 +64,8 @@ function runtimeEvent(
 }
 
 function humanGate(state: productApi.IntegrationGateStateName = "AWAITING_HUMAN") {
+  const recordedDecision: productApi.HumanGateDecisionName =
+    state === "ABORTED" ? "ABORT" : "AUTHORIZE_REPAIR";
   return {
     task_id: "task-1",
     task_branch: "devflow/task/task-1",
@@ -87,7 +89,7 @@ function humanGate(state: productApi.IntegrationGateStateName = "AWAITING_HUMAN"
       state === "AWAITING_HUMAN"
         ? null
         : {
-            decision: (state === "ABORTED" ? "ABORT" : "AUTHORIZE_REPAIR") as const,
+            decision: recordedDecision,
             actor: "product-user",
             note: "",
             decision_ref: "refs/devflow/integration-decisions/run-test",
