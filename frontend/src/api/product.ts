@@ -16,6 +16,31 @@ import type {
 
 const API_PREFIX = "/api/v1";
 
+export type RequirementRunCreatePayload = Readonly<{
+  project_id: string;
+  requirement: string;
+}>;
+
+export type RequirementTaskDispatch = Readonly<{
+  task_id: string;
+  state: "QUEUED" | "BROKER_UNAVAILABLE";
+  dispatch_id: string | null;
+  broker_message_id: string | null;
+  queue_name: string | null;
+  detail: string | null;
+}>;
+
+export type RequirementRunLaunchResponse = Readonly<{
+  run_id: string;
+  project_id: string;
+  base_commit: string;
+  dag_sha256: string;
+  task_ids: readonly string[];
+  initial_ready_task_ids: readonly string[];
+  launch_state: "QUEUED" | "PARTIAL" | "BROKER_UNAVAILABLE";
+  dispatches: readonly RequirementTaskDispatch[];
+}>;
+
 export function listProjects(): Promise<readonly ProductProject[]> {
   return apiClient.getJson<readonly ProductProject[]>(`${API_PREFIX}/projects`);
 }
@@ -37,8 +62,19 @@ export function listRuns(projectId?: string): Promise<readonly ProductRun[]> {
   return apiClient.getJson<readonly ProductRun[]>(`${API_PREFIX}/runs${query}`);
 }
 
+/** Legacy V1 TaskContract launch kept for benchmark/backward compatibility. */
 export function createRun(payload: RunCreatePayload): Promise<RunLaunchResponse> {
   return apiClient.postJson<RunLaunchResponse, RunCreatePayload>(`${API_PREFIX}/runs`, payload);
+}
+
+/** Phase 6 product entry: the browser supplies intent, never a TaskContract or Git authority. */
+export function createRequirementRun(
+  payload: RequirementRunCreatePayload,
+): Promise<RequirementRunLaunchResponse> {
+  return apiClient.postJson<RequirementRunLaunchResponse, RequirementRunCreatePayload>(
+    `${API_PREFIX}/runs/from-requirement`,
+    payload,
+  );
 }
 
 export function getRun(runId: string): Promise<ProductRunDetail> {
