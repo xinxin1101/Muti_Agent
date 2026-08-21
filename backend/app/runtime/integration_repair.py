@@ -52,8 +52,10 @@ class IntegrationConflictRepairService:
 
     Human authorization is necessary but never sufficient. The service reuses the exact accepted
     Git conflict and grants the Developer Agent write access only to classified conflict paths.
-    It then runs original TaskContract verification against the full merged tree, persists typed
-    repair evidence, and only then CAS-advances the integration ref.
+    It then runs original TaskContract verification against the full merged tree, anchors the
+    repair commit with a server-owned staging ref, persists typed repair evidence, and only then
+    CAS-advances the integration ref. The staging ref protects the persisted repair object across
+    a process crash without becoming execution authority.
     """
 
     def __init__(
@@ -95,11 +97,14 @@ class IntegrationConflictRepairService:
 
         workspace = self._workspace_resolver.resolve(snapshot.project_id)
         self._assert_base_clean(workspace)
+        staging_ref = self._repair_staging_ref(run_id, gate)
         existing = self._existing_repair(snapshot, gate)
         if existing is not None:
             self._validate_repair_commit(workspace, existing, worker.branch_name or "")
+            self._anchor_repair_commit(workspace, staging_ref, existing.repair_commit)
             self._advance_ref(workspace, queue_snapshot.integration_ref, existing)
             self._archive_live_gate_refs(workspace, gate)
+            self._release_repair_anchor(workspace, staging_ref, existing.repair_commit)
             return existing
 
         repair_task = self._conflict_only_task(task, gate)
@@ -176,6 +181,7 @@ class IntegrationConflictRepairService:
                 env=self._commit_environment(),
             ).stdout.strip()
             self._require_oid(repair_commit, label="integration repair commit")
+            self._anchor_repair_commit(workspace, staging_ref, repair_commit)
 
             evidence = IntegrationConflictRepairEvidence(
                 run_id=run_id,
@@ -195,6 +201,7 @@ class IntegrationConflictRepairService:
             await self._repair_store.record_integration_repair(evidence)
             self._advance_ref(workspace, queue_snapshot.integration_ref, evidence)
             self._archive_live_gate_refs(workspace, gate)
+            self._release_repair_anchor(workspace, staging_ref, evidence.repair_commit)
             return evidence
         finally:
             self._remove_repair_worktree(workspace, repair_path)
@@ -287,6 +294,13 @@ class IntegrationConflictRepairService:
             max_retries=0,
         )
 
+    @staticmethod
+    def _repair_staging_ref(run_id: UUID, gate: IntegrationGateSnapshot) -> str:
+        return (
+            f"refs/devflow/integration-repairs/{run_id.hex}/"
+            f"{gate.conflict_marker_commit}"
+        )
+
     def _repair_path(self, run_id: UUID, task_id: str) -> Path:
         slug = re.sub(r"[^A-Za-z0-9_-]+", "-", task_id).strip("-_").lower() or "task"
         path = self._repair_root / run_id.hex / f"{slug[:48]}-{uuid4().hex[:12]}"
@@ -317,6 +331,68 @@ class IntegrationConflictRepairService:
             self._git(workspace, ["worktree", "remove", "--force", str(path)], check=False)
         if path.exists():
             shutil.rmtree(path, ignore_errors=True)
+
+    def _anchor_repair_commit(
+        self,
+        workspace: LocalGitWorkspace,
+        staging_ref: str,
+        repair_commit: str,
+    ) -> None:
+        current = self._resolve_optional_ref(workspace, staging_ref)
+        if current == repair_commit:
+            return
+        if current is not None:
+            raise PersistenceConflictError(
+                "integration repair staging ref already protects a different commit"
+            )
+        zero_oid = "0" * len(repair_commit)
+        created = self._git(
+            workspace,
+            [
+                "update-ref",
+                "-m",
+                "DevFlow durable integration repair staging",
+                staging_ref,
+                repair_commit,
+                zero_oid,
+            ],
+            check=False,
+        )
+        if created.returncode != 0:
+            raise PersistenceConflictError(
+                "could not create durable integration repair staging ref"
+            )
+        if self._resolve_ref(workspace, staging_ref) != repair_commit:
+            raise PersistenceCorruptionError(
+                "integration repair staging ref did not protect the expected commit"
+            )
+
+    def _release_repair_anchor(
+        self,
+        workspace: LocalGitWorkspace,
+        staging_ref: str,
+        repair_commit: str,
+    ) -> None:
+        current = self._resolve_optional_ref(workspace, staging_ref)
+        if current is None:
+            return
+        if current != repair_commit:
+            raise PersistenceConflictError(
+                "integration repair staging ref changed before cleanup"
+            )
+        deleted = self._git(
+            workspace,
+            ["update-ref", "-d", staging_ref, repair_commit],
+            check=False,
+        )
+        if deleted.returncode != 0:
+            raise PersistenceConflictError(
+                "could not release durable integration repair staging ref"
+            )
+        if self._resolve_optional_ref(workspace, staging_ref) is not None:
+            raise PersistenceCorruptionError(
+                "integration repair staging ref remained after cleanup"
+            )
 
     def _advance_ref(
         self,
