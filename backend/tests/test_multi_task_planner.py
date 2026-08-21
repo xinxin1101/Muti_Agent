@@ -6,7 +6,6 @@ import pytest
 from app.agents import InvalidPlannerOutputError, MultiTaskPlannerAgent
 from app.models.agent import AgentRequest, AgentResponse
 
-
 TASK_A = {
     "task_id": "auth-model",
     "objective": "Add JWT token models and helpers.",
