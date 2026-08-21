@@ -9,7 +9,10 @@ from app.models.multi_run import MultiTaskRunResult
 from app.models.run import TaskRunState
 from app.models.scheduler import TaskScheduleState
 from app.models.worker import WorkerTaskResult
-from app.persistence.errors import PersistenceCorruptionError
+from app.persistence.errors import (
+    PersistenceConflictError,
+    PersistenceCorruptionError,
+)
 from app.persistence.serialization import canonical_payload
 from app.persistence.types import (
     PersistedRunSnapshot,
@@ -17,8 +20,9 @@ from app.persistence.types import (
     PersistenceEvidenceKind,
 )
 from app.runtime.conflict_classifier import GitMergeConflictClassifier
+from app.runtime.durable_human_gate import DurableHumanGateService
 from app.runtime.generation_worktrees import GenerationBoundWorktreeView
-from app.runtime.merge_queue import TopologicalMergeQueue
+from app.runtime.merge_queue import MergeQueueError, TopologicalMergeQueue
 from app.runtime.scheduler import DAGScheduler
 
 
@@ -69,6 +73,17 @@ class DurableMultiAgentRunController:
         self._completion_store = completion_store
 
     async def advance(self, run_id: UUID) -> MergeQueueSnapshot | None:
+        """Advance from fresh facts, retrying one benign concurrent controller race."""
+
+        for attempt in range(2):
+            try:
+                return await self._advance_once(run_id)
+            except (MergeQueueError, PersistenceConflictError):
+                if attempt == 1:
+                    raise
+        raise AssertionError("bounded controller retry loop terminated unexpectedly")
+
+    async def _advance_once(self, run_id: UUID) -> MergeQueueSnapshot | None:
         snapshot = await self._evidence_store.load_run(run_id)
         if snapshot.status is not PersistedRunStatus.RUNNING:
             return None
@@ -124,6 +139,18 @@ class DurableMultiAgentRunController:
                 task_id=merge_snapshot.attempts[-1].task_id,
                 stage="integration",
                 sequence=merge_snapshot.attempts[-1].sequence,
+            )
+            human_gate = DurableHumanGateService(
+                evidence_store=self._evidence_store,
+                dag_store=self._dag_store,
+                workspace_resolver=self._workspace_resolver,
+            )
+            await human_gate.persist_live_gate(
+                run_id=run_id,
+                queue_snapshot=merge_snapshot,
+                scheduler=scheduler,
+                conflict=conflict,
+                workspace=workspace,
             )
             return merge_snapshot
 
