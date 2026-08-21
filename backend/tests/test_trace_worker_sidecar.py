@@ -8,9 +8,9 @@ from app.models.agent import AgentResponse, AgentRole, TokenUsage
 from app.models.dispatch import TaskDispatchEnvelope
 from app.trace.collector import TaskTraceCollector
 from app.trace.worker import (
+    _TRACE_GENERATION,
     TraceAwareLocalQueuedTaskExecutionBackend,
     TraceAwareQueuedTaskWorker,
-    _TRACE_GENERATION,
 )
 
 
