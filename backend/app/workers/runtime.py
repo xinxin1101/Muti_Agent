@@ -19,10 +19,11 @@ from app.persistence import (
 )
 from app.persistence.multi_completion import PostgresMultiTaskCompletionStore
 from app.providers.siliconflow import SiliconFlowDriver
-from app.runtime.execution_base import EvidenceBoundTaskExecutionBaseResolver
+from app.runtime.integration_repair import IntegrationConflictRepairService
 from app.runtime.orchestrator import SingleTaskOrchestrator
 from app.runtime.product_controller import DurableMultiAgentRunController
 from app.runtime.reconciler import IdempotentTaskReconciler
+from app.runtime.repair_execution_base import RepairAwareEvidenceBoundTaskExecutionBaseResolver
 from app.runtime.run_reconciler import DAGRunReconciler
 from app.verification import DeterministicVerifier, DockerSandboxRunner
 from app.workers.executor import (
@@ -46,11 +47,7 @@ def resolve_worker_id(settings: Settings) -> str:
     return settings.worker_id or _generated_worker_id(os.getpid())
 
 
-def build_single_task_runner(settings: Settings) -> SingleTaskOrchestrator:
-    driver = SiliconFlowDriver.from_settings(settings)
-    developer = DeveloperAgent(driver=driver, model=settings.developer_model)
-    reviewer = ReviewerAgent(driver=driver, model=settings.reviewer_model)
-    repair = RepairAgent(driver=driver, model=settings.repair_model)
+def build_verifier(settings: Settings) -> DeterministicVerifier:
     policy = DockerSandboxPolicy(
         image=settings.verification_sandbox_image,
         cpus=settings.verification_sandbox_cpus,
@@ -59,13 +56,20 @@ def build_single_task_runner(settings: Settings) -> SingleTaskOrchestrator:
         tmpfs_mb=settings.verification_sandbox_tmpfs_mb,
         shm_mb=settings.verification_sandbox_shm_mb,
     )
-    verifier = DeterministicVerifier(
+    return DeterministicVerifier(
         command_timeout_seconds=settings.verification_sandbox_timeout_seconds,
         command_runner=DockerSandboxRunner(policy),
     )
+
+
+def build_single_task_runner(settings: Settings) -> SingleTaskOrchestrator:
+    driver = SiliconFlowDriver.from_settings(settings)
+    developer = DeveloperAgent(driver=driver, model=settings.developer_model)
+    reviewer = ReviewerAgent(driver=driver, model=settings.reviewer_model)
+    repair = RepairAgent(driver=driver, model=settings.repair_model)
     return SingleTaskOrchestrator(
         developer=developer,
-        verifier=verifier,
+        verifier=build_verifier(settings),
         reviewer=reviewer,
         repair=repair,
         developer_model=settings.developer_model,
@@ -113,7 +117,7 @@ async def execute_task_from_settings(
     task_reconciler = None
     try:
         resolver = ManagedProjectWorkspaceResolver(settings.workspace_root / "repos")
-        execution_base_resolver = EvidenceBoundTaskExecutionBaseResolver(
+        execution_base_resolver = RepairAwareEvidenceBoundTaskExecutionBaseResolver(
             dag_reader=dag_store,
             workspace_resolver=resolver,
         )
@@ -152,12 +156,22 @@ async def execute_task_from_settings(
             task_reconciler=task_reconciler,
             execution_base_resolver=execution_base_resolver,
         )
+        driver = SiliconFlowDriver.from_settings(settings)
+        conflict_repairer = IntegrationConflictRepairService(
+            evidence_store=evidence_store,
+            repair_store=completion_store,
+            workspace_resolver=resolver,
+            developer=DeveloperAgent(driver=driver, model=settings.developer_model),
+            verifier=build_verifier(settings),
+            repair_root=settings.workspace_root / "integration-repairs",
+        )
         controller = DurableMultiAgentRunController(
             evidence_store=evidence_store,
             dag_store=dag_store,
             workspace_resolver=resolver,
             run_reconciler=run_reconciler,
             completion_store=completion_store,
+            conflict_repairer=conflict_repairer,
         )
         await controller.advance(envelope.run_id)
         return result
