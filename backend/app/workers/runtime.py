@@ -17,7 +17,7 @@ from app.persistence import (
     PostgresTaskLeaseStore,
     PostgresTaskReconciliationStore,
 )
-from app.persistence.multi_completion import PostgresMultiTaskCompletionStore
+from app.persistence.repair_completion import RepairAwarePostgresMultiTaskCompletionStore
 from app.providers.siliconflow import SiliconFlowDriver
 from app.runtime.integration_repair import IntegrationConflictRepairService
 from app.runtime.orchestrator import SingleTaskOrchestrator
@@ -110,7 +110,7 @@ async def execute_task_from_settings(
         settings.database_url,
         echo=settings.database_echo,
     )
-    completion_store = PostgresMultiTaskCompletionStore.from_url(
+    completion_store = RepairAwarePostgresMultiTaskCompletionStore.from_url(
         settings.database_url,
         echo=settings.database_echo,
     )
