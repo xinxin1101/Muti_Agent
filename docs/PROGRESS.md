@@ -5,13 +5,13 @@ This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The developmen
 ## Current position
 
 - Current product milestone: **Phase 6 — Autonomous Multi-Agent Product Loop — ACCEPTED / COMPLETE**
-- Current durable-runtime item: **Step 5.6 — Causal Trace Correlation — IMPLEMENTATION ACCEPTED / FINAL LEDGER CI PENDING**
-- Next durable-runtime backlog item after 5.6 acceptance: **Step 5.7 — Operator Recovery / Approval Surface**
+- Completed durable-runtime item: **Step 5.6 — Causal Trace Correlation — ACCEPTED / COMPLETE**
+- Next durable-runtime backlog item: **Step 5.7 — Operator Recovery / Approval Surface**
 - Phase 1 status: **ACCEPTED / COMPLETE**
 - Phase 2 status: **ACCEPTED / COMPLETE**
 - Phase 3 status: **ACCEPTED / COMPLETE**
 - Phase 4 status: **ACCEPTED / COMPLETE**
-- Phase 5 status: **IN PROGRESS** — 5.1–5.5 accepted; 5.6 implementation accepted and awaiting final ledger CI; 5.7–5.8 remain unaccepted backlog
+- Phase 5 status: **IN PROGRESS** — 5.1–5.6 accepted; 5.7–5.8 remain unaccepted backlog
 - Phase 6 status: **ACCEPTED / COMPLETE**
 - V0.1 status: **ACCEPTED / COMPLETE**
 - V0.2 status: **ACCEPTED / COMPLETE**
@@ -225,7 +225,7 @@ Phase 5 strengthens long-running execution, crash recovery, causal observability
 | 5.3 | Idempotent Task Reconciler | **ACCEPTED / COMPLETE** | fresh locked prepare/publication revalidation; implementation head `0d7586405853f19923b906b782ac6ab167886ffe`; Backend 385 tests + 5/5 demos |
 | 5.4 | DAG-wide Run Reconciliation | **ACCEPTED / COMPLETE** | persisted-DAG frontier + integration-aware execution bases + Step 5.3-only dispatch authority; implementation head `16be10b49a563429f459e337410bcb2c94a1d3ae`; Backend 393 tests + 5/5 demos |
 | 5.5 | Durable Human Pause / Resume | **ACCEPTED / COMPLETE via Phase 6** | durable typed Human decision + restart-safe bounded repair; hardening head `6673d87a3aea15a68196a15818a109e74046d1d7` |
-| 5.6 | Causal Trace Correlation | **IMPLEMENTATION ACCEPTED / FINAL LEDGER CI PENDING** | metadata-only `TRACE_BATCH` + durable Run→Task→Dispatch→Generation correlation + read-only projector/API; implementation head `e4942113ae5d10283cb31e6be3f832d04a782b61`; Backend 412 tests + 5/5 demos; Frontend green |
+| 5.6 | Causal Trace Correlation | **ACCEPTED / COMPLETE** | metadata-only `TRACE_BATCH` + durable Run→Task→Dispatch→Generation correlation + read-only projector/API; implementation head `e4942113ae5d10283cb31e6be3f832d04a782b61`; Backend 412 tests + 5/5 demos; candidate ledger `f0ca4d5f76cfc376d65cbc342648f01a8faf4939` strict CI green |
 | 5.7 | Operator Recovery / Approval Surface | **PARTIAL / NOT ACCEPTED** | Phase 6 exposes Human Gate approval UI/API, but broader recovery/operator controls remain open |
 | 5.8 | Chaos / Recovery Benchmark + V1.1 Acceptance | **PARTIAL / NOT ACCEPTED** | Phase 6 covers repair DB→Git CAS crash/GC recovery, not the full V1.1 chaos matrix |
 
@@ -287,9 +287,9 @@ Accepted guarantees include:
 
 Hardening head `6673d87a3aea15a68196a15818a109e74046d1d7` passed strict Backend and Frontend quality gates.
 
-## Step 5.6 — Causal Trace Correlation — IMPLEMENTATION ACCEPTED / FINAL LEDGER CI PENDING
+## Step 5.6 — Causal Trace Correlation — ACCEPTED / COMPLETE
 
-Accepted implementation architecture:
+Accepted architecture:
 
 ```text
 Persisted Run / Tasks / DAG
@@ -317,7 +317,7 @@ RUN
      └─ INTEGRATION
 ```
 
-Step 5.6 implementation guarantees:
+Accepted guarantees:
 
 - trace is diagnostic-only and never becomes scheduler/recovery/success authority;
 - `TRACE_BATCH` stores metadata, not model/tool transcripts;
@@ -329,7 +329,7 @@ Step 5.6 implementation guarantees:
 - dispatch/generation correlation is reconstructed from durable server-owned facts;
 - `TRACE_BATCH.generation` must agree with durable lease events or projection fails closed;
 - `run_token` remains write authority and never enters trace payload/API output;
-- PostgreSQL TRACE persistence inherits existing typed/hash/fencing/idempotency boundaries;
+- PostgreSQL trace persistence inherits existing typed/hash/fencing/idempotency boundaries;
 - trace persistence failure is isolated and cannot convert task success into failure or authorize retry;
 - Product API `GET /api/v1/runs/{run_id}/trace` accepts no browser-authored correlation selectors;
 - bounded/corrupt trace projection fails as observability failure without mutating Run truth.
@@ -347,7 +347,7 @@ credentials/API keys
 run_token
 ```
 
-Implementation head before ledger commits:
+Implementation head:
 
 `e4942113ae5d10283cb31e6be3f832d04a782b61`
 
@@ -364,14 +364,26 @@ Backend Quality run #919 (`32497790074`):
 
 Frontend Quality run #212 (`32497790067`): **PASS** for locked install, typecheck, lint, tests and production build.
 
+Candidate design/progress/workflow ledger head:
+
+`f0ca4d5f76cfc376d65cbc342648f01a8faf4939`
+
+Backend Quality run #924 (`32498551791`) on that candidate ledger: **PASS**, including **5/5 demos** and **412 passed, 1 warning in 37.64s**.
+
+Frontend Quality run #217 (`32498551783`) on that candidate ledger: **PASS**.
+
+PR #39 had **0 inline review threads** at the acceptance transition.
+
 Design / acceptance:
 
 - `docs/CAUSAL_TRACE_CORRELATION.md`
 - `docs/STEP_5_6_ACCEPTANCE.md`
 
-Final acceptance rule:
+Frozen Step 5.6 boundary:
 
-> The ledger head containing the Step 5.6 design, acceptance status, `PROGRESS.md`, and both workflow path gates must independently pass Backend Quality and Frontend Quality before Step 5.6 becomes fully **ACCEPTED / COMPLETE**.
+> **Trace may explain accepted runtime history; it may not decide, repair, schedule, resume, verify, merge, finalize, or publish that history.**
+
+The accepted-state ledger head created by the final status transition must itself pass Backend Quality and Frontend Quality. No subsequent document mutation is required merely to copy that head's own CI identifiers back into this file.
 
 ---
 
@@ -436,7 +448,7 @@ Frozen Phase 6 boundary:
 
 > **Natural-language intent may start the Run; only validated and persisted server-side facts may advance or finish it.**
 
-Remaining V1.1 work after Step 5.6 final ledger acceptance:
+Remaining V1.1 work:
 
 ```text
 Phase 5.7  broader Operator Recovery / Approval Surface    NOT ACCEPTED
@@ -447,28 +459,14 @@ These remain separate from the already-accepted Phase 6 Autonomous Multi-Agent P
 
 ---
 
-# Acceptance gate now in progress
+# Current acceptance boundary
 
-The Step 5.6 implementation head is green. This ledger commit intentionally does **not** yet declare Step 5.6 fully accepted.
+Step 5.6 is now **ACCEPTED / COMPLETE** because both its implementation head and its complete candidate ledger independently passed strict Backend and Frontend quality gates before the accepted status was written.
 
-Required final gate:
+The accepted-state ledger head containing this status must now independently pass both workflows once more. When it does, that external CI result completes the final acceptance condition without requiring a self-referential follow-up edit.
 
-```text
-Step 5.6 design ledger
-        +
-Step 5.6 acceptance ledger
-        +
-PROGRESS status
-        +
-Backend/Frontend workflow path gates
-        ↓
-final ledger head
-        ↓
-Backend Quality PASS
-        +
-Frontend Quality PASS
-        ↓
-Step 5.6 ACCEPTED / COMPLETE
-```
+Next core development target:
 
-After that gate, the next core development target is Step 5.7 — Operator Recovery / Approval Surface. It may consume causal trace only as read-only diagnostic context; every mutating operator action must still receive fresh PostgreSQL/Git/lease/fencing revalidation.
+**Step 5.7 — Operator Recovery / Approval Surface**
+
+It may consume Causal Trace only as read-only diagnostic context. Every mutating operator action must still receive fresh PostgreSQL/Git/lease/fencing revalidation.
