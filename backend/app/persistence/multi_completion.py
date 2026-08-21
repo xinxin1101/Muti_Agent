@@ -15,6 +15,7 @@ from app.models.events import (
     RuntimeEventSource,
 )
 from app.models.integration_gate import HumanGateDecision, HumanIntegrationDecision
+from app.models.integration_repair import IntegrationConflictRepairEvidence
 from app.models.merge import MergeQueueSnapshot
 from app.models.multi_run import MultiTaskRunResult
 from app.models.run import TaskRunState
@@ -23,12 +24,93 @@ from app.persistence.errors import PersistenceConflictError, PersistenceCorrupti
 from app.persistence.events import append_runtime_event
 from app.persistence.models import EvidenceRow, TaskRow
 from app.persistence.repository import PostgresEvidenceStore
-from app.persistence.serialization import canonical_payload, verify_payload_hash
+from app.persistence.serialization import canonical_payload, decode_evidence, verify_payload_hash
 from app.persistence.types import PersistedRunStatus, PersistenceEvidenceKind
+
+_SCHEMA_VERSION = 1
 
 
 class PostgresMultiTaskCompletionStore(PostgresEvidenceStore):
-    """Finalize a DAG Run only after fresh PostgreSQL evidence revalidation."""
+    """Persist Phase 6 integration repair and terminal DAG evidence with fresh validation."""
+
+    async def record_integration_repair(
+        self,
+        evidence: IntegrationConflictRepairEvidence,
+    ) -> tuple[int, str]:
+        """Persist one accepted repair before Git integration-ref advancement.
+
+        The deterministic key makes a crash after PostgreSQL commit but before Git CAS recoverable:
+        the repair service can reload and reuse the same repair commit instead of asking an Agent to
+        generate another result.
+        """
+
+        payload, digest = canonical_payload(evidence)
+        decode_evidence(PersistenceEvidenceKind.INTEGRATION_REPAIR, payload)
+        key = f"integration:repair:{evidence.task_id}:{evidence.conflict_evidence_fingerprint}"
+
+        async with self._session_factory.begin() as session:
+            run = await self._locked_run(session, evidence.run_id)
+            if run.status != PersistedRunStatus.RUNNING.value:
+                raise PersistenceConflictError("terminal persisted runs are append-closed")
+            await self._locked_task(session, evidence.run_id, evidence.task_id)
+
+            existing = (
+                await session.execute(
+                    select(EvidenceRow).where(
+                        EvidenceRow.run_id == evidence.run_id,
+                        EvidenceRow.evidence_key == key,
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                verify_payload_hash(
+                    existing.payload,
+                    existing.payload_sha256,
+                    label=f"integration repair evidence {existing.id}",
+                )
+                if (
+                    existing.kind != PersistenceEvidenceKind.INTEGRATION_REPAIR.value
+                    or existing.task_id != evidence.task_id
+                    or existing.payload_sha256 != digest
+                    or existing.payload != payload
+                ):
+                    raise PersistenceConflictError(
+                        "integration repair idempotency key was reused for different evidence"
+                    )
+                return existing.id, digest
+
+            row = EvidenceRow(
+                run_id=evidence.run_id,
+                task_id=evidence.task_id,
+                evidence_key=key,
+                kind=PersistenceEvidenceKind.INTEGRATION_REPAIR.value,
+                stage="integration_repair",
+                sequence=None,
+                schema_version=_SCHEMA_VERSION,
+                payload=payload,
+                payload_sha256=digest,
+            )
+            session.add(row)
+            await session.flush()
+            await append_runtime_event(
+                session,
+                run=run,
+                draft=RuntimeEventDraft(
+                    event_key=f"evidence:{row.id}",
+                    kind=RuntimeEventKind.EVIDENCE_RECORDED,
+                    source=RuntimeEventSource.INTEGRATION,
+                    task_id=evidence.task_id,
+                    message="Accepted human-authorized integration repair evidence recorded.",
+                    attributes={
+                        "evidence_id": row.id,
+                        "evidence_kind": PersistenceEvidenceKind.INTEGRATION_REPAIR.value,
+                        "payload_sha256": digest,
+                        "repair_commit": evidence.repair_commit,
+                        "conflict_evidence_fingerprint": evidence.conflict_evidence_fingerprint,
+                    },
+                ),
+            )
+            return row.id, digest
 
     async def finalize_multi_task_run(self, result: MultiTaskRunResult) -> None:
         payload, digest = canonical_payload(result)
