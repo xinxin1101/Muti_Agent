@@ -14,6 +14,7 @@ from app.models.events import (
     RuntimeEventLevel,
     RuntimeEventSource,
 )
+from app.models.integration_gate import HumanGateDecision, HumanIntegrationDecision
 from app.models.merge import MergeQueueSnapshot
 from app.models.multi_run import MultiTaskRunResult
 from app.models.run import TaskRunState
@@ -81,6 +82,7 @@ class PostgresMultiTaskCompletionStore(PostgresEvidenceStore):
                 self._validate_failure(
                     result=result,
                     dag=dag,
+                    evidence_rows=evidence_rows,
                     worker_evidence=worker_evidence,
                 )
 
@@ -106,6 +108,7 @@ class PostgresMultiTaskCompletionStore(PostgresEvidenceStore):
                         "status": persisted_status.value,
                         "terminal_result_sha256": digest,
                         "task_count": len(result.task_ids),
+                        "aborted_task_count": len(result.aborted_task_ids),
                     },
                 ),
             )
@@ -236,19 +239,23 @@ class PostgresMultiTaskCompletionStore(PostgresEvidenceStore):
                     f"merge evidence for {task_id!r} does not match worker terminal evidence"
                 )
 
-    @staticmethod
+    @classmethod
     def _validate_failure(
+        cls,
         *,
         result: MultiTaskRunResult,
         dag: TaskDAG,
+        evidence_rows: list[EvidenceRow],
         worker_evidence: dict[str, WorkerExecutionEvidence],
     ) -> None:
         failed = set(result.failed_task_ids)
-        expected_blocked = set(dag.blocked_task_ids(failed_task_ids=failed))
+        aborted = set(result.aborted_task_ids)
+        expected_blocked = set(dag.blocked_task_ids(failed_task_ids=failed | aborted))
         if expected_blocked != set(result.blocked_task_ids):
             raise PersistenceConflictError(
                 "failed DAG terminal result does not match dependency-derived blocked tasks"
             )
+
         for task_id in result.failed_task_ids:
             execution = worker_evidence.get(task_id)
             if execution is None or execution.status is not WorkerExecutionStatus.FAILED:
@@ -261,3 +268,61 @@ class PostgresMultiTaskCompletionStore(PostgresEvidenceStore):
                 raise PersistenceConflictError(
                     f"successful DAG task {task_id!r} lacks successful worker evidence"
                 )
+        for task_id in result.blocked_task_ids:
+            if task_id in worker_evidence:
+                raise PersistenceConflictError(
+                    f"blocked DAG task {task_id!r} unexpectedly has worker terminal evidence"
+                )
+
+        for task_id, fingerprint in zip(
+            result.aborted_task_ids,
+            result.abort_evidence_fingerprints,
+            strict=True,
+        ):
+            execution = worker_evidence.get(task_id)
+            if execution is None or execution.status is not WorkerExecutionStatus.SUCCEEDED:
+                raise PersistenceConflictError(
+                    f"human-aborted integration task {task_id!r} lacks successful worker evidence"
+                )
+            cls._require_abort_decision(
+                evidence_rows=evidence_rows,
+                task_id=task_id,
+                fingerprint=fingerprint,
+            )
+
+    @staticmethod
+    def _require_abort_decision(
+        *,
+        evidence_rows: list[EvidenceRow],
+        task_id: str,
+        fingerprint: str,
+    ) -> None:
+        matches: list[HumanIntegrationDecision] = []
+        for row in evidence_rows:
+            if (
+                row.kind != PersistenceEvidenceKind.HUMAN_DECISION.value
+                or row.task_id != task_id
+            ):
+                continue
+            verify_payload_hash(
+                row.payload,
+                row.payload_sha256,
+                label=f"human decision evidence {row.id}",
+            )
+            try:
+                decision = HumanIntegrationDecision.model_validate(row.payload)
+            except ValidationError as exc:
+                raise PersistenceCorruptionError(
+                    f"human decision evidence {row.id} failed validation"
+                ) from exc
+            if decision.evidence_fingerprint == fingerprint:
+                matches.append(decision)
+
+        if len(matches) != 1:
+            raise PersistenceConflictError(
+                f"aborted DAG task {task_id!r} requires exactly one bound human decision"
+            )
+        if matches[0].decision is not HumanGateDecision.ABORT:
+            raise PersistenceConflictError(
+                f"aborted DAG task {task_id!r} is not backed by an ABORT decision"
+            )
