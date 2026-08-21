@@ -18,6 +18,7 @@ from app.models.integration_gate import HumanGateDecision, IntegrationGateSnapsh
 from app.persistence.errors import PersistenceConflictError, PersistenceCorruptionError
 from app.providers.errors import AgentProviderError
 from app.runtime.durable_human_gate import DurableHumanGateService
+from app.runtime.merge_queue import MergeQueueError
 from app.workspace import LocalGitWorkspace, WorkspaceGitError
 
 _MAX_REQUIREMENT_CHARS = 12_000
@@ -96,21 +97,39 @@ class RequirementPlanner(Protocol):
     ) -> TaskDAG: ...
 
 
+class ProductRunController(Protocol):
+    async def advance(self, run_id: UUID): ...
+
+    async def dispose(self) -> None: ...
+
+
 class ProductPlannerUnavailableError(RuntimeError):
     """Raised when the natural-language product entry has no configured Planner provider."""
 
 
 class AutonomousProductRuntimeService(ProductRuntimeServiceWithGitHubPublication):
-    """V1 facade plus the natural-language Multi-Agent and durable Human Gate entry points."""
+    """V1 facade plus natural-language Multi-Agent and durable Human Gate entry points."""
 
-    def __init__(self, *, requirement_planner: RequirementPlanner | None, **kwargs) -> None:
+    def __init__(
+        self,
+        *,
+        requirement_planner: RequirementPlanner | None,
+        run_controller: ProductRunController | None = None,
+        **kwargs,
+    ) -> None:
         super().__init__(**kwargs)
         self._requirement_planner = requirement_planner
+        self._run_controller = run_controller
         self._human_gates = DurableHumanGateService(
             evidence_store=self._evidence_store,  # type: ignore[arg-type]
             dag_store=self._dag_store,
             workspace_resolver=self._workspace_resolver,
         )
+
+    async def dispose(self) -> None:
+        if self._run_controller is not None:
+            await self._run_controller.dispose()
+        await super().dispose()
 
     async def create_requirement_run(
         self,
@@ -196,13 +215,19 @@ class AutonomousProductRuntimeService(ProductRuntimeServiceWithGitHubPublication
         task_id: str,
         request: HumanGateDecisionRequest,
     ) -> IntegrationGateSnapshot:
-        return await self._human_gates.decide(
+        decided = await self._human_gates.decide(
             run_id=run_id,
             task_id=task_id,
             evidence_fingerprint=request.evidence_fingerprint,
             decision=request.decision,
             note=request.note,
         )
+        # A human decision is only an authorization/state transition. Re-enter the controller from
+        # durable facts so ABORT can finalize safely and AUTHORIZE_REPAIR can reach only a later
+        # bounded repair stage. The browser never supplies scheduler/Git/lease authority here.
+        if self._run_controller is not None:
+            await self._run_controller.advance(run_id)
+        return decided
 
     def _resolve_planning_workspace(self, project_id: UUID) -> LocalGitWorkspace:
         try:
@@ -323,7 +348,7 @@ def attach_autonomous_routes(
                 task_id=task_id,
                 request=request,
             )
-        except PersistenceConflictError as exc:
+        except (PersistenceConflictError, MergeQueueError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except PersistenceCorruptionError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
