@@ -3,10 +3,12 @@ from __future__ import annotations
 from uuid import UUID
 
 from app.agents.dag_planner import MultiTaskPlannerAgent
+from app.agents.developer import DeveloperAgent
 from app.api.autonomous import AutonomousProductRuntimeService
 from app.api.catalog import PostgresProductCatalog
 from app.core.settings import Settings
 from app.dispatch import DurableDramatiqTaskDispatcher
+from app.models.sandbox import DockerSandboxPolicy
 from app.persistence import (
     PostgresDAGStore,
     PostgresDispatchAttemptStore,
@@ -18,10 +20,12 @@ from app.persistence import (
 from app.persistence.multi_completion import PostgresMultiTaskCompletionStore
 from app.providers.siliconflow import SiliconFlowDriver
 from app.publication import GitHubPublicationGateway
-from app.runtime.execution_base import EvidenceBoundTaskExecutionBaseResolver
+from app.runtime.integration_repair import IntegrationConflictRepairService
 from app.runtime.product_controller import DurableMultiAgentRunController
 from app.runtime.reconciler import IdempotentTaskReconciler
+from app.runtime.repair_execution_base import RepairAwareEvidenceBoundTaskExecutionBaseResolver
 from app.runtime.run_reconciler import DAGRunReconciler
+from app.verification import DeterministicVerifier, DockerSandboxRunner
 from app.workers.executor import ManagedProjectWorkspaceResolver
 from app.workspace import ManagedProjectProvisioner
 
@@ -98,7 +102,7 @@ def build_product_service(settings: Settings) -> AutonomousProductRuntimeService
         ledger=dispatch_store,
         actor=execute_devflow_task,
     )
-    execution_base_resolver = EvidenceBoundTaskExecutionBaseResolver(
+    execution_base_resolver = RepairAwareEvidenceBoundTaskExecutionBaseResolver(
         dag_reader=dag_store,
         workspace_resolver=resolver,
     )
@@ -113,6 +117,34 @@ def build_product_service(settings: Settings) -> AutonomousProductRuntimeService
         task_reconciler=task_reconciler,
         execution_base_resolver=execution_base_resolver,
     )
+
+    driver = (
+        None
+        if settings.siliconflow_api_key is None
+        else SiliconFlowDriver.from_settings(settings)
+    )
+    conflict_repairer = None
+    if driver is not None:
+        sandbox_policy = DockerSandboxPolicy(
+            image=settings.verification_sandbox_image,
+            cpus=settings.verification_sandbox_cpus,
+            memory_mb=settings.verification_sandbox_memory_mb,
+            pids_limit=settings.verification_sandbox_pids_limit,
+            tmpfs_mb=settings.verification_sandbox_tmpfs_mb,
+            shm_mb=settings.verification_sandbox_shm_mb,
+        )
+        conflict_repairer = IntegrationConflictRepairService(
+            evidence_store=evidence_store,
+            repair_store=completion_store,
+            workspace_resolver=resolver,
+            developer=DeveloperAgent(driver=driver, model=settings.developer_model),
+            verifier=DeterministicVerifier(
+                command_timeout_seconds=settings.verification_sandbox_timeout_seconds,
+                command_runner=DockerSandboxRunner(sandbox_policy),
+            ),
+            repair_root=settings.workspace_root / "integration-repairs",
+        )
+
     run_controller = _ProductRunController(
         controller=DurableMultiAgentRunController(
             evidence_store=evidence_store,
@@ -120,6 +152,7 @@ def build_product_service(settings: Settings) -> AutonomousProductRuntimeService
             workspace_resolver=resolver,
             run_reconciler=dag_run_reconciler,
             completion_store=completion_store,
+            conflict_repairer=conflict_repairer,
         ),
         task_reconciler=task_reconciler,
         completion_store=completion_store,
@@ -127,9 +160,9 @@ def build_product_service(settings: Settings) -> AutonomousProductRuntimeService
     )
     requirement_planner = (
         None
-        if settings.siliconflow_api_key is None
+        if driver is None
         else MultiTaskPlannerAgent(
-            driver=SiliconFlowDriver.from_settings(settings),
+            driver=driver,
             model=settings.planner_model,
         )
     )
