@@ -14,7 +14,10 @@ from app.api.service import ProductWorkspaceNotReadyError
 from app.dispatch.errors import TaskDispatchBrokerError
 from app.models.dag import TaskDAG
 from app.models.dispatch import TaskDispatchReceipt
+from app.models.integration_gate import HumanGateDecision, IntegrationGateSnapshot
+from app.persistence.errors import PersistenceConflictError, PersistenceCorruptionError
 from app.providers.errors import AgentProviderError
+from app.runtime.durable_human_gate import DurableHumanGateService
 from app.workspace import LocalGitWorkspace, WorkspaceGitError
 
 _MAX_REQUIREMENT_CHARS = 12_000
@@ -70,6 +73,20 @@ class RequirementRunLaunchResponse(RequirementProductModel):
     dispatches: tuple[InitialTaskDispatch, ...] = Field(min_length=1)
 
 
+class HumanGateDecisionRequest(RequirementProductModel):
+    evidence_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    decision: HumanGateDecision
+    note: str = Field(default="", max_length=512)
+
+    @field_validator("note")
+    @classmethod
+    def normalize_note(cls, value: str) -> str:
+        normalized = value.strip()
+        if "\n" in normalized or "\r" in normalized:
+            raise ValueError("human decision note must be a single line")
+        return normalized
+
+
 class RequirementPlanner(Protocol):
     async def plan(
         self,
@@ -84,16 +101,16 @@ class ProductPlannerUnavailableError(RuntimeError):
 
 
 class AutonomousProductRuntimeService(ProductRuntimeServiceWithGitHubPublication):
-    """V1 product facade plus the natural-language Multi-Agent Run entry.
-
-    The legacy TaskContract endpoint remains unchanged for V1 regression/benchmark use. This
-    extension owns only requirement planning and the initial durable DAG launch. Downstream
-    execution continues through persisted DAG/reconciliation authorities.
-    """
+    """V1 facade plus the natural-language Multi-Agent and durable Human Gate entry points."""
 
     def __init__(self, *, requirement_planner: RequirementPlanner | None, **kwargs) -> None:
         super().__init__(**kwargs)
         self._requirement_planner = requirement_planner
+        self._human_gates = DurableHumanGateService(
+            evidence_store=self._evidence_store,  # type: ignore[arg-type]
+            dag_store=self._dag_store,
+            workspace_resolver=self._workspace_resolver,
+        )
 
     async def create_requirement_run(
         self,
@@ -167,6 +184,24 @@ class AutonomousProductRuntimeService(ProductRuntimeServiceWithGitHubPublication
             initial_ready_task_ids=initial_ready,
             launch_state=launch_state,
             dispatches=tuple(dispatches),
+        )
+
+    async def list_human_gates(self, run_id: UUID) -> tuple[IntegrationGateSnapshot, ...]:
+        return await self._human_gates.list_gates(run_id)
+
+    async def decide_human_gate(
+        self,
+        *,
+        run_id: UUID,
+        task_id: str,
+        request: HumanGateDecisionRequest,
+    ) -> IntegrationGateSnapshot:
+        return await self._human_gates.decide(
+            run_id=run_id,
+            task_id=task_id,
+            evidence_fingerprint=request.evidence_fingerprint,
+            decision=request.decision,
+            note=request.note,
         )
 
     def _resolve_planning_workspace(self, project_id: UUID) -> LocalGitWorkspace:
@@ -259,4 +294,38 @@ def attach_autonomous_routes(
                 detail=f"Planner provider failed: {exc.code.value}",
             ) from exc
         except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get(
+        "/api/v1/runs/{run_id}/human-gates",
+        response_model=tuple[IntegrationGateSnapshot, ...],
+    )
+    async def list_human_gates(run_id: UUID) -> tuple[IntegrationGateSnapshot, ...]:
+        try:
+            return await service.list_human_gates(run_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except PersistenceCorruptionError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.post(
+        "/api/v1/runs/{run_id}/human-gates/{task_id}/decision",
+        response_model=IntegrationGateSnapshot,
+    )
+    async def decide_human_gate(
+        run_id: UUID,
+        task_id: str,
+        request: HumanGateDecisionRequest,
+    ) -> IntegrationGateSnapshot:
+        try:
+            return await service.decide_human_gate(
+                run_id=run_id,
+                task_id=task_id,
+                request=request,
+            )
+        except PersistenceConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except PersistenceCorruptionError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        except (ValueError, WorkspaceGitError) as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
