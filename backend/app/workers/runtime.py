@@ -25,12 +25,12 @@ from app.runtime.product_controller import DurableMultiAgentRunController
 from app.runtime.reconciler import IdempotentTaskReconciler
 from app.runtime.repair_execution_base import RepairAwareEvidenceBoundTaskExecutionBaseResolver
 from app.runtime.run_reconciler import DAGRunReconciler
-from app.verification import DeterministicVerifier, DockerSandboxRunner
-from app.workers.executor import (
-    LocalQueuedTaskExecutionBackend,
-    ManagedProjectWorkspaceResolver,
-    QueuedTaskWorker,
+from app.trace.worker import (
+    TraceAwareLocalQueuedTaskExecutionBackend,
+    TraceAwareQueuedTaskWorker,
 )
+from app.verification import DeterministicVerifier, DockerSandboxRunner
+from app.workers.executor import ManagedProjectWorkspaceResolver, QueuedTaskWorker
 from app.workers.lease import LeasedQueuedTaskWorker
 
 
@@ -121,16 +121,19 @@ async def execute_task_from_settings(
             dag_reader=dag_store,
             workspace_resolver=resolver,
         )
-        backend = LocalQueuedTaskExecutionBackend(
+        backend = TraceAwareLocalQueuedTaskExecutionBackend(
             workspace_resolver=resolver,
             worktree_root=settings.workspace_root / "worktrees",
             runner_factory=build_runner_factory(settings),
             git_fence=lease_store,
+            trace_store=evidence_store,
         )
-        queued_worker = QueuedTaskWorker(
-            store=evidence_store,
-            backend=backend,
-            execution_base_resolver=execution_base_resolver,
+        queued_worker = TraceAwareQueuedTaskWorker(
+            QueuedTaskWorker(
+                store=evidence_store,
+                backend=backend,
+                execution_base_resolver=execution_base_resolver,
+            )
         )
         leased_worker = LeasedQueuedTaskWorker(
             worker=queued_worker,
