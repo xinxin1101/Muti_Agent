@@ -78,7 +78,11 @@ class TraceBatchSpan(BaseModel):
         if self.kind is TraceSpanKind.AGENT_TURN:
             if self.agent_role is None or self.model is None or self.iteration is None:
                 raise ValueError("agent-turn trace spans require role, model and iteration")
-            if self.tool_name is not None or self.tool_error_code is not None or self.passed is not None:
+            if (
+                self.tool_name is not None
+                or self.tool_error_code is not None
+                or self.passed is not None
+            ):
                 raise ValueError("agent-turn trace spans cannot contain tool/verifier fields")
             return self
 
@@ -100,7 +104,9 @@ class TraceBatchSpan(BaseModel):
                 raise ValueError("verification trace spans cannot contain agent/tool fields")
             return self
 
-        raise ValueError("trace batches may contain only AGENT_TURN, TOOL_CALL or VERIFICATION spans")
+        raise ValueError(
+            "trace batches may contain only AGENT_TURN, TOOL_CALL or VERIFICATION spans"
+        )
 
 
 class TaskTraceBatch(BaseModel):
@@ -128,7 +134,10 @@ class TaskTraceBatch(BaseModel):
                 parent = seen.get(span.parent_span_id)
                 if parent is None:
                     raise ValueError("trace span parents must precede their children")
-                if span.kind is TraceSpanKind.TOOL_CALL and parent.kind is not TraceSpanKind.AGENT_TURN:
+                if (
+                    span.kind is TraceSpanKind.TOOL_CALL
+                    and parent.kind is not TraceSpanKind.AGENT_TURN
+                ):
                     raise ValueError("tool-call trace spans must descend from an agent turn")
             seen[span.span_id] = span
         return self
