@@ -5,6 +5,8 @@ import subprocess
 from enum import StrEnum
 from typing import Literal
 
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from redis.asyncio import Redis
 
@@ -48,17 +50,21 @@ class OperationalReadinessChecker:
         self._settings = settings
 
     async def check(self) -> ProductReadiness:
-        database, redis, verification, provider, models = await asyncio.gather(
+        database, redis, verification, provider_models = await asyncio.gather(
             self._database(),
             self._redis(),
             self._verification_image(),
             self._provider_models(),
-            return_exceptions=False,
         )
+        provider, models = provider_models
         required = [database.state, redis.state, verification.state, provider.state]
         required.extend(item.state for item in models)
         return ProductReadiness(
-            status=("READY" if all(item is ReadinessState.READY for item in required) else "NOT_READY"),
+            status=(
+                "READY"
+                if all(item is ReadinessState.READY for item in required)
+                else "NOT_READY"
+            ),
             database=database,
             redis=redis,
             verification_image=verification,
@@ -131,9 +137,7 @@ class OperationalReadinessChecker:
         if result.returncode != 0 or not result.stdout.strip().startswith("sha256:"):
             return ReadinessCheck(
                 state=ReadinessState.UNAVAILABLE,
-                detail=(
-                    "Configured verification image is unavailable; build it before running tasks."
-                ),
+                detail="Configured verification image is unavailable; build it before running tasks.",
             )
         return ReadinessCheck(
             state=ReadinessState.READY,
@@ -156,11 +160,7 @@ class OperationalReadinessChecker:
                     detail="SILICONFLOW_API_KEY is not configured.",
                 ),
                 tuple(
-                    ModelReadiness(
-                        role=role,
-                        model=model,
-                        state=ReadinessState.NOT_CONFIGURED,
-                    )
+                    ModelReadiness(role=role, model=model, state=ReadinessState.NOT_CONFIGURED)
                     for role, model in configured
                 ),
             )
@@ -175,11 +175,7 @@ class OperationalReadinessChecker:
                     detail=f"SiliconFlow model catalogue failed: {exc.code.value}.",
                 ),
                 tuple(
-                    ModelReadiness(
-                        role=role,
-                        model=model,
-                        state=ReadinessState.UNAVAILABLE,
-                    )
+                    ModelReadiness(role=role, model=model, state=ReadinessState.UNAVAILABLE)
                     for role, model in configured
                 ),
             )
@@ -210,3 +206,12 @@ class OperationalReadinessChecker:
             ),
             models,
         )
+
+
+def attach_readiness_route(app: FastAPI, checker: OperationalReadinessChecker) -> None:
+    @app.get("/readyz", response_model=ProductReadiness)
+    async def readyz() -> ProductReadiness | JSONResponse:
+        result = await checker.check()
+        if result.status == "READY":
+            return result
+        return JSONResponse(status_code=503, content=result.model_dump(mode="json"))
