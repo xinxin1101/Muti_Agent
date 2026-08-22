@@ -190,11 +190,12 @@ def build_product_service(settings: Settings) -> OperatorAwareAutonomousProductR
             model=settings.planner_model,
         )
     )
+    publication_token = settings.effective_github_publication_token
     github_publisher = (
         None
-        if settings.github_token is None
+        if publication_token is None
         else GitHubPublicationGateway(
-            settings.github_token,
+            publication_token,
             timeout_seconds=settings.github_publication_timeout_seconds,
         )
     )
