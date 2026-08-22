@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import os
 from logging.config import fileConfig
 
 from sqlalchemy import create_engine, pool
 
 from alembic import context
+from app.core.settings import Settings
 from app.persistence.database import reveal_database_url
+from app.persistence.errors import PersistenceConfigurationError
 from app.persistence.models import PersistenceBase
 
 config = context.config
@@ -17,8 +18,12 @@ target_metadata = PersistenceBase.metadata
 
 
 def _database_url() -> str:
-    value = os.environ.get("DEVFLOW_DATABASE_URL", "")
-    return reveal_database_url(value)
+    settings = Settings()
+    if settings.database_url is None:
+        raise PersistenceConfigurationError(
+            "DEVFLOW_DATABASE_URL is required. Configure the repository-root `.env`."
+        )
+    return reveal_database_url(settings.database_url)
 
 
 def run_migrations_offline() -> None:
