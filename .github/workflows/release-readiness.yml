@@ -1,0 +1,125 @@
+name: Release Readiness
+
+on:
+  pull_request:
+    paths:
+      - ".env.example"
+      - "backend/**"
+      - "frontend/**"
+      - "scripts/**"
+      - "README.md"
+      - "docs/RELEASE_READINESS.md"
+      - "docs/RELEASE_READINESS_CHECKLIST.md"
+      - ".github/workflows/release-readiness.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - ".env.example"
+      - "backend/**"
+      - "frontend/**"
+      - "scripts/**"
+      - "README.md"
+      - "docs/RELEASE_READINESS.md"
+      - "docs/RELEASE_READINESS_CHECKLIST.md"
+      - ".github/workflows/release-readiness.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  release-readiness:
+    name: Release Readiness
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: devflow
+          POSTGRES_PASSWORD: devflow
+          POSTGRES_DB: devflow_release
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U devflow -d devflow_release"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install backend
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Install frontend
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: Create repository-root environment
+        run: |
+          cat > .env <<'EOF'
+          DEVFLOW_DATABASE_URL=postgresql+psycopg://devflow:devflow@127.0.0.1:5432/devflow_release
+          DEVFLOW_REDIS_URL=redis://127.0.0.1:6379/0
+          DEVFLOW_DRAMATIQ_NAMESPACE=devflow-release-smoke
+          DEVFLOW_DRAMATIQ_QUEUE_NAME=devflow_tasks
+          SILICONFLOW_API_KEY=
+          DEVFLOW_GITHUB_TOKEN=
+          DEVFLOW_VERIFICATION_SANDBOX_IMAGE=devflow-verifier:py311
+          EOF
+
+      - name: Apply migrations from backend cwd using repository .env
+        working-directory: backend
+        run: alembic upgrade head
+
+      - name: Validate schema preflight against migrated PostgreSQL
+        working-directory: backend
+        run: >-
+          python -c "import asyncio;
+          from app.core.settings import get_settings;
+          from app.persistence.schema import require_database_schema_current;
+          s=get_settings();
+          asyncio.run(require_database_schema_current(s.database_url, echo=s.database_echo))"
+
+      - name: Build verification sandbox image
+        working-directory: backend
+        run: docker build -f docker/verification.Dockerfile -t devflow-verifier:py311 .
+
+      - name: Boot API, Dramatiq worker, and frontend
+        run: python scripts/release_smoke.py
+
+      - name: Run deterministic autonomous product E2E
+        working-directory: backend
+        env:
+          DEVFLOW_DATABASE_URL: postgresql+psycopg://devflow:devflow@127.0.0.1:5432/devflow_release
+        run: pytest tests/test_autonomous_multi_agent_e2e.py
