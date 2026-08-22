@@ -56,18 +56,23 @@ class _FakeEngine:
         self.disposed = True
 
 
-def test_repository_env_file_is_independent_of_current_working_directory(
+def test_repository_env_and_workspace_are_independent_of_current_working_directory(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    expected = Path(__file__).resolve().parents[2] / ".env"
-    assert settings_module._REPOSITORY_ENV_FILE == expected
-    assert Settings.model_config["env_file"] == expected
+    repository_root = Path(__file__).resolve().parents[2]
+    expected_env = repository_root / ".env"
+    expected_workspace = (repository_root / ".devflow/workspaces").resolve()
+
+    assert settings_module._REPOSITORY_ENV_FILE == expected_env
+    assert Settings.model_config["env_file"] == expected_env
 
     monkeypatch.chdir(tmp_path)
+    settings = Settings(_env_file=None)
 
-    assert settings_module._REPOSITORY_ENV_FILE == expected
-    assert Settings.model_config["env_file"] == expected
+    assert settings_module._REPOSITORY_ENV_FILE == expected_env
+    assert Settings.model_config["env_file"] == expected_env
+    assert settings.workspace_root == expected_workspace
 
 
 def test_blank_optional_provider_secrets_are_not_treated_as_configured() -> None:
