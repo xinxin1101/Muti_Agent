@@ -29,9 +29,12 @@ from app.trace.worker import (
     TraceAwareLocalQueuedTaskExecutionBackend,
     TraceAwareQueuedTaskWorker,
 )
-from app.verification import DeterministicVerifier, DockerSandboxRunner
+from app.verification import DeterministicVerifier
+from app.verification.project_profile import ProjectAwareVerificationRunner
 from app.workers.executor import ManagedProjectWorkspaceResolver, QueuedTaskWorker
 from app.workers.lease import LeasedQueuedTaskWorker
+from app.workers.project_identity import ProjectIdentityValidatingQueuedTaskWorker
+from app.workspace import ManagedProjectProvisioner
 
 
 @lru_cache(maxsize=32)
@@ -58,7 +61,11 @@ def build_verifier(settings: Settings) -> DeterministicVerifier:
     )
     return DeterministicVerifier(
         command_timeout_seconds=settings.verification_sandbox_timeout_seconds,
-        command_runner=DockerSandboxRunner(policy),
+        command_runner=ProjectAwareVerificationRunner(
+            base_policy=policy,
+            node_image=settings.verification_node_sandbox_image,
+            cache_root=settings.workspace_root / "verification-deps",
+        ),
     )
 
 
@@ -116,7 +123,13 @@ async def execute_task_from_settings(
     )
     task_reconciler = None
     try:
-        resolver = ManagedProjectWorkspaceResolver(settings.workspace_root / "repos")
+        repository_root = settings.workspace_root / "repos"
+        resolver = ManagedProjectWorkspaceResolver(repository_root)
+        provisioner = ManagedProjectProvisioner(
+            repository_root,
+            git_timeout_seconds=settings.git_clone_timeout_seconds,
+            read_token=settings.github_read_token,
+        )
         execution_base_resolver = RepairAwareEvidenceBoundTaskExecutionBaseResolver(
             dag_reader=dag_store,
             workspace_resolver=resolver,
@@ -128,13 +141,16 @@ async def execute_task_from_settings(
             git_fence=lease_store,
             trace_store=evidence_store,
         )
-        queued_worker = TraceAwareQueuedTaskWorker(
-            QueuedTaskWorker(
+        identity_validated_worker = ProjectIdentityValidatingQueuedTaskWorker(
+            worker=QueuedTaskWorker(
                 store=evidence_store,
                 backend=backend,
                 execution_base_resolver=execution_base_resolver,
-            )
+            ),
+            run_store=evidence_store,
+            provisioner=provisioner,
         )
+        queued_worker = TraceAwareQueuedTaskWorker(identity_validated_worker)
         leased_worker = LeasedQueuedTaskWorker(
             worker=queued_worker,
             lease_store=lease_store,
@@ -144,8 +160,6 @@ async def execute_task_from_settings(
         )
         result = await leased_worker.execute(envelope)
 
-        # Import only after app.workers.tasks has finished defining its actor. Importing it at
-        # module load time would create a runtime.py <-> tasks.py cycle.
         from app.workers.tasks import execute_devflow_task
 
         task_reconciler = IdempotentTaskReconciler(
@@ -179,8 +193,6 @@ async def execute_task_from_settings(
         await controller.advance(envelope.run_id)
         return result
     finally:
-        # The task reconciler owns reconciliation_store once constructed. Before construction the
-        # store still needs to be disposed directly.
         if task_reconciler is None:
             await reconciliation_store.dispose()
         else:
