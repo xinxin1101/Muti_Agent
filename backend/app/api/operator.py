@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from typing import Protocol
 from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, Request
@@ -19,6 +20,10 @@ from app.workspace import WorkspaceGitError
 _ACTION_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
+class OperatorAuditResource(Protocol):
+    async def dispose(self) -> None: ...
+
+
 class OperatorAwareAutonomousProductRuntimeService(TraceableAutonomousProductRuntimeService):
     """Product facade with one bounded operator recovery request surface."""
 
@@ -26,10 +31,18 @@ class OperatorAwareAutonomousProductRuntimeService(TraceableAutonomousProductRun
         self,
         *,
         operator_recovery: OperatorRecoveryCoordinator,
+        operator_audit_resource: OperatorAuditResource,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
         self._operator_recovery = operator_recovery
+        self._operator_audit_resource = operator_audit_resource
+
+    async def dispose(self) -> None:
+        try:
+            await super().dispose()
+        finally:
+            await self._operator_audit_resource.dispose()
 
     async def get_operator_recovery_plan(self, run_id: UUID) -> OperatorRecoveryPlan:
         return await self._operator_recovery.get_plan(run_id)
