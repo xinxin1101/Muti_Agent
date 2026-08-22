@@ -14,6 +14,7 @@ from app.models.operator_recovery import (
 from app.models.run_reconciliation import (
     DAGRunReconciliationPlan,
     DAGTaskFrontierState,
+    DAGTaskReconciliationRecord,
 )
 from app.persistence.errors import PersistenceConflictError
 from app.persistence.serialization import payload_sha256
@@ -66,12 +67,11 @@ class OperatorActionStaleError(PersistenceConflictError):
 class OperatorRecoveryPlanner:
     """Build a bounded operator view and bind actions to durable dispatch history."""
 
-    _ADVANCE_STATES = {
+    _CONTROLLER_ADVANCE_STATES = {
         DAGTaskFrontierState.SUCCEEDED,
         DAGTaskFrontierState.FAILED,
         DAGTaskFrontierState.BLOCKED_UPSTREAM_FAILURE,
         DAGTaskFrontierState.WAIT_INTEGRATION_BASE,
-        DAGTaskFrontierState.RECONCILE_CANDIDATE,
     }
 
     def __init__(
@@ -112,7 +112,7 @@ class OperatorRecoveryPlanner:
             for task_id in reconciliation.topological_order
         }
         actions: tuple[OperatorAction, ...] = ()
-        if self._should_offer_advance(reconciliation):
+        if self._should_offer_advance(reconciliation, dispatches=dispatches):
             actions = (self._advance_action(reconciliation, dispatches=dispatches),)
         return OperatorRecoveryPlan(
             run_id=run_id,
@@ -121,10 +121,41 @@ class OperatorRecoveryPlanner:
         )
 
     @classmethod
-    def _should_offer_advance(cls, plan: DAGRunReconciliationPlan) -> bool:
+    def _should_offer_advance(
+        cls,
+        plan: DAGRunReconciliationPlan,
+        *,
+        dispatches: dict[str, tuple[PersistedDispatchAttempt, ...]],
+    ) -> bool:
         if plan.run_status != "RUNNING":
             return False
-        return any(item.frontier_state in cls._ADVANCE_STATES for item in plan.tasks)
+
+        for task in plan.tasks:
+            if task.frontier_state in cls._CONTROLLER_ADVANCE_STATES:
+                return True
+            if (
+                task.frontier_state is DAGTaskFrontierState.RECONCILE_CANDIDATE
+                and cls._redispatch_candidate_is_actionable(
+                    task,
+                    attempts=dispatches.get(task.task_id, ()),
+                )
+            ):
+                return True
+        return False
+
+    @staticmethod
+    def _redispatch_candidate_is_actionable(
+        task: DAGTaskReconciliationRecord,
+        *,
+        attempts: tuple[PersistedDispatchAttempt, ...],
+    ) -> bool:
+        current_dispatch_id = task.lease_dispatch_id
+        if current_dispatch_id is None or not attempts:
+            return False
+        if not any(attempt.dispatch_id == current_dispatch_id for attempt in attempts):
+            return False
+        latest = max(attempts, key=lambda attempt: attempt.attempt_number)
+        return latest.dispatch_id == current_dispatch_id
 
     @classmethod
     def _advance_action(
