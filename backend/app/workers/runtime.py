@@ -32,6 +32,8 @@ from app.trace.worker import (
 from app.verification import DeterministicVerifier, DockerSandboxRunner
 from app.workers.executor import ManagedProjectWorkspaceResolver, QueuedTaskWorker
 from app.workers.lease import LeasedQueuedTaskWorker
+from app.workers.project_identity import ProjectIdentityValidatingQueuedTaskWorker
+from app.workspace import ManagedProjectProvisioner
 
 
 @lru_cache(maxsize=32)
@@ -116,7 +118,13 @@ async def execute_task_from_settings(
     )
     task_reconciler = None
     try:
-        resolver = ManagedProjectWorkspaceResolver(settings.workspace_root / "repos")
+        repository_root = settings.workspace_root / "repos"
+        resolver = ManagedProjectWorkspaceResolver(repository_root)
+        provisioner = ManagedProjectProvisioner(
+            repository_root,
+            git_timeout_seconds=settings.git_clone_timeout_seconds,
+            read_token=settings.github_read_token,
+        )
         execution_base_resolver = RepairAwareEvidenceBoundTaskExecutionBaseResolver(
             dag_reader=dag_store,
             workspace_resolver=resolver,
@@ -128,13 +136,16 @@ async def execute_task_from_settings(
             git_fence=lease_store,
             trace_store=evidence_store,
         )
-        queued_worker = TraceAwareQueuedTaskWorker(
-            QueuedTaskWorker(
+        identity_validated_worker = ProjectIdentityValidatingQueuedTaskWorker(
+            worker=QueuedTaskWorker(
                 store=evidence_store,
                 backend=backend,
                 execution_base_resolver=execution_base_resolver,
-            )
+            ),
+            run_store=evidence_store,
+            provisioner=provisioner,
         )
+        queued_worker = TraceAwareQueuedTaskWorker(identity_validated_worker)
         leased_worker = LeasedQueuedTaskWorker(
             worker=queued_worker,
             lease_store=lease_store,
@@ -179,8 +190,6 @@ async def execute_task_from_settings(
         await controller.advance(envelope.run_id)
         return result
     finally:
-        # The task reconciler owns reconciliation_store once constructed. Before construction the
-        # store still needs to be disposed directly.
         if task_reconciler is None:
             await reconciliation_store.dispose()
         else:
