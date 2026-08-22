@@ -98,6 +98,19 @@ jobs:
           DEVFLOW_VERIFICATION_SANDBOX_IMAGE=devflow-verifier:py311
           EOF
 
+      - name: Prove API rejects an unmigrated database
+        shell: bash
+        run: |
+          set +e
+          output=$(cd backend && timeout 15s python -m app.api.main 2>&1)
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "API unexpectedly started against an unmigrated database"
+            exit 1
+          fi
+          echo "$output" | grep -F "alembic upgrade head"
+
       - name: Apply migrations from backend cwd using repository .env
         working-directory: backend
         run: alembic upgrade head
