@@ -1,16 +1,16 @@
 # Step 5.7 — Operator Recovery / Approval Surface
 
-Status: **ACCEPTANCE CANDIDATE / NOT YET ACCEPTED**
+Status: **ACCEPTED / COMPLETE**
 
 ## Goal
 
-Step 5.7 turns the durable recovery facts from Steps 5.1–5.6 into a bounded operator-facing control surface without creating a second scheduler or allowing a browser/trace snapshot to authorize runtime mutation.
+Step 5.7 turns durable recovery facts from Steps 5.1–5.6 into a bounded operator-facing control surface without creating a second scheduler or allowing a browser/trace snapshot to authorize runtime mutation.
 
 Frozen boundary:
 
 > **Operator intent may request recovery work; only fresh server-side PostgreSQL, DAG, Git, lease, dispatch-ledger, and fencing facts may authorize that work.**
 
-The anti-pattern is explicitly forbidden:
+Forbidden:
 
 ```text
 Causal Trace says retry is safe
@@ -18,7 +18,7 @@ Causal Trace says retry is safe
 direct retry / replay
 ```
 
-The accepted direction is:
+Accepted:
 
 ```text
 Recovery / Causal Trace read models
@@ -36,13 +36,13 @@ Step 5.4 / Step 5.3 / Durable Controller
 
 ## Mutating scope
 
-The first and only new Step 5.7 mutating command is intentionally narrow:
+The only new Step 5.7 mutating command is intentionally narrow:
 
 ```text
 ADVANCE_RUN
 ```
 
-`ADVANCE_RUN` does **not** mean "force retry". It means: ask the existing durable controller/reconciler to re-enter the Run from current durable facts.
+`ADVANCE_RUN` does **not** mean "force retry". It asks the existing durable controller/reconciler to re-enter the Run from current durable facts.
 
 For a multi-task Run, execution delegates to `DurableMultiAgentRunController.advance(run_id)`. For a single-task Run, execution delegates to the accepted `DAGRunReconciler`, which in turn delegates any legal publication to Step 5.3 `IdempotentTaskReconciler`.
 
@@ -67,9 +67,9 @@ Causal Trace remains explanatory only. The runtime never consumes a trace projec
 
 ## Action identity and staleness
 
-Every mutating action receives an opaque server-owned SHA-256 action id computed from the durable semantic state that justified the action.
+Every mutating action receives an opaque server-owned SHA-256 `action_id` computed from the durable semantic state that justified the action.
 
-The fingerprint excludes wall-clock observation time so a harmless refresh does not invalidate the action, but includes authority-bearing state such as:
+The fingerprint excludes wall-clock observation time so a harmless refresh does not invalidate the action, but includes:
 
 - Run status;
 - DAG digest and topology;
@@ -80,7 +80,7 @@ The fingerprint excludes wall-clock observation time so a harmless refresh does 
 - evidence-bound execution base where present;
 - durable dispatch attempts and their publication outcomes.
 
-Binding dispatch-attempt history closes a TOCTOU gap between publication and lease acquisition. Once a newer `REQUESTED`, `ENQUEUED`, or `PUBLISH_FAILED` attempt exists, the old action fingerprint changes even if the task still appears under the previous expired lease generation.
+Binding dispatch-attempt history closes the TOCTOU gap between publication and lease acquisition. Once a newer `REQUESTED`, `ENQUEUED`, or `PUBLISH_FAILED` attempt exists, the old action fingerprint changes even if the task still appears under the previous expired lease generation.
 
 The browser submits only the action id. It does not submit task ids, dispatch ids, lease generation, `run_token`, Git SHAs, branch names, parent commits, or execution bases as mutation authority.
 
@@ -104,7 +104,7 @@ no duplicate ADVANCE_RUN is advertised
 
 This avoids a misleading UI window after broker publication but before the replacement worker acquires the next lease generation.
 
-The actual at-most-one publication guarantee still comes from Step 5.3's fresh locked reconciliation path, not from the UI suppression.
+The actual at-most-one publication guarantee remains Step 5.3's fresh locked reconciliation path, not UI suppression.
 
 ## Mutation path
 
@@ -126,7 +126,7 @@ existing Durable Controller / DAG Run Reconciler
 Step 5.3 locked revalidation before broker publication
 ```
 
-The operator audit record proves only that an operator requested a server-issued action. It is not proof that a redispatch, merge, repair, or finalization occurred. Those outcomes continue to be proven by existing typed runtime evidence.
+The operator audit proves only that an operator requested a server-issued action. It is not proof that a redispatch, merge, repair, or finalization occurred. Those outcomes continue to be proven by existing typed runtime evidence.
 
 ## Persistence boundary
 
@@ -134,14 +134,7 @@ Step 5.7 adds no migration.
 
 `OPERATOR_ACTION` uses the existing generic typed/hash-validated evidence table. Runtime-event projection for this new evidence kind is isolated in `OperatorAwarePostgresEvidenceStore`, a narrow subclass of the accepted `PostgresEvidenceStore`.
 
-This preserves the Step 5.6 persistence implementation unchanged, including:
-
-- canonical hashing;
-- typed decode validation;
-- append-key idempotency;
-- terminal Run append close;
-- task `run_token` fencing where task-scoped;
-- evidence/event transaction behavior.
+This preserves the Step 5.6 persistence implementation unchanged, including canonical hashing, typed decode validation, append-key idempotency, terminal Run append close, task `run_token` fencing where task-scoped, and evidence/event transaction behavior.
 
 ## Fail-closed states
 
@@ -192,30 +185,33 @@ The existing Human Gate UI remains the narrower merge-conflict approval mechanis
 
 Real PostgreSQL coverage models an actual expired generation and submits two concurrent requests for the same action id.
 
-The required invariant is:
+Accepted invariant:
 
 > **Concurrent operator requests may race to request recovery, but they must not create more than one new broker publication for the same durable recovery opportunity.**
 
-The accepted publication authority remains Step 5.3. Step 5.7 can only cause that authority to be re-entered.
+The publication authority remains Step 5.3. Step 5.7 can only cause that authority to be re-entered.
 
-## Acceptance target
+## Acceptance evidence
 
-The implementation/hardening head `434f5d2704afe3428366dd5e0406b8e061d52640` has passed strict Backend and Frontend CI, including **426 backend tests + 5/5 deterministic demos**.
+Implementation/hardening head:
 
-Step 5.7 remains **NOT YET ACCEPTED** until all of the following are true:
+`434f5d2704afe3428366dd5e0406b8e061d52640`
 
-1. read-only operator plan is deterministic and bounded;
-2. action ids are server-owned and stale-safe;
-3. action ids bind durable dispatch-attempt history;
-4. action execution performs fresh plan rebuild immediately before mutation;
-5. `ADVANCE_RUN` delegates to existing accepted runtime authorities;
-6. ACTIVE/RELEASED/terminal states fail closed;
-7. a newer dispatch suppresses stale duplicate action advertising;
-8. duplicate/concurrent action requests produce at most one new publication;
-9. operator request audit is typed and durable;
-10. browser cannot submit dispatch/generation/token/Git authority;
-11. frontend renders server-advertised actions only;
-12. complete candidate ledger passes Backend + Frontend strict CI;
-13. the final accepted-state ledger head passes Backend + Frontend strict CI again.
+- Backend Quality #942 (`32557865629`): **PASS**, including **426 tests + 5/5 demos**.
+- Frontend Quality #235 (`32557865642`): **PASS**.
 
-The detailed candidate evidence is recorded in `docs/STEP_5_7_ACCEPTANCE.md`.
+Complete candidate ledger head:
+
+`030b50b2c122155fed7b53ecbe352550b9c79dd9`
+
+- Backend Quality #947 (`32558218574`): **PASS**, including **426 passed, 1 warning in 39.38s + 5/5 demos**.
+- Frontend Quality #240 (`32558218578`): **PASS**.
+- PR #40 had **0 inline review threads** at the acceptance transition.
+
+Detailed evidence is recorded in `docs/STEP_5_7_ACCEPTANCE.md`.
+
+Step 5.7 is therefore **ACCEPTED / COMPLETE**. The accepted-state head containing this final status transition must independently pass Backend and Frontend Quality one final time; that external result completes the final acceptance condition without requiring a self-referential follow-up edit.
+
+## Next boundary
+
+Step 5.8 — Chaos / Recovery Benchmark + V1.1 Acceptance — remains unaccepted. It must systematically validate crash/retry/idempotency behavior across PostgreSQL, broker publication, lease generations, `run_token` fencing, worker evidence, Git objects, integration, repair, and process restarts.
