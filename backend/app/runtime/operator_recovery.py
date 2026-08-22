@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Protocol
 from uuid import UUID
 
+from app.models.dispatch_attempt import PersistedDispatchAttempt
 from app.models.operator_recovery import (
     OperatorAction,
     OperatorActionExecutionResult,
@@ -31,6 +32,15 @@ class OperatorDAGReader(Protocol):
 
 class OperatorLeaseReader(Protocol):
     async def list_task_leases(self, run_id: UUID): ...
+
+
+class OperatorDispatchReader(Protocol):
+    async def list_for_task(
+        self,
+        *,
+        run_id: UUID,
+        task_id: str,
+    ) -> tuple[PersistedDispatchAttempt, ...]: ...
 
 
 class OperatorExecutionBaseResolver(Protocol):
@@ -70,6 +80,7 @@ class OperatorRecoveryPlanner:
         run_reader: OperatorRunReader,
         dag_reader: OperatorDAGReader,
         lease_reader: OperatorLeaseReader,
+        dispatch_reader: OperatorDispatchReader,
         execution_base_resolver: OperatorExecutionBaseResolver,
         classifier: RecoveryStateClassifier | None = None,
         reconciliation_planner: DAGRunReconciliationPlanner | None = None,
@@ -77,6 +88,7 @@ class OperatorRecoveryPlanner:
         self._run_reader = run_reader
         self._dag_reader = dag_reader
         self._lease_reader = lease_reader
+        self._dispatch_reader = dispatch_reader
         self._execution_base_resolver = execution_base_resolver
         self._classifier = classifier or RecoveryStateClassifier()
         self._reconciliation_planner = reconciliation_planner or DAGRunReconciliationPlanner()
@@ -92,9 +104,16 @@ class OperatorRecoveryPlanner:
             recovery=recovery,
             execution_base_resolver=self._execution_base_resolver,
         )
+        dispatches = {
+            task_id: await self._dispatch_reader.list_for_task(
+                run_id=run_id,
+                task_id=task_id,
+            )
+            for task_id in reconciliation.topological_order
+        }
         actions: tuple[OperatorAction, ...] = ()
         if self._should_offer_advance(reconciliation):
-            actions = (self._advance_action(reconciliation),)
+            actions = (self._advance_action(reconciliation, dispatches=dispatches),)
         return OperatorRecoveryPlan(
             run_id=run_id,
             reconciliation=reconciliation,
@@ -108,9 +127,18 @@ class OperatorRecoveryPlanner:
         return any(item.frontier_state in cls._ADVANCE_STATES for item in plan.tasks)
 
     @classmethod
-    def _advance_action(cls, plan: DAGRunReconciliationPlan) -> OperatorAction:
+    def _advance_action(
+        cls,
+        plan: DAGRunReconciliationPlan,
+        *,
+        dispatches: dict[str, tuple[PersistedDispatchAttempt, ...]],
+    ) -> OperatorAction:
         return OperatorAction(
-            action_id=cls._action_id(plan=plan, kind=OperatorActionKind.ADVANCE_RUN),
+            action_id=cls._action_id(
+                plan=plan,
+                kind=OperatorActionKind.ADVANCE_RUN,
+                dispatches=dispatches,
+            ),
             kind=OperatorActionKind.ADVANCE_RUN,
             label="Advance from durable facts",
             description=(
@@ -120,7 +148,12 @@ class OperatorRecoveryPlanner:
         )
 
     @staticmethod
-    def _action_id(*, plan: DAGRunReconciliationPlan, kind: OperatorActionKind) -> str:
+    def _action_id(
+        *,
+        plan: DAGRunReconciliationPlan,
+        kind: OperatorActionKind,
+        dispatches: dict[str, tuple[PersistedDispatchAttempt, ...]],
+    ) -> str:
         tasks = []
         for item in plan.tasks:
             execution_base = None
@@ -132,6 +165,7 @@ class OperatorRecoveryPlanner:
                     "source_evidence_sha256": item.execution_base.source_evidence_sha256,
                     "integration_ref": item.execution_base.integration_ref,
                 }
+            task_dispatches = tuple(dispatches.get(item.task_id, ()))
             tasks.append(
                 {
                     "task_id": item.task_id,
@@ -148,6 +182,17 @@ class OperatorRecoveryPlanner:
                     ),
                     "worker_execution_evidence_id": item.worker_execution_evidence_id,
                     "execution_base": execution_base,
+                    "dispatch_attempts": [
+                        {
+                            "dispatch_id": str(attempt.dispatch_id),
+                            "attempt_number": attempt.attempt_number,
+                            "state": attempt.state.value,
+                            "broker_message_id": attempt.broker_message_id,
+                            "queue_name": attempt.queue_name,
+                            "error_code": attempt.error_code,
+                        }
+                        for attempt in task_dispatches
+                    ],
                 }
             )
         return payload_sha256(
