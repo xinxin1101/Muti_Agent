@@ -85,6 +85,35 @@ async def _start_run(evidence_store: PostgresEvidenceStore, dag_store: PostgresD
     )
 
 
+async def _create_expired_generation(
+    *,
+    run_id,
+    dispatch_store: PostgresDispatchAttemptStore,
+    lease_store: PostgresTaskLeaseStore,
+) -> None:
+    dispatch_id = uuid4()
+    await dispatch_store.begin_initial_attempt(
+        dispatch_id=dispatch_id,
+        run_id=run_id,
+        task_id="A",
+    )
+    await dispatch_store.mark_enqueued(
+        dispatch_id=dispatch_id,
+        run_id=run_id,
+        task_id="A",
+        broker_message_id="expired-generation",
+        queue_name="devflow_tasks",
+    )
+    await lease_store.acquire_task_lease(
+        run_id=run_id,
+        task_id="A",
+        owner_id="expired-worker",
+        dispatch_id=dispatch_id,
+        lease_seconds=0.1,
+    )
+    await asyncio.sleep(0.2)
+
+
 def test_active_owner_is_read_only_on_operator_surface() -> None:
     asyncio.run(_active_owner_is_read_only_on_operator_surface())
 
@@ -174,23 +203,38 @@ async def _concurrent_operator_actions_publish_once_and_make_old_action_stale() 
     )
     try:
         run_id = await _start_run(evidence_store, dag_store)
+        await _create_expired_generation(
+            run_id=run_id,
+            dispatch_store=dispatch_store,
+            lease_store=lease_store,
+        )
         initial = await coordinator.get_plan(run_id)
         assert len(initial.actions) == 1
+        assert (
+            initial.reconciliation.tasks[0].frontier_state
+            is DAGTaskFrontierState.RECONCILE_CANDIDATE
+        )
         action_id = initial.actions[0].action_id
 
-        first, second = await asyncio.gather(
+        outcomes = await asyncio.gather(
             coordinator.execute(run_id=run_id, action_id=action_id),
             coordinator.execute(run_id=run_id, action_id=action_id),
+            return_exceptions=True,
         )
 
-        assert first.request_evidence_id == second.request_evidence_id
+        successful = [item for item in outcomes if not isinstance(item, BaseException)]
+        stale = [item for item in outcomes if isinstance(item, OperatorActionStaleError)]
+        assert successful
+        assert len(successful) + len(stale) == 2
+        assert len({item.request_evidence_id for item in successful}) == 1
         assert actor.calls == 1
         assert controller.calls == 0
         assert set(actor.payloads[0]) == {"dispatch_id", "run_id", "task_id"}
 
         attempts = await dispatch_store.list_for_task(run_id=run_id, task_id="A")
-        assert len(attempts) == 1
-        assert attempts[0].state.value == "ENQUEUED"
+        assert len(attempts) == 2
+        assert [item.attempt_number for item in attempts] == [1, 2]
+        assert all(item.state.value == "ENQUEUED" for item in attempts)
 
         snapshot = await evidence_store.load_run(run_id)
         operator_evidence = [
@@ -203,8 +247,7 @@ async def _concurrent_operator_actions_publish_once_and_make_old_action_stale() 
         assert operator_evidence[0].payload["fresh_revalidation_required"] is True
 
         refreshed = await coordinator.get_plan(run_id)
-        assert len(refreshed.actions) == 1
-        assert refreshed.actions[0].action_id != action_id
+        assert refreshed.actions == ()
 
         with pytest.raises(OperatorActionStaleError):
             await coordinator.execute(run_id=run_id, action_id=action_id)
