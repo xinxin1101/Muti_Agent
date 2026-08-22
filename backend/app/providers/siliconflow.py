@@ -32,6 +32,7 @@ class SiliconFlowDriver:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
         self.max_retries = max_retries
+        self._owns_client = client is None
 
         if client is not None:
             self._client = client
@@ -57,6 +58,43 @@ class SiliconFlowDriver:
             max_retries=settings.siliconflow_max_retries,
             client=client,
         )
+
+    async def dispose(self) -> None:
+        if not self._owns_client:
+            return
+        close = getattr(self._client, "close", None)
+        if close is not None:
+            result = close()
+            if hasattr(result, "__await__"):
+                await result
+            return
+        aclose = getattr(self._client, "aclose", None)
+        if aclose is not None:
+            await aclose()
+
+    async def list_model_ids(self) -> frozenset[str]:
+        """Return the provider-advertised model ids for readiness checks.
+
+        Model catalogue membership is operational evidence only; it never authorizes Run success,
+        verification, integration, or fallback to a different model.
+        """
+
+        try:
+            response = await self._client.models.list()
+        except Exception as exc:
+            raise normalize_provider_error(exc, provider=self.provider_name) from exc
+
+        data = getattr(response, "data", None)
+        if data is None:
+            raise self._malformed_response("Provider model catalogue did not contain a data list.")
+        model_ids: set[str] = set()
+        for item in data:
+            model_id = getattr(item, "id", None)
+            if isinstance(model_id, str) and model_id.strip():
+                model_ids.add(model_id.strip())
+        if not model_ids:
+            raise self._malformed_response("Provider model catalogue contained no model ids.")
+        return frozenset(model_ids)
 
     async def complete(self, request: AgentRequest) -> AgentResponse:
         started_at = perf_counter()
@@ -148,9 +186,7 @@ class SiliconFlowDriver:
             arguments = getattr(function, "arguments", None) if function is not None else None
             if not call_id or not name or arguments is None:
                 raise cls._malformed_response("Provider returned a malformed function tool call.")
-            normalized.append(
-                ToolCall(id=str(call_id), name=str(name), arguments=str(arguments))
-            )
+            normalized.append(ToolCall(id=str(call_id), name=str(name), arguments=str(arguments)))
         return normalized
 
     @staticmethod
