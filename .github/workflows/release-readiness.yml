@@ -86,17 +86,37 @@ jobs:
         working-directory: frontend
         run: npm ci --no-audit --no-fund
 
-      - name: Create repository-root environment
+      - name: Create repository-root environment from the public template
         run: |
-          cat > .env <<'EOF'
-          DEVFLOW_DATABASE_URL=postgresql+psycopg://devflow:devflow@127.0.0.1:5432/devflow_release
-          DEVFLOW_REDIS_URL=redis://127.0.0.1:6379/0
-          DEVFLOW_DRAMATIQ_NAMESPACE=devflow-release-smoke
-          DEVFLOW_DRAMATIQ_QUEUE_NAME=devflow_tasks
-          SILICONFLOW_API_KEY=
-          DEVFLOW_GITHUB_TOKEN=
-          DEVFLOW_VERIFICATION_SANDBOX_IMAGE=devflow-verifier:py311
-          EOF
+          cp .env.example .env
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('.env')
+          lines = path.read_text(encoding='utf-8').splitlines()
+          replacements = {
+              'DEVFLOW_DATABASE_URL': 'postgresql+psycopg://devflow:devflow@127.0.0.1:5432/devflow_release',
+              'DEVFLOW_REDIS_URL': 'redis://127.0.0.1:6379/0',
+              'DEVFLOW_DRAMATIQ_NAMESPACE': 'devflow-release-smoke',
+              'SILICONFLOW_API_KEY': '',
+              'DEVFLOW_GITHUB_READ_TOKEN': '',
+              'DEVFLOW_GITHUB_PUBLICATION_TOKEN': '',
+              'DEVFLOW_VERIFICATION_SANDBOX_IMAGE': 'devflow-verifier:py311',
+          }
+          output = []
+          seen = set()
+          for line in lines:
+              if '=' in line and not line.lstrip().startswith('#'):
+                  key = line.split('=', 1)[0]
+                  if key in replacements:
+                      line = f'{key}={replacements[key]}'
+                      seen.add(key)
+              output.append(line)
+          missing = sorted(set(replacements) - seen)
+          if missing:
+              raise SystemExit(f'.env.example missing expected keys: {missing}')
+          path.write_text('\n'.join(output) + '\n', encoding='utf-8')
+          PY
 
       - name: Prove API rejects an unmigrated database
         shell: bash
