@@ -3,8 +3,10 @@ name: Frontend Quality
 on:
   pull_request:
     paths:
+      - ".env.example"
       - "frontend/**"
       - "benchmarks/**"
+      - "scripts/**"
       - "README.md"
       - "docs/FRONTEND_FOUNDATION.md"
       - "docs/STEP_4_1_ACCEPTANCE.md"
@@ -39,14 +41,19 @@ on:
       - "docs/STEP_5_8_ACCEPTANCE.md"
       - "docs/AUTONOMOUS_MULTI_AGENT_PRODUCT_LOOP.md"
       - "docs/STEP_6_7_ACCEPTANCE.md"
+      - "docs/RELEASE_READINESS.md"
+      - "docs/RELEASE_READINESS_CHECKLIST.md"
       - "docs/PROGRESS.md"
       - ".github/workflows/frontend-quality.yml"
+      - ".github/workflows/release-readiness.yml"
   push:
     branches:
       - main
     paths:
+      - ".env.example"
       - "frontend/**"
       - "benchmarks/**"
+      - "scripts/**"
       - "README.md"
       - "docs/FRONTEND_FOUNDATION.md"
       - "docs/STEP_4_1_ACCEPTANCE.md"
@@ -81,8 +88,11 @@ on:
       - "docs/STEP_5_8_ACCEPTANCE.md"
       - "docs/AUTONOMOUS_MULTI_AGENT_PRODUCT_LOOP.md"
       - "docs/STEP_6_7_ACCEPTANCE.md"
+      - "docs/RELEASE_READINESS.md"
+      - "docs/RELEASE_READINESS_CHECKLIST.md"
       - "docs/PROGRESS.md"
       - ".github/workflows/frontend-quality.yml"
+      - ".github/workflows/release-readiness.yml"
 
 permissions:
   contents: read
