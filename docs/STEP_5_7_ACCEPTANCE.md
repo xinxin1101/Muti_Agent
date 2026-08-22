@@ -1,16 +1,14 @@
 # Step 5.7 Acceptance — Operator Recovery / Approval Surface
 
-Status: **ACCEPTANCE CANDIDATE / NOT YET ACCEPTED**
+Status: **ACCEPTED / COMPLETE**
 
 ## Frozen boundary
 
 > **Operator intent may request recovery work; only fresh server-side PostgreSQL, DAG, Git, lease, dispatch-ledger, and fencing facts may authorize that work.**
 
-Step 5.7 is an acceptance candidate because DevFlow now exposes a bounded operator-facing recovery surface without promoting Causal Trace, browser state, or an old recovery diagnosis into mutation authority.
+Step 5.7 is accepted because DevFlow now exposes a bounded operator-facing recovery surface without promoting Causal Trace, browser state, or an old recovery diagnosis into mutation authority.
 
-The implementation head has passed strict Backend and Frontend quality gates. This status remains **NOT YET ACCEPTED** until the complete candidate ledger head containing this file, `OPERATOR_RECOVERY_SURFACE.md`, `PROGRESS.md`, and both workflow path gates independently passes both quality workflows.
-
-## Candidate architecture
+## Accepted architecture
 
 ```text
 Durable Run / Task / DAG facts
@@ -51,7 +49,7 @@ fresh locked publication / no-op / reject
 
 Causal Trace remains a separate diagnostic read model. The operator surface may explain why an action is being considered, but Trace never authorizes the action.
 
-## Action scope acceptance candidate
+## Accepted action scope
 
 The only new mutating operator command in Step 5.7 is:
 
@@ -63,28 +61,20 @@ It means:
 
 > Re-enter the already accepted durable controller/reconciler from current authoritative facts.
 
-It does **not** mean:
-
-- force retry;
-- replay a worker generation;
-- acquire a lease from the browser;
-- bypass Step 5.3 publication checks;
-- merge or repair without Git/evidence gates;
-- reopen a terminal Run.
+It does **not** mean force retry, replay a worker generation, acquire a lease from the browser, bypass Step 5.3 publication checks, bypass Git/evidence gates, or reopen a terminal Run.
 
 No second scheduler, broker publisher, lease authority, Git authority, verifier, or success authority is introduced.
 
 ## Opaque action identity
 
-`action_id` is a server-owned SHA-256 fingerprint over semantic state that justified the advertised action.
+`action_id` is a server-owned SHA-256 fingerprint over the semantic state that justified the advertised action.
 
 The fingerprint binds:
 
 - Run status;
 - persisted DAG digest and topology;
 - per-task frontier state;
-- lease state;
-- lease generation;
+- lease state and generation;
 - current lease dispatch identity where present;
 - accepted terminal worker evidence identity/status;
 - evidence-bound execution base where present;
@@ -92,20 +82,15 @@ The fingerprint binds:
 
 Wall-clock observation time is intentionally excluded, so a harmless refresh does not make the action stale.
 
-The dispatch ledger is intentionally included, so a newly created `REQUESTED` or `ENQUEUED` attempt changes the action identity even before a worker acquires the next lease generation.
+The dispatch ledger is intentionally included, so a newly created `REQUESTED`, `ENQUEUED`, or `PUBLISH_FAILED` attempt changes the action identity even before a worker acquires the next lease generation.
 
-## Fresh revalidation candidate
+## Fresh revalidation
 
-The browser never sends an authority payload. It sends only:
-
-```text
-run_id from the route
-opaque action_id from the server
-```
+The browser never sends an authority payload. It sends only the route Run identity and the opaque action id issued by the server.
 
 Immediately before mutation, the server reconstructs the entire Operator Recovery Plan from fresh authoritative facts. If the supplied `action_id` is no longer present in `actions[]`, execution fails as stale before audit or runtime mutation.
 
-This proves the desired ordering:
+Accepted ordering:
 
 ```text
 old diagnostic/action snapshot
@@ -117,7 +102,7 @@ fresh authoritative reconstruction
 allow or reject
 ```
 
-and forbids:
+Forbidden ordering:
 
 ```text
 old snapshot said retry was okay
@@ -128,10 +113,6 @@ direct retry
 ## Dispatch-aware action advertising
 
 Step 5.7 does not advertise `ADVANCE_RUN` merely because a task remains `RECONCILE_CANDIDATE`.
-
-For an expired generation, an operator advance is useful only while the durable dispatch ledger has not already moved beyond the currently leased dispatch.
-
-Therefore:
 
 ```text
 EXPIRED generation
@@ -145,11 +126,11 @@ EXPIRED generation
 ADVANCE_RUN is not advertised from that stale frontier
 ```
 
-This prevents the UI from encouraging duplicate clicks while Step 5.3 is already carrying a newer durable publication attempt.
+This closes the misleading UI window after broker publication but before the replacement worker acquires the next lease generation. The actual at-most-one publication guarantee remains Step 5.3's fresh locked authority.
 
-## Fail-closed recovery states
+## Fail-closed states
 
-Candidate behavior preserves the existing durable recovery refusal semantics:
+Accepted behavior preserves existing durable recovery refusal semantics:
 
 - terminal Run → no operator mutation advertised;
 - ACTIVE owner → `WAIT_ACTIVE_OWNER`, no action advertised;
@@ -160,11 +141,11 @@ Candidate behavior preserves the existing durable recovery refusal semantics:
 - broker failure → existing bounded broker error path;
 - no browser-supplied token, generation, SHA, branch or dispatch identity can expand authority.
 
-## Concurrent operator request candidate
+## Concurrent operator requests
 
 Real PostgreSQL concurrency coverage starts from an actual expired worker generation, obtains one server-issued action id, then submits two concurrent operator requests.
 
-Accepted candidate invariant:
+Accepted invariant:
 
 > **At most one fresh broker publication may result from concurrent requests for the same durable recovery opportunity.**
 
@@ -184,28 +165,19 @@ Publication authority remains Step 5.3; Step 5.7 only requests it.
 
 A legal operator request is recorded as typed `OPERATOR_ACTION` evidence before runtime delegation.
 
-The audit proves:
+The audit proves only:
 
 ```text
 an operator requested this server-issued action
 ```
 
-It does **not** prove:
+It does not prove worker redispatch, integration advance, repair success, or Run success. Those outcomes remain proven by the pre-existing dispatch, worker, verification, integration and terminal evidence chains.
 
-```text
-a worker was redispatched
-an integration advanced
-a repair succeeded
-a Run succeeded
-```
-
-Those outcomes remain proven by the pre-existing dispatch, worker, verification, integration and terminal evidence chains.
-
-Operator audit event-source projection is isolated in `OperatorAwarePostgresEvidenceStore`, a narrow subclass of the accepted `PostgresEvidenceStore`. The core persistence implementation remains unchanged from the Step 5.6 accepted behavior.
+Operator audit event-source projection is isolated in `OperatorAwarePostgresEvidenceStore`, a narrow subclass of the accepted `PostgresEvidenceStore`. The core persistence implementation remains unchanged from Step 5.6 accepted behavior.
 
 No Step 5.7 database migration is required; `OPERATOR_ACTION` uses the existing typed/hash-validated generic evidence table.
 
-## Product API candidate
+## Product API
 
 Read endpoint:
 
@@ -219,20 +191,11 @@ Command endpoint:
 POST /api/v1/runs/{run_id}/operator-actions/{action_id}
 ```
 
-The command endpoint rejects both query parameters and request bodies. The browser therefore cannot submit:
-
-- task id as mutation authority;
-- dispatch id;
-- lease generation;
-- `run_token`;
-- Git SHA;
-- branch;
-- integration parent;
-- execution base.
+The command endpoint rejects both query parameters and request bodies. The browser therefore cannot submit task id, dispatch id, lease generation, `run_token`, Git SHA, branch, integration parent, or execution base as mutation authority.
 
 Only the server-issued opaque action id crosses the command boundary.
 
-## Frontend candidate
+## Frontend
 
 `OperatorRecoveryPanel` is mounted on the Run Dashboard.
 
@@ -244,11 +207,11 @@ It:
 - does not infer a retry button from Causal Trace, lease text, task state, or local heuristics;
 - displays a no-action state when the server advertises no legal mutation.
 
-The pre-existing Human Gate panel remains the narrower merge-conflict approval surface from Step 5.5/Phase 6. Step 5.7 does not weaken or replace its exact conflict-evidence binding.
+The pre-existing Human Gate panel remains the narrower merge-conflict approval surface from Step 5.5 / Phase 6. Step 5.7 does not weaken or replace its exact conflict-evidence binding.
 
-## Candidate tests
+## Step 5.7-specific tests
 
-Step 5.7-specific coverage includes:
+Coverage includes:
 
 - `backend/tests/test_operator_recovery.py`
   - stable action identity across harmless observation-time changes;
@@ -278,11 +241,11 @@ The complete regression suite continues to cover prior persistence, leasing, fen
 
 ## Implementation-head evidence
 
-Exact implementation/hardening head before candidate ledger changes:
+Implementation/hardening head:
 
 `434f5d2704afe3428366dd5e0406b8e061d52640`
 
-Backend Quality run **#942** (`32557865629`) on that head:
+Backend Quality **#942** (`32557865629`):
 
 - PostgreSQL + Redis services: **PASS**;
 - Alembic `base → 0007 → base → 0007`: **PASS**;
@@ -293,29 +256,29 @@ Backend Quality run **#942** (`32557865629`) on that head:
 - deterministic V1 control-plane demos: **5 / 5 PASS**;
 - pytest: **426 passed, 1 warning in 34.21s**.
 
-Frontend Quality run **#235** (`32557865642`) on the same implementation head: **PASS** for locked install, TypeScript typecheck, lint, tests and production build.
+Frontend Quality **#235** (`32557865642`): **PASS** for locked install, TypeScript typecheck, lint, tests and production build.
 
-The warning is the existing FastAPI/Starlette TestClient deprecation and is unrelated to Step 5.7.
+## Candidate-ledger evidence
 
-## Candidate-ledger verification required
+Complete candidate ledger head:
 
-The candidate ledger head created by adding/updating:
+`030b50b2c122155fed7b53ecbe352550b9c79dd9`
 
-- `docs/OPERATOR_RECOVERY_SURFACE.md`;
-- this `docs/STEP_5_7_ACCEPTANCE.md`;
-- `docs/PROGRESS.md`;
-- `.github/workflows/backend-quality.yml`;
-- `.github/workflows/frontend-quality.yml`;
+Backend Quality **#947** (`32558218574`) on that candidate ledger: **PASS**, including Alembic round trip, verifier image, Ruff, fixture validation, **5/5 demos**, and **426 passed, 1 warning in 39.38s**.
 
-must independently pass strict Backend Quality and Frontend Quality.
+Frontend Quality **#240** (`32558218578`) on the same candidate ledger: **PASS** for locked install, typecheck, lint, tests and production build.
 
-Only after that double-green result may this file transition to:
+PR #40 had **0 inline review threads** at the acceptance transition.
 
-```text
-Status: ACCEPTED / COMPLETE
-```
+The warning in both backend runs is the existing FastAPI/Starlette TestClient deprecation and is unrelated to Step 5.7.
 
-That final status transition will itself create an accepted-state head which must pass both workflows one final time. PR #40 remains Draft and unmerged throughout the acceptance sequence.
+## Acceptance conclusion
+
+Step 5.7 is **ACCEPTED / COMPLETE** because both the implementation/hardening head and the complete candidate ledger independently passed strict Backend and Frontend quality gates before this accepted status was written.
+
+The accepted-state ledger head created by this final status transition must itself pass Backend Quality and Frontend Quality one final time. Once that external CI result is green, it completes the final acceptance condition without requiring a self-referential follow-up edit merely to copy that head's own CI identifiers back into this file.
+
+PR #40 remains Draft and unmerged throughout the acceptance sequence.
 
 ## Explicitly deferred
 
@@ -328,9 +291,9 @@ Step 5.7 does not complete:
 - bypassable repair/integration approval;
 - Step 5.8 Chaos / Recovery Benchmark and V1.1 final acceptance.
 
-## Next authority transition after acceptance
+## Next authority transition
 
-When Step 5.7 is accepted, the next question becomes:
+The next core question is:
 
 ```text
 Can the durable runtime survive a systematic chaos matrix
@@ -338,4 +301,4 @@ across publish, lease, evidence, Git, integration and process boundaries
 without fabricating success or duplicate mutation?
 ```
 
-That is Step 5.8. Until candidate-ledger and accepted-state CI are green, Step 5.7 remains **NOT YET ACCEPTED**.
+That is Step 5.8.
