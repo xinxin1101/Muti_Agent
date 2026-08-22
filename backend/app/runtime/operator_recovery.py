@@ -64,7 +64,7 @@ class OperatorActionStaleError(PersistenceConflictError):
 
 
 class OperatorRecoveryPlanner:
-    """Build a bounded operator view from existing durable recovery authority."""
+    """Build a bounded operator view and bind actions to durable dispatch history."""
 
     _ADVANCE_STATES = {
         DAGTaskFrontierState.SUCCEEDED,
