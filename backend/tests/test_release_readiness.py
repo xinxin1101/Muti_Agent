@@ -64,13 +64,13 @@ def test_repository_env_and_workspace_are_independent_of_current_working_directo
     expected_env = repository_root / ".env"
     expected_workspace = (repository_root / ".devflow/workspaces").resolve()
 
-    assert settings_module._REPOSITORY_ENV_FILE == expected_env
+    assert expected_env == settings_module._REPOSITORY_ENV_FILE
     assert Settings.model_config["env_file"] == expected_env
 
     monkeypatch.chdir(tmp_path)
     settings = Settings(_env_file=None)
 
-    assert settings_module._REPOSITORY_ENV_FILE == expected_env
+    assert expected_env == settings_module._REPOSITORY_ENV_FILE
     assert Settings.model_config["env_file"] == expected_env
     assert settings.workspace_root == expected_workspace
 
