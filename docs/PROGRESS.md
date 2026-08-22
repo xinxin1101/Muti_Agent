@@ -1,17 +1,17 @@
 # DevFlow Implementation Progress
 
-This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The development plan defines what should be built; this ledger records what has actually passed acceptance or reached a named acceptance-candidate state. Detailed design, hardening history, failure evidence, authority analysis, and exact CI evidence remain in the corresponding design/acceptance documents, pull requests, workflow runs, and Git history.
+This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The development plan defines what should be built; this ledger records what has actually passed acceptance. Detailed design, hardening history, failure evidence, authority analysis, and exact CI evidence remain in the corresponding design/acceptance documents, pull requests, workflow runs, and Git history.
 
 ## Current position
 
 - Current product milestone: **Phase 6 — Autonomous Multi-Agent Product Loop — ACCEPTED / COMPLETE**
-- Latest durable-runtime implementation: **Step 5.7 — Operator Recovery / Approval Surface — ACCEPTANCE CANDIDATE / NOT YET ACCEPTED**
-- Next durable-runtime backlog item after 5.7 acceptance: **Step 5.8 — Chaos / Recovery Benchmark + V1.1 Acceptance**
+- Completed durable-runtime item: **Step 5.7 — Operator Recovery / Approval Surface — ACCEPTED / COMPLETE**
+- Next durable-runtime backlog item: **Step 5.8 — Chaos / Recovery Benchmark + V1.1 Acceptance**
 - Phase 1 status: **ACCEPTED / COMPLETE**
 - Phase 2 status: **ACCEPTED / COMPLETE**
 - Phase 3 status: **ACCEPTED / COMPLETE**
 - Phase 4 status: **ACCEPTED / COMPLETE**
-- Phase 5 status: **IN PROGRESS** — 5.1–5.6 accepted; 5.7 acceptance candidate; 5.8 not accepted
+- Phase 5 status: **IN PROGRESS** — 5.1–5.7 accepted; 5.8 remains unaccepted
 - Phase 6 status: **ACCEPTED / COMPLETE**
 - V0.1 status: **ACCEPTED / COMPLETE**
 - V0.2 status: **ACCEPTED / COMPLETE**
@@ -185,7 +185,7 @@ Phase 5 strengthens long-running execution, crash recovery, causal observability
 | 5.4 | DAG-wide Run Reconciliation | **ACCEPTED / COMPLETE** | persisted-DAG frontier + evidence-bound execution bases + Step 5.3 dispatch authority; implementation `16be10b49a563429f459e337410bcb2c94a1d3ae`; Backend 393 tests + 5/5 demos |
 | 5.5 | Durable Human Pause / Resume | **ACCEPTED / COMPLETE via Phase 6** | durable typed Human decision + restart-safe bounded repair; hardening `6673d87a3aea15a68196a15818a109e74046d1d7` |
 | 5.6 | Causal Trace Correlation | **ACCEPTED / COMPLETE** | metadata-only trace + Run→Task→Dispatch→Generation correlation; implementation `e4942113ae5d10283cb31e6be3f832d04a782b61`; Backend 412 tests + 5/5 demos; candidate ledger `f0ca4d5f76cfc376d65cbc342648f01a8faf4939` green |
-| 5.7 | Operator Recovery / Approval Surface | **ACCEPTANCE CANDIDATE / NOT YET ACCEPTED** | opaque server action + fresh revalidation + Step 5.4/5.3 delegation + dispatch-aware duplicate suppression; implementation/hardening `434f5d2704afe3428366dd5e0406b8e061d52640`; Backend 426 tests + 5/5 demos; Frontend green |
+| 5.7 | Operator Recovery / Approval Surface | **ACCEPTED / COMPLETE** | opaque server action + fresh revalidation + Step 5.4/5.3 delegation + dispatch-aware duplicate suppression; implementation `434f5d2704afe3428366dd5e0406b8e061d52640`; candidate ledger `030b50b2c122155fed7b53ecbe352550b9c79dd9`; Backend 426 tests + 5/5 demos; Frontend green |
 | 5.8 | Chaos / Recovery Benchmark + V1.1 Acceptance | **NOT ACCEPTED** | full systematic chaos matrix remains open |
 
 ## Step 5.1 — Recovery State Classifier — ACCEPTED / COMPLETE
@@ -272,9 +272,9 @@ Candidate ledger:
 
 Design / acceptance: `CAUSAL_TRACE_CORRELATION.md`, `STEP_5_6_ACCEPTANCE.md`.
 
-## Step 5.7 — Operator Recovery / Approval Surface — ACCEPTANCE CANDIDATE
+## Step 5.7 — Operator Recovery / Approval Surface — ACCEPTED / COMPLETE
 
-Candidate architecture:
+Accepted architecture:
 
 ```text
 Recovery + durable reconciliation facts
@@ -301,7 +301,7 @@ Multi task  → DurableMultiAgentRunController
 Step 5.4 / Step 5.3 authority
 ```
 
-Candidate guarantees now implemented:
+Accepted guarantees:
 
 - browser/Trace never directly authorizes retry;
 - only server-advertised `ADVANCE_RUN` exists as the new operator mutation request;
@@ -327,12 +327,26 @@ Backend Quality #942 (`32557865629`): **PASS** — migrations, verifier image, R
 
 Frontend Quality #235 (`32557865642`): **PASS** — locked install, typecheck, lint, tests, production build.
 
-Design / acceptance candidate:
+Complete candidate ledger head:
+
+`030b50b2c122155fed7b53ecbe352550b9c79dd9`
+
+Backend Quality #947 (`32558218574`): **PASS** — Alembic round trip, verifier image, Ruff, fixture validation, **5/5 demos**, **426 passed, 1 warning in 39.38s**.
+
+Frontend Quality #240 (`32558218578`): **PASS** — locked install, typecheck, lint, tests, production build.
+
+PR #40 had **0 inline review threads** at the acceptance transition.
+
+Design / acceptance:
 
 - `docs/OPERATOR_RECOVERY_SURFACE.md`
 - `docs/STEP_5_7_ACCEPTANCE.md`
 
-Step 5.7 is **not accepted yet**. The complete candidate documentation/progress/workflow ledger must independently pass Backend and Frontend Quality. Only then may the status transition to `ACCEPTED / COMPLETE`; that accepted-state head must itself pass both workflows once more.
+Frozen Step 5.7 boundary:
+
+> **Operator intent may request recovery work; only fresh server-side PostgreSQL, DAG, Git, lease, dispatch-ledger, and fencing facts may authorize that work.**
+
+The accepted-state ledger head created by this final status transition must independently pass Backend Quality and Frontend Quality. No subsequent document mutation is required merely to copy that head's own CI identifiers back into this file.
 
 ---
 
@@ -388,15 +402,13 @@ Design / acceptance: `AUTONOMOUS_MULTI_AGENT_PRODUCT_LOOP.md`, `STEP_6_7_ACCEPTA
 
 # Current acceptance boundary
 
-Step 5.7 has reached **ACCEPTANCE CANDIDATE / NOT YET ACCEPTED**.
+Step 5.7 is now **ACCEPTED / COMPLETE** because both its implementation/hardening head and its complete candidate ledger independently passed strict Backend and Frontend quality gates before the accepted status was written.
 
-The implementation/hardening head `434f5d2704afe3428366dd5e0406b8e061d52640` independently passed strict Backend and Frontend quality gates.
-
-The current candidate ledger must now independently pass both workflows. If it does, the next allowed repository mutation is the Step 5.7 status transition to **ACCEPTED / COMPLETE** plus the exact candidate-ledger CI evidence. That accepted-state head must pass both workflows one final time.
+The accepted-state ledger head containing this status must now independently pass both workflows once more. When it does, that external CI result completes the final Step 5.7 acceptance condition without requiring a self-referential follow-up edit.
 
 PR #40 remains Draft and unmerged throughout this sequence.
 
-After Step 5.7 acceptance, the next core development target is:
+Next core development target:
 
 **Step 5.8 — Chaos / Recovery Benchmark + V1.1 Acceptance**
 
