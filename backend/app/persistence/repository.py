@@ -57,6 +57,7 @@ _EVIDENCE_EVENT_SOURCES = {
     PersistenceEvidenceKind.CONTEXT_REFERENCE: RuntimeEventSource.RUNTIME,
     PersistenceEvidenceKind.DISPATCH_EVENT: RuntimeEventSource.DISPATCH,
     PersistenceEvidenceKind.WORKER_EXECUTION: RuntimeEventSource.WORKER,
+    PersistenceEvidenceKind.OPERATOR_ACTION: RuntimeEventSource.RUNTIME,
 }
 
 
@@ -380,12 +381,6 @@ class PostgresEvidenceStore:
                 run_token=run_token,
             )
 
-        await self.finalize_single_task_run(
-            run_id=run_id,
-            result=result,
-            run_token=run_token,
-        )
-
     async def finalize_single_task_run(
         self,
         *,
@@ -394,24 +389,16 @@ class PostgresEvidenceStore:
         run_token: UUID | None = None,
     ) -> None:
         payload, digest = canonical_payload(result)
-        persisted_status = PersistedRunStatus.from_task_state(result.status)
-
+        decode_terminal_result(payload)
         async with self._session_factory.begin() as session:
             run = await self._locked_run(session, run_id)
-            tasks = (
-                await session.execute(
-                    select(TaskRow)
-                    .where(TaskRow.run_id == run_id)
-                    .order_by(TaskRow.task_id)
-                    .with_for_update()
-                )
-            ).scalars().all()
-            if len(tasks) != 1 or tasks[0].task_id != result.task_id:
-                raise PersistenceConflictError(
-                    "SingleTaskRunResult can finalize only a run containing exactly that task"
-                )
-
-            task = tasks[0]
+            if run.status != PersistedRunStatus.RUNNING.value:
+                if run.terminal_result_sha256 == digest:
+                    return
+                raise PersistenceConflictError("persisted run is already finalized differently")
+            if len(result.events) == 0:
+                raise PersistenceConflictError("terminal single-task result requires state events")
+            task = await self._locked_task(session, run_id, result.task_id)
             if run_token is not None or task.run_token is not None:
                 observed_at = await database_time(session)
                 assert_live_current_run_token(
@@ -419,19 +406,7 @@ class PostgresEvidenceStore:
                     run_token=run_token,
                     observed_at=observed_at,
                 )
-
-            if run.status != PersistedRunStatus.RUNNING.value:
-                if (
-                    run.status == persisted_status.value
-                    and run.terminal_result_sha256 == digest
-                    and run.terminal_result == payload
-                ):
-                    return
-                raise PersistenceConflictError(
-                    "persisted run was already finalized with different terminal evidence"
-                )
-
-            run.status = persisted_status.value
+            run.status = PersistedRunStatus.from_task_state(result.status).value
             run.terminal_result = payload
             run.terminal_result_sha256 = digest
             run.finished_at = func.now()
@@ -443,41 +418,29 @@ class PostgresEvidenceStore:
                     event_key="run:finalized",
                     kind=RuntimeEventKind.RUN_FINALIZED,
                     source=RuntimeEventSource.PERSISTENCE,
-                    level=(
-                        RuntimeEventLevel.ERROR
-                        if persisted_status is PersistedRunStatus.FAILED
-                        else RuntimeEventLevel.INFO
-                    ),
-                    task_id=result.task_id,
-                    dispatch_id=task.lease_dispatch_id,
-                    generation=task.lease_generation or None,
-                    message=f"Persisted run finalized as {persisted_status.value}.",
-                    attributes={
-                        "status": persisted_status.value,
-                        "terminal_result_sha256": digest,
-                    },
+                    message=f"Persisted run finalized as {run.status}.",
+                    attributes={"terminal_result_sha256": digest},
                 ),
             )
 
     async def load_run(self, run_id: UUID) -> PersistedRunSnapshot:
         async with self._session_factory() as session:
-            joined = (
+            run = (
+                await session.execute(select(RunRow).where(RunRow.id == run_id))
+            ).scalar_one_or_none()
+            if run is None:
+                raise ValueError(f"unknown persisted run: {run_id}")
+            project = (
+                await session.execute(select(ProjectRow).where(ProjectRow.id == run.project_id))
+            ).scalar_one()
+            tasks = (
                 await session.execute(
-                    select(RunRow, ProjectRow)
-                    .join(ProjectRow, ProjectRow.id == RunRow.project_id)
-                    .where(RunRow.id == run_id)
-                )
-            ).one_or_none()
-            if joined is None:
-                raise ValueError(f"unknown persistence run: {run_id}")
-            run, project = joined
-
-            task_rows = (
-                await session.execute(
-                    select(TaskRow).where(TaskRow.run_id == run_id).order_by(TaskRow.task_id)
+                    select(TaskRow)
+                    .where(TaskRow.run_id == run_id)
+                    .order_by(TaskRow.task_id)
                 )
             ).scalars().all()
-            evidence_rows = (
+            evidence = (
                 await session.execute(
                     select(EvidenceRow)
                     .where(EvidenceRow.run_id == run_id)
@@ -485,179 +448,137 @@ class PostgresEvidenceStore:
                 )
             ).scalars().all()
 
-        tasks = tuple(self._decode_task(row) for row in task_rows)
-        evidence = tuple(self._decode_evidence_row(row) for row in evidence_rows)
-        try:
-            status = PersistedRunStatus(run.status)
-        except ValueError as exc:
-            raise PersistenceCorruptionError(
-                f"persisted run has unknown status {run.status!r}"
-            ) from exc
-
-        terminal_result = run.terminal_result
-        terminal_sha = run.terminal_result_sha256
-        if terminal_result is not None:
-            if terminal_sha is None:
-                raise PersistenceCorruptionError("terminal result is missing its SHA-256 evidence")
-            verify_payload_hash(terminal_result, terminal_sha, label="terminal run result")
-            decoded = decode_terminal_result(terminal_result)
-            if PersistedRunStatus.from_task_state(decoded.status) is not status:
-                raise PersistenceCorruptionError(
-                    "persisted run status disagrees with validated terminal result"
+            persisted_tasks: list[PersistedTask] = []
+            for task in tasks:
+                verify_payload_hash(
+                    task.contract,
+                    task.contract_sha256,
+                    label=f"task {task.task_id!r}",
+                )
+                try:
+                    contract = TaskContract.model_validate(task.contract)
+                except ValueError as exc:
+                    raise PersistenceCorruptionError(
+                        f"task {task.task_id!r} contract failed schema validation"
+                    ) from exc
+                persisted_tasks.append(
+                    PersistedTask(
+                        task=contract,
+                        contract_sha256=task.contract_sha256,
+                        created_at=task.created_at,
+                    )
                 )
 
-        return PersistedRunSnapshot(
-            run_id=run.id,
-            project_id=project.id,
-            repository_url=project.repository_url,
-            default_branch=project.default_branch,
-            base_commit=run.base_commit,
-            status=status,
-            tasks=tasks,
-            evidence=evidence,
-            terminal_result=terminal_result,
-            terminal_result_sha256=terminal_sha,
-            started_at=run.started_at,
-            finished_at=run.finished_at,
-        )
+            persisted_evidence: list[PersistedEvidence] = []
+            for row in evidence:
+                verify_payload_hash(
+                    row.payload,
+                    row.payload_sha256,
+                    label=f"evidence {row.id}",
+                )
+                try:
+                    kind = PersistenceEvidenceKind(row.kind)
+                except ValueError as exc:
+                    raise PersistenceCorruptionError(
+                        f"evidence {row.id} uses unknown kind {row.kind!r}"
+                    ) from exc
+                decode_evidence(kind, row.payload)
+                persisted_evidence.append(
+                    PersistedEvidence(
+                        id=row.id,
+                        run_id=row.run_id,
+                        task_id=row.task_id,
+                        evidence_key=row.evidence_key,
+                        kind=kind,
+                        stage=row.stage,
+                        sequence=row.sequence,
+                        schema_version=row.schema_version,
+                        payload=row.payload,
+                        payload_sha256=row.payload_sha256,
+                        created_at=row.created_at,
+                    )
+                )
 
-    async def list_evidence(
-        self,
-        run_id: UUID,
-        *,
-        kind: PersistenceEvidenceKind | None = None,
-    ) -> tuple[PersistedEvidence, ...]:
-        async with self._session_factory() as session:
-            statement = select(EvidenceRow).where(EvidenceRow.run_id == run_id)
-            if kind is not None:
-                statement = statement.where(EvidenceRow.kind == kind.value)
-            rows = (
-                await session.execute(statement.order_by(EvidenceRow.id))
-            ).scalars().all()
-        return tuple(self._decode_evidence_row(row) for row in rows)
+            terminal_result = None
+            if run.terminal_result is not None:
+                if run.terminal_result_sha256 is None:
+                    raise PersistenceCorruptionError(
+                        "terminal result payload exists without a persisted digest"
+                    )
+                verify_payload_hash(
+                    run.terminal_result,
+                    run.terminal_result_sha256,
+                    label="terminal result",
+                )
+                decoded = decode_terminal_result(run.terminal_result)
+                terminal_result = decoded.model_dump(mode="json")
+
+            return PersistedRunSnapshot(
+                run_id=run.id,
+                project_id=run.project_id,
+                repository_url=project.repository_url,
+                default_branch=project.default_branch,
+                base_commit=run.base_commit,
+                status=PersistedRunStatus(run.status),
+                tasks=tuple(persisted_tasks),
+                evidence=tuple(persisted_evidence),
+                terminal_result=terminal_result,
+                terminal_result_sha256=run.terminal_result_sha256,
+                started_at=run.started_at,
+                finished_at=run.finished_at,
+            )
 
     async def list_runtime_events(
         self,
         run_id: UUID,
         *,
-        task_id: str | None = None,
-        dispatch_id: UUID | None = None,
-        kind: RuntimeEventKind | None = None,
-        source: RuntimeEventSource | None = None,
         after_sequence: int = 0,
-        limit: int = 200,
+        limit: int = 100,
     ) -> tuple[PersistedRuntimeEvent, ...]:
         if after_sequence < 0:
             raise ValueError("after_sequence must be non-negative")
-        if limit < 1 or limit > 1000:
-            raise ValueError("runtime event query limit must be between 1 and 1000")
-        normalized_task = self._optional_text(task_id, "task_id", max_length=128)
-
+        if not 1 <= limit <= 1000:
+            raise ValueError("limit must be between 1 and 1000")
         async with self._session_factory() as session:
             run_exists = await session.scalar(select(RunRow.id).where(RunRow.id == run_id))
             if run_exists is None:
-                raise ValueError(f"unknown persistence run: {run_id}")
-
-            statement = select(RuntimeEventRow).where(
-                RuntimeEventRow.run_id == run_id,
-                RuntimeEventRow.sequence > after_sequence,
-            )
-            if normalized_task is not None:
-                statement = statement.where(RuntimeEventRow.task_id == normalized_task)
-            if dispatch_id is not None:
-                statement = statement.where(RuntimeEventRow.dispatch_id == dispatch_id)
-            if kind is not None:
-                statement = statement.where(RuntimeEventRow.kind == kind.value)
-            if source is not None:
-                statement = statement.where(RuntimeEventRow.source == source.value)
+                raise ValueError(f"unknown persisted run: {run_id}")
             rows = (
-                await session.execute(statement.order_by(RuntimeEventRow.sequence).limit(limit))
+                await session.execute(
+                    select(RuntimeEventRow)
+                    .where(
+                        RuntimeEventRow.run_id == run_id,
+                        RuntimeEventRow.sequence > after_sequence,
+                    )
+                    .order_by(RuntimeEventRow.sequence)
+                    .limit(limit)
+                )
             ).scalars().all()
-        return tuple(decode_runtime_event(row) for row in rows)
+            return tuple(decode_runtime_event(row) for row in rows)
 
-    async def _locked_run(self, session: AsyncSession, run_id: UUID) -> RunRow:
-        run = (
-            await session.execute(select(RunRow).where(RunRow.id == run_id).with_for_update())
+    @staticmethod
+    async def _locked_run(session: AsyncSession, run_id: UUID) -> RunRow:
+        row = (
+            await session.execute(
+                select(RunRow).where(RunRow.id == run_id).with_for_update()
+            )
         ).scalar_one_or_none()
-        if run is None:
-            raise ValueError(f"unknown persistence run: {run_id}")
-        return run
+        if row is None:
+            raise ValueError(f"unknown persisted run: {run_id}")
+        return row
 
-    async def _locked_task(self, session: AsyncSession, run_id: UUID, task_id: str) -> TaskRow:
-        task = (
+    @staticmethod
+    async def _locked_task(session: AsyncSession, run_id: UUID, task_id: str) -> TaskRow:
+        row = (
             await session.execute(
                 select(TaskRow)
                 .where(TaskRow.run_id == run_id, TaskRow.task_id == task_id)
                 .with_for_update()
             )
         ).scalar_one_or_none()
-        if task is None:
-            raise ValueError(f"evidence task {task_id!r} does not belong to run {run_id}")
-        return task
-
-    @staticmethod
-    def _decode_task(row: TaskRow) -> PersistedTask:
-        verify_payload_hash(row.contract, row.contract_sha256, label=f"task {row.task_id}")
-        try:
-            task = TaskContract.model_validate(row.contract)
-        except ValueError as exc:
-            raise PersistenceCorruptionError(
-                f"persisted task {row.task_id!r} failed TaskContract validation: {exc}"
-            ) from exc
-        if task.task_id != row.task_id:
-            raise PersistenceCorruptionError("persisted task id disagrees with contract payload")
-        return PersistedTask(
-            task=task,
-            contract_sha256=row.contract_sha256,
-            created_at=row.created_at,
-        )
-
-    @staticmethod
-    def _decode_evidence_row(row: EvidenceRow) -> PersistedEvidence:
-        verify_payload_hash(row.payload, row.payload_sha256, label=f"evidence {row.id}")
-        try:
-            kind = PersistenceEvidenceKind(row.kind)
-        except ValueError as exc:
-            raise PersistenceCorruptionError(
-                f"persisted evidence {row.id} has unknown kind {row.kind!r}"
-            ) from exc
-        if row.schema_version != _SCHEMA_VERSION:
-            raise PersistenceCorruptionError(
-                f"unsupported evidence schema version {row.schema_version} for row {row.id}"
-            )
-        decode_evidence(kind, row.payload)
-        return PersistedEvidence(
-            id=row.id,
-            run_id=row.run_id,
-            task_id=row.task_id,
-            evidence_key=row.evidence_key,
-            kind=kind,
-            stage=row.stage,
-            sequence=row.sequence,
-            schema_version=row.schema_version,
-            payload=row.payload,
-            payload_sha256=row.payload_sha256,
-            created_at=row.created_at,
-        )
-
-    @staticmethod
-    def _same_evidence(
-        row: EvidenceRow,
-        *,
-        task_id: str | None,
-        kind: PersistenceEvidenceKind,
-        stage: str | None,
-        sequence: int | None,
-        payload_sha256: str,
-    ) -> bool:
-        return (
-            row.task_id == task_id
-            and row.kind == kind.value
-            and row.stage == stage
-            and row.sequence == sequence
-            and row.schema_version == _SCHEMA_VERSION
-            and row.payload_sha256 == payload_sha256
-        )
+        if row is None:
+            raise ValueError(f"unknown task {task_id!r} for run {run_id}")
+        return row
 
     @classmethod
     def _evidence_event_draft(
