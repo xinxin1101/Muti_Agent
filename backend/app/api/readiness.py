@@ -137,7 +137,10 @@ class OperationalReadinessChecker:
         if result.returncode != 0 or not result.stdout.strip().startswith("sha256:"):
             return ReadinessCheck(
                 state=ReadinessState.UNAVAILABLE,
-                detail="Configured verification image is unavailable; build it before running tasks.",
+                detail=(
+                    "Configured verification image is unavailable; "
+                    "build it before running tasks."
+                ),
             )
         return ReadinessCheck(
             state=ReadinessState.READY,
@@ -201,7 +204,10 @@ class OperationalReadinessChecker:
                 detail=(
                     "SiliconFlow is reachable and all configured models are available."
                     if not missing
-                    else "SiliconFlow is reachable but one or more configured models are unavailable."
+                    else (
+                        "SiliconFlow is reachable but one or more configured models "
+                        "are unavailable."
+                    )
                 ),
             ),
             models,
