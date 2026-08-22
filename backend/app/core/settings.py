@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     database_url: SecretStr | None = None
     database_echo: bool = False
 
-    redis_url: SecretStr = SecretStr("redis://localhost:6379/0")
+    redis_url: SecretStr = SecretStr("redis://127.0.0.1:6379/0")
     dramatiq_namespace: str = Field(default="devflow", min_length=1, max_length=64)
     dramatiq_queue_name: str = Field(default="devflow_tasks", min_length=1, max_length=128)
     worker_id: str | None = Field(default=None, min_length=1, max_length=255)
@@ -35,13 +35,19 @@ class Settings(BaseSettings):
     siliconflow_timeout_seconds: float = Field(default=60.0, gt=0.0, le=600.0)
     siliconflow_max_retries: int = Field(default=0, ge=0, le=5)
 
+    # Read and publication credentials are distinct capabilities. The legacy DEVFLOW_GITHUB_TOKEN
+    # alias remains accepted for publication-only compatibility.
+    github_read_token: SecretStr | None = None
+    github_publication_token: SecretStr | None = None
     github_token: SecretStr | None = None
     github_publication_timeout_seconds: float = Field(default=30.0, gt=0.0, le=30.0)
 
-    planner_model: str = "Pro/zai-org/GLM-4.7"
-    developer_model: str = "deepseek-ai/DeepSeek-V3.2"
-    reviewer_model: str = "Pro/zai-org/GLM-4.7"
-    repair_model: str = "deepseek-ai/DeepSeek-V3.2"
+    # /readyz validates configured model ids against the provider catalogue instead of assuming
+    # that a historical default remains available forever.
+    planner_model: str = "zai-org/GLM-5.2"
+    developer_model: str = "Pro/deepseek-ai/DeepSeek-V3.2"
+    reviewer_model: str = "zai-org/GLM-5.2"
+    repair_model: str = "Pro/deepseek-ai/DeepSeek-V3.2"
 
     verification_sandbox_image: str = "devflow-verifier:py311"
     verification_sandbox_cpus: float = Field(default=1.0, ge=0.05, le=32.0)
@@ -50,6 +56,8 @@ class Settings(BaseSettings):
     verification_sandbox_tmpfs_mb: int = Field(default=128, ge=16, le=4_096)
     verification_sandbox_shm_mb: int = Field(default=64, ge=16, le=1_024)
     verification_sandbox_timeout_seconds: float = Field(default=60.0, ge=0.05, le=600.0)
+
+    git_clone_timeout_seconds: float = Field(default=300.0, gt=0.0, le=1_800.0)
 
     model_config = SettingsConfigDict(
         env_file=_REPOSITORY_ENV_FILE,
@@ -66,18 +74,36 @@ class Settings(BaseSettings):
             return value
         return (_REPOSITORY_ROOT / value).resolve()
 
-    @field_validator("siliconflow_api_key", "github_token", mode="before")
+    @field_validator(
+        "siliconflow_api_key",
+        "github_read_token",
+        "github_publication_token",
+        "github_token",
+        mode="before",
+    )
     @classmethod
     def normalize_optional_secret(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
             return None
         return value
 
+    @field_validator("planner_model", "developer_model", "reviewer_model", "repair_model")
+    @classmethod
+    def normalize_model_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Agent model ids must not be empty")
+        return normalized
+
     @model_validator(mode="after")
     def validate_worker_lease_cadence(self) -> Self:
         if self.worker_heartbeat_interval_seconds >= self.worker_lease_seconds:
             raise ValueError("worker heartbeat interval must be shorter than the lease duration")
         return self
+
+    @property
+    def effective_github_publication_token(self) -> SecretStr | None:
+        return self.github_publication_token or self.github_token
 
 
 @lru_cache
