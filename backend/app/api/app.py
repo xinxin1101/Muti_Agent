@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Annotated
 from uuid import UUID
@@ -47,11 +48,20 @@ from app.persistence import (
 )
 from app.workspace import ProjectProvisionError, WorkspaceGitError
 
+StartupCheck = Callable[[], Awaitable[None]]
 
-def create_app(service: ProductRuntimeService, *, close_service: bool = False) -> FastAPI:
+
+def create_app(
+    service: ProductRuntimeService,
+    *,
+    close_service: bool = False,
+    startup_check: StartupCheck | None = None,
+) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         try:
+            if startup_check is not None:
+                await startup_check()
             yield
         finally:
             if close_service:
