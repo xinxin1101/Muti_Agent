@@ -1,6 +1,6 @@
 # Step 5.8 — Chaos / Recovery Benchmark + V1.1 Acceptance
 
-Status: **IN DEVELOPMENT / NOT ACCEPTED**
+Status: **ACCEPTANCE CANDIDATE / NOT YET ACCEPTED**
 
 ## Goal
 
@@ -140,12 +140,31 @@ V1 fixtures
     ↓
 5/5 control-plane demos
     ↓
-Step 5.8 chaos manifest (all required scenarios)
+Step 5.8 chaos manifest (10/10 required scenarios)
     ↓
 full pytest regression
 ```
 
 This prevents a partial chaos failure from being hidden inside the full regression count.
+
+## Implementation candidate evidence
+
+Exact implementation/hardening head:
+
+`572995329fb0422bc2de72d83db6096cda70c8d6`
+
+Backend Quality #956 (`32559638164`): **PASS** — Alembic round trip, verifier image, Ruff, V1 fixture validation, **5/5 demos**, **10/10 chaos scenarios**, and **442 passed, 1 warning in 42.41s**.
+
+Chaos suite:
+
+- version: `0.2.0`;
+- SHA-256: `088f8b5854448344a281f7a6e953ee23faf412b7973cdd0493c9209c6f5ed7b6`;
+- scenario count: **10**;
+- invariant count: **7**.
+
+Frontend Quality #255 (`32559638135`): **PASS**.
+
+No Step 5.8 database migration is required.
 
 ## V1.1 acceptance gate
 
@@ -162,4 +181,4 @@ V1.1 cannot be marked `ACCEPTED / COMPLETE` until:
 9. only then may Step 5.8 and V1.1 transition to `ACCEPTED / COMPLETE`;
 10. the final accepted-state ledger head must pass strict Backend + Frontend CI again.
 
-Until those conditions pass, Step 5.8 and V1.1 remain **IN DEVELOPMENT / NOT ACCEPTED**.
+The implementation conditions are now satisfied, but this document remains **ACCEPTANCE CANDIDATE / NOT YET ACCEPTED** until the complete candidate ledger passes both workflows. The final status transition must then pass both workflows again.
