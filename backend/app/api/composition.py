@@ -170,6 +170,7 @@ def build_product_service(settings: Settings) -> OperatorAwareAutonomousProductR
             run_reader=evidence_store,
             dag_reader=dag_store,
             lease_reader=lease_store,
+            dispatch_reader=dispatch_store,
             execution_base_resolver=execution_base_resolver,
         ),
         audit_store=evidence_store,
