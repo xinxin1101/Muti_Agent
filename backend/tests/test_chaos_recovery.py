@@ -605,7 +605,10 @@ async def _c06_publish_failure_remains_explicit() -> None:
         assert actor.calls == 1
         snapshot = await evidence_store.load_run(run_id)
         assert snapshot.status.value == "RUNNING"
-        assert not any(item.kind is PersistenceEvidenceKind.WORKER_EXECUTION for item in snapshot.evidence)
+        assert not any(
+            item.kind is PersistenceEvidenceKind.WORKER_EXECUTION
+            for item in snapshot.evidence
+        )
     finally:
         await dispatch_store.dispose()
         await evidence_store.dispose()
