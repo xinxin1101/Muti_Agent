@@ -22,6 +22,8 @@ class ChaosFaultDomain(StrEnum):
     BROKER = "BROKER"
     HUMAN_GATE = "HUMAN_GATE"
     DAG = "DAG"
+    OPERATOR = "OPERATOR"
+    REPAIR = "REPAIR"
 
 
 class ChaosInvariant(StrEnum):
@@ -73,7 +75,7 @@ class ChaosRecoveryManifest(BenchmarkModel):
     suite_version: str = Field(pattern=r"^[0-9]+\.[0-9]+\.[0-9]+$", max_length=32)
     description: str = Field(min_length=1, max_length=4000)
     required_invariants: tuple[ChaosInvariant, ...] = Field(min_length=7, max_length=7)
-    scenarios: tuple[ChaosScenario, ...] = Field(min_length=8, max_length=32)
+    scenarios: tuple[ChaosScenario, ...] = Field(min_length=10, max_length=32)
 
     @field_validator("required_invariants")
     @classmethod
@@ -117,7 +119,7 @@ class ChaosRecoveryResult(BenchmarkModel):
     suite_version: str
     suite_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     runtime_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
-    scenario_count: int = Field(ge=8)
+    scenario_count: int = Field(ge=10)
     invariant_count: int = Field(ge=7)
     exit_code: int = Field(ge=0)
     passed: bool
