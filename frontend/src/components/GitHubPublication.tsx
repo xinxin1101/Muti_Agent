@@ -138,8 +138,9 @@ export function GitHubPublication({
       ) : null}
       {!item.publisher_configured && !item.pull_request_url ? (
         <p className="text-xs text-amber-200/70">
-          Backend GitHub publication credential is not configured. No credential is accepted from
-          the browser.
+          Backend GitHub publication credential is not loaded. Configure
+          DEVFLOW_GITHUB_PUBLICATION_TOKEN in the repository-root .env, restart devflow-api, then
+          refresh this page. No credential is accepted from the browser.
         </p>
       ) : null}
     </section>
