@@ -29,7 +29,8 @@ from app.trace.worker import (
     TraceAwareLocalQueuedTaskExecutionBackend,
     TraceAwareQueuedTaskWorker,
 )
-from app.verification import DeterministicVerifier, DockerSandboxRunner
+from app.verification import DeterministicVerifier
+from app.verification.project_profile import ProjectAwareVerificationRunner
 from app.workers.executor import ManagedProjectWorkspaceResolver, QueuedTaskWorker
 from app.workers.lease import LeasedQueuedTaskWorker
 from app.workers.project_identity import ProjectIdentityValidatingQueuedTaskWorker
@@ -60,7 +61,11 @@ def build_verifier(settings: Settings) -> DeterministicVerifier:
     )
     return DeterministicVerifier(
         command_timeout_seconds=settings.verification_sandbox_timeout_seconds,
-        command_runner=DockerSandboxRunner(policy),
+        command_runner=ProjectAwareVerificationRunner(
+            base_policy=policy,
+            node_image=settings.verification_node_sandbox_image,
+            cache_root=settings.workspace_root / "verification-deps",
+        ),
     )
 
 
@@ -155,8 +160,6 @@ async def execute_task_from_settings(
         )
         result = await leased_worker.execute(envelope)
 
-        # Import only after app.workers.tasks has finished defining its actor. Importing it at
-        # module load time would create a runtime.py <-> tasks.py cycle.
         from app.workers.tasks import execute_devflow_task
 
         task_reconciler = IdempotentTaskReconciler(
