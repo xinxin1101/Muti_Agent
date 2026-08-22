@@ -5,9 +5,12 @@ from typing import Literal, Self
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+_REPOSITORY_ENV_FILE = _REPOSITORY_ROOT / ".env"
+
 
 class Settings(BaseSettings):
-    """Typed application settings loaded from environment variables and `.env`."""
+    """Typed application settings loaded from environment variables and repository `.env`."""
 
     app_name: str = "DevFlow"
     environment: Literal["development", "test", "production"] = "development"
@@ -49,7 +52,7 @@ class Settings(BaseSettings):
     verification_sandbox_timeout_seconds: float = Field(default=60.0, ge=0.05, le=600.0)
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_REPOSITORY_ENV_FILE,
         env_file_encoding="utf-8",
         env_prefix="DEVFLOW_",
         case_sensitive=False,
