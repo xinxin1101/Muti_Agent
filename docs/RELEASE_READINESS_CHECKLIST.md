@@ -1,6 +1,6 @@
 # Release Readiness Checklist
 
-Status: **IMPLEMENTED / CI VALIDATION PENDING**
+Status: **ACCEPTED / COMPLETE**
 
 - [x] Repository-root `.env` loads independent of backend working directory
 - [x] Relative managed workspace root resolves from repository root
@@ -13,10 +13,17 @@ Status: **IMPLEMENTED / CI VALIDATION PENDING**
 - [x] Backend README reflects current lease/fencing/recovery semantics
 - [x] Frontend/API/Vite loopback defaults are consistent
 - [x] Release smoke exercises real API/worker/frontend startup plus deterministic Product E2E
-- [ ] Backend Quality passes on release-readiness head
-- [ ] Frontend Quality passes on release-readiness head
-- [ ] V1 control-plane demos remain 5/5
-- [ ] V1.1 chaos matrix remains 10/10
-- [ ] Release Readiness smoke passes
+- [x] Backend Quality passes on release-readiness implementation head
+- [x] Frontend Quality passes on release-readiness implementation head
+- [x] V1 control-plane demos remain 5/5
+- [x] V1.1 chaos matrix remains 10/10
+- [x] Release Readiness smoke passes
 
-No merge to `main` is authorized until every release blocker above is complete.
+Implementation acceptance evidence:
+
+- head `71be46474a6d75aac9d692b15f105dfd8b8e6017`
+- Backend Quality #968: PASS — 446 tests, 5/5 demos, 10/10 chaos
+- Frontend Quality #283: PASS
+- Release Readiness #12: PASS
+
+The accepted-state head created by this ledger transition must pass the same three workflows before sequential promotion to `main`.
