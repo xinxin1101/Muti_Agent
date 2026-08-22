@@ -1,6 +1,6 @@
 # Release Readiness Hardening
 
-Status: **IMPLEMENTED / CI VALIDATION PENDING**
+Status: **ACCEPTED / COMPLETE**
 
 This release-readiness increment fixes the public clone-to-run workflow without changing DevFlow's accepted runtime authority model.
 
@@ -61,6 +61,18 @@ The gate proves, in order:
 
 This smoke complements rather than replaces Backend Quality, Frontend Quality, the 5/5 V1 control-plane demos or the 10/10 V1.1 chaos matrix.
 
+## Acceptance evidence
+
+Implementation / candidate head:
+
+`71be46474a6d75aac9d692b15f105dfd8b8e6017`
+
+- Backend Quality #968 (`32576130831`): **PASS** — migrations, verifier image, Ruff, V1 fixtures, **5/5 control-plane demos**, **10/10 chaos scenarios**, **446 passed, 1 warning in 46.21s**.
+- Frontend Quality #283 (`32576130832`): **PASS** — locked install, typecheck, lint, Vitest and production build.
+- Release Readiness #12 (`32576130960`): **PASS** — unmigrated-schema rejection, root-`.env` Alembic migration, schema preflight, verifier build, real API/worker/frontend startup and deterministic autonomous product E2E.
+
+The accepted-state documentation commit remains subject to the same three workflow gates before main promotion.
+
 ## Target release path
 
 ```text
@@ -92,7 +104,7 @@ main
   -> PR #42 Release Readiness
 ```
 
-Do not merge only the top stacked PR directly into `main` and leave the lower PRs semantically dangling. After release-readiness acceptance, promote sequentially:
+Do not merge only the top stacked PR directly into `main` and leave the lower PRs semantically dangling. Promote sequentially:
 
 1. merge #38 to `main`;
 2. retarget #39 to `main`, require strict CI, merge;
@@ -101,4 +113,4 @@ Do not merge only the top stacked PR directly into `main` and leave the lower PR
 5. retarget #42 to `main`, require Backend + Frontend + Release Readiness, merge;
 6. verify the resulting `main` head again with the same required workflows.
 
-The release remains blocked until Backend Quality, Frontend Quality and Release Readiness are green on the final release-readiness head.
+Release-readiness implementation is accepted; main promotion is permitted only after the accepted-state head itself is triple-green.
