@@ -1,4 +1,5 @@
 {
+  "schema_version": 1,
   "suite_id": "devflow-v1-1-chaos-recovery",
   "suite_version": "0.1.0",
   "description": "Deterministic Step 5.8 crash/race scenarios proving V1.1 durable recovery invariants.",
