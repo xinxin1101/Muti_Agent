@@ -4,253 +4,167 @@
 
 - Version line: **V1.1**
 - Phase: **Phase 5 — Durable Agent Runtime**
-- Current step: **Step 5.1 — Recovery State Classifier**
-- V1.0 baseline: `96ec9971624c18b6b64cf5ddf75dff7042952d61`
+- Current step: **Step 5.8 — Chaos / Recovery Benchmark + V1.1 Acceptance — ACCEPTANCE CANDIDATE / NOT YET ACCEPTED**
+- Steps 5.1–5.7: **ACCEPTED / COMPLETE**
+- Step 5.8 implementation/hardening: **COMPLETE, awaiting candidate-ledger and accepted-state CI**
 - V1.0 status: **ACCEPTED / COMPLETE**
+- V1.1 status: **IN PROGRESS / NOT YET ACCEPTED**
 
 ## Why V1.1 exists
 
-V1.0 proved that DevFlow can safely execute, verify, review, integrate, publish, observe, and evaluate software-engineering work. The next engineering gap is not another agent role or another dashboard widget. It is **durable execution across process failure, worker loss, delayed messages, long waits, and operator intervention**.
+V1.0 proved that DevFlow can safely execute, verify, review, integrate, publish, observe, and evaluate software-engineering work. V1.1 closes the next production gap: durable execution across process failure, worker loss, delayed messages, long waits, human intervention, and operator recovery.
 
-The V1.0 runtime already has most of the prerequisites:
-
-- PostgreSQL typed/hash-validated evidence;
-- Redis + Dramatiq transport;
-- DB-time task lease and heartbeat;
-- monotonic lease generations;
-- `run_token` stale-write fencing;
-- fenced Git mutations;
-- structured runtime events;
-- deterministic task/DAG scheduling rules;
-- evidence-bound integration and publication.
-
-What it does not yet have is a control loop that can answer, after a crash or restart:
-
-> **What durable work is unfinished, what is still live, what can be resumed from persisted evidence, and what may be safely dispatched again?**
-
-That gap is the focus of V1.1.
-
-## Frozen V1.1 principle
+Frozen V1.1 principle:
 
 > **Recovery may restore execution liveness from durable facts; it may not create, rewrite, or guess runtime truth.**
 
 Corollaries:
 
 1. Redis queue contents are transport state, not recovery authority.
-2. Absence of a worker process is not proof that a task may be replayed.
-3. A stale worker generation never regains write authority.
-4. Persisted terminal worker evidence must be resumed from, not recomputed by default.
-5. Recovery decisions that can mutate runtime state must be freshly revalidated under the same PostgreSQL fencing authority used by normal execution.
-6. Human approval must be a durable state transition, not an in-memory callback.
-7. Recovery/approval metrics remain observability; they do not decide success.
+2. Absence of a worker process is not proof that work may be replayed.
+3. A stale worker generation never regains evidence or Git write authority.
+4. Persisted terminal worker/repair evidence is resumed from rather than recomputed by default.
+5. Mutating recovery decisions receive fresh PostgreSQL/Git/lease/dispatch/fencing revalidation.
+6. Human approval is durable authority but cannot bypass verification, Git parentage, conflict binding, or fencing.
+7. Causal Trace, metrics, benchmark results, and browser state remain projections rather than success/mutation authority.
+8. Operator intent is only a request; existing reconciler/controller authority decides whether it is still legal.
 
 ---
 
-# Phase 5 — V1.1 Durable Agent Runtime
+# Phase 5 capability ledger
 
-| Step | Capability | Boundary |
-| --- | --- | --- |
-| 5.1 | Recovery State Classifier | Read durable run/evidence/lease facts and classify recovery candidates; **no enqueue or mutation** |
-| 5.2 | Durable Dispatch Attempt Ledger | Persist dispatch intent/attempt identity around broker publication so an `UNOWNED` task is no longer ambiguous |
-| 5.3 | Idempotent Task Reconciler | Atomically revalidate recovery eligibility and issue a fresh dispatch/generation only when safe |
-| 5.4 | DAG-wide Run Reconciliation | Reconstruct READY/BLOCKED/in-flight/completed work from persisted DAG + evidence and resume multi-task runs deterministically |
-| 5.5 | Durable Human Pause / Resume | Persist interruption/approval/rejection state so sensitive operations can pause across process restarts |
-| 5.6 | Causal Trace Correlation | Correlate run/task/dispatch/generation/agent/tool/verifier spans without making traces authoritative |
-| 5.7 | Operator Recovery / Approval Surface | Read-only recovery diagnosis plus bounded approval/retry controls backed by server-side revalidation |
-| 5.8 | Chaos / Recovery Benchmark + V1.1 Acceptance | Kill workers/processes, delay messages, inject stale generations, and prove deterministic recovery boundaries |
-
----
+| Step | Capability | Status | Frozen boundary |
+| --- | --- | --- | --- |
+| 5.1 | Recovery State Classifier | **ACCEPTED / COMPLETE** | classify durable recovery facts; no enqueue or mutation |
+| 5.2 | Durable Dispatch Attempt Ledger | **ACCEPTED / COMPLETE** | PostgreSQL records REQUESTED/ENQUEUED/PUBLISH_FAILED without pretending to be atomic with Redis |
+| 5.3 | Idempotent Task Reconciler | **ACCEPTED / COMPLETE** | fresh locked authority before any recovery publication |
+| 5.4 | DAG-wide Run Reconciliation | **ACCEPTED / COMPLETE** | reconstruct frontier from persisted DAG/evidence; no second scheduler truth |
+| 5.5 | Durable Human Pause / Resume | **ACCEPTED / COMPLETE via Phase 6** | decisions survive restart; approval never bypasses deterministic gates |
+| 5.6 | Causal Trace Correlation | **ACCEPTED / COMPLETE** | trace explains accepted history; never authorizes mutation |
+| 5.7 | Operator Recovery / Approval Surface | **ACCEPTED / COMPLETE** | browser sends opaque server action only; fresh facts decide mutation |
+| 5.8 | Chaos / Recovery Benchmark + V1.1 Acceptance | **ACCEPTANCE CANDIDATE / NOT YET ACCEPTED** | inject failure while preserving production authority; benchmark cannot become runtime truth |
 
 ## Step 5.1 — Recovery State Classifier
 
-### Goal
-
-Build a typed, deterministic read model that converts:
-
-```text
-PersistedRunSnapshot
-        +
-TaskLeaseSnapshot
-        +
-validated DISPATCH_EVENT / WORKER_EXECUTION evidence
-        ↓
-TaskRecoveryAssessment
-        ↓
-RunRecoveryPlan
-```
-
-into one of a small set of explicit dispositions.
-
-### Required dispositions
-
-- `NO_ACTION_RUN_TERMINAL`
-- `WAIT_ACTIVE_OWNER`
-- `RESUME_FROM_TERMINAL_EVIDENCE`
-- `REDISPATCH_CANDIDATE_EXPIRED_GENERATION`
-- `BLOCKED_UNOWNED_DISPATCH_AMBIGUITY`
-- `BLOCKED_RELEASED_EVIDENCE_GAP`
-
-The word **candidate** is intentional. Step 5.1 is not an authorization surface.
-
-### Key Step 5.1 rule
-
-> **Classification is a read projection. Any future redispatch must re-read and lock authoritative PostgreSQL state before mutation.**
-
-This prevents a TOCTOU bug where a recovery screen/classifier says “expired” and a worker heartbeat or terminal evidence arrives before an enqueue action.
-
-### Exit criteria
-
-- every task in the run receives exactly one typed recovery assessment;
-- task/lease/run identities must agree;
-- terminal worker evidence is parsed from typed persisted payloads rather than logs/messages;
-- active leases are never declared recoverable;
-- expired leases with accepted terminal execution evidence are resumed from evidence rather than rerun;
-- expired leases without terminal execution evidence become redispatch **candidates** only;
-- unowned tasks remain blocked because V1.0 lacks durable dispatcher intent;
-- released generations without terminal execution evidence remain blocked rather than silently reacquired;
-- no `run_token`, credentials, raw prompts, or queue payloads enter the recovery DTO;
-- classifier performs no broker call, lease mutation, evidence append, Git mutation, scheduler transition, or Run finalization;
-- tests cover all disposition branches plus identity/evidence corruption fail-closed behavior.
-
----
+Accepted dispositions distinguish terminal Runs, ACTIVE ownership, resumable terminal evidence, expired-generation candidates, unowned dispatch ambiguity, and RELEASED evidence gaps. Classification remains read-only.
 
 ## Step 5.2 — Durable Dispatch Attempt Ledger
 
-### Problem solved
-
-In V1.0, `DramatiqTaskDispatcher.dispatch()` validates persisted identity and sends a minimal message, but the dispatcher's broker publication is not independently represented as durable runtime intent. Therefore:
+Accepted dispatch history distinguishes durable publication intent/outcomes around broker delivery:
 
 ```text
-RUNNING task
-+ UNOWNED lease
-```
-
-cannot distinguish:
-
-```text
-never dispatched
-```
-
-from:
-
-```text
-broker accepted message, worker has not acquired lease yet
-```
-
-Step 5.2 introduces durable dispatch-attempt identity without making PostgreSQL pretend to know that Redis delivered work.
-
-Expected shape:
-
-```text
-DISPATCH_REQUESTED
-        ↓
+REQUESTED
+    ↓
 broker send
-        ↓
-DISPATCH_ENQUEUED / DISPATCH_PUBLISH_FAILED
+    ↓
+ENQUEUED / PUBLISH_FAILED
 ```
 
-The exact transaction/outbox boundary must be designed before implementation.
-
----
+PostgreSQL does not claim atomicity with Redis.
 
 ## Step 5.3 — Idempotent Task Reconciler
 
-Step 5.3 is the first phase allowed to mutate recovery state.
-
-It must:
-
-- use fresh database time;
-- lock the relevant Run/Task recovery authority;
-- revalidate the Step 5.1 classification inputs;
-- allocate a fresh dispatch identity for takeover;
-- never reuse an expired `dispatch_id` or `run_token`;
-- preserve monotonic generation fencing;
-- be safe under multiple concurrent reconcilers;
-- make duplicate reconciliation attempts idempotent or conflict explicitly.
-
-A stale Step 5.1 plan must never be sufficient authorization.
-
----
+Recovery publication is allowed only after fresh locked PostgreSQL revalidation. Takeover receives a fresh dispatch identity and monotonic generation; expired `dispatch_id` and `run_token` are never reused.
 
 ## Step 5.4 — DAG-wide Run Reconciliation
 
-Extend task-level recovery to the persisted DAG:
-
-```text
-validated DAG
-+ terminal task evidence
-+ live/recoverable task ownership
-        ↓
-reconstructed scheduling frontier
-```
-
-The reconciler must not create a second scheduler truth. READY/BLOCKED remain derived from validated DAG dependencies and accepted task outcomes.
-
----
+READY/BLOCKED/in-flight/completed state is reconstructed from persisted DAG dependencies, accepted worker evidence, integration history, lease state, and Step 5.3 publication authority.
 
 ## Step 5.5 — Durable Human Pause / Resume
 
-Introduce durable interruption state for operations that require approval, such as selected integration/publication/recovery actions.
-
-Requirements:
-
-- interruption identity is persisted;
-- approval/rejection is typed and append-only;
-- pending state survives API/worker restart;
-- resume revalidates the underlying action preconditions;
-- approval does not bypass deterministic verification, scope gates, Git parent checks, or fencing.
-
----
+Phase 6 completed durable Human Gate reconstruction, typed decision persistence, exact Git/policy/evidence revalidation, bounded repair, deterministic verification, and crash/GC-safe repair staging refs.
 
 ## Step 5.6 — Causal Trace Correlation
 
-Build a trace model over existing accepted facts:
-
-```text
-run_id
-  └─ task_id
-      └─ dispatch_id
-          └─ generation
-              ├─ agent/model turn
-              ├─ tool call
-              ├─ verification
-              ├─ review
-              └─ repair
-```
-
-Trace/span data is diagnostic projection only. It may explain latency and failures; it may not become success authority.
-
-Sensitive prompts/completions remain excluded by default unless a separately designed privacy policy explicitly allows them.
-
----
+Run → Task → Dispatch → Generation → Agent/Tool/Verifier spans are diagnostic-only. Raw prompts/completions, Tool bodies, repository content, credentials, and `run_token` stay outside trace payloads.
 
 ## Step 5.7 — Operator Recovery / Approval Surface
 
-Expose bounded product surfaces for:
-
-- recovery classification;
-- why a task is waiting/blocked/recoverable;
-- durable approval requests;
-- approved server-side reconciliation actions.
-
-The browser must never submit arbitrary `run_token`, lease generation, base/head SHA, repository path, or broker payload as authority.
+The only new operator mutation request is `ADVANCE_RUN`. The browser receives and submits only an opaque server-issued action identity. Fresh server-side plan reconstruction, durable dispatch history, Step 5.4, and Step 5.3 decide whether work may advance.
 
 ---
 
-## Step 5.8 — Chaos / Recovery Benchmark + V1.1 Acceptance
+# Step 5.8 — Chaos / Recovery Benchmark + V1.1 Acceptance
 
-Required deterministic scenarios should include at least:
+Step 5.8 adds no recovery mechanism. It converts the accepted V1.1 semantics into a deterministic failure matrix.
 
-1. worker dies while lease is ACTIVE;
-2. expired generation attempts a late evidence write;
-3. expired generation attempts a late Git mutation;
-4. terminal worker evidence persists but downstream completion does not;
-5. duplicate reconcilers race to recover the same task;
-6. broker publish fails after durable dispatch intent;
-7. process restarts while human approval is pending;
-8. multi-task DAG resumes without rerunning completed dependencies.
+Versioned manifest:
 
-V1.1 is accepted only when recovery behavior is determined by durable evidence/fencing and survives deliberate process/worker failure without stale-result corruption.
+`benchmarks/v1_1/chaos-recovery.json`
+
+Current candidate suite:
+
+- schema version: `1`;
+- suite version: `0.2.0`;
+- required fault domains: **10**;
+- frozen invariants: **7**.
+
+Required deterministic scenarios:
+
+1. C01 — worker/process disappears while lease is ACTIVE;
+2. C02 — expired generation attempts a late evidence write;
+3. C03 — expired generation attempts a late Git mutation;
+4. C04 — terminal worker evidence exists but downstream controller/completion crashes;
+5. C05 — duplicate reconcilers race to recover the same task;
+6. C06 — broker publish fails after durable dispatch intent;
+7. C07 — process restarts while Human Gate is pending;
+8. C08 — multi-task DAG resumes without rerunning completed dependencies;
+9. C09 — concurrent Operator `ADVANCE_RUN` requests race on one recovery opportunity;
+10. C10 — repair evidence persists, then process crashes before integration Git CAS.
+
+Frozen invariants:
+
+- `AT_MOST_ONE_MUTATION`;
+- `STALE_GENERATION_FENCED`;
+- `UNKNOWN_STATE_NOT_GUESSED`;
+- `FAILURE_NOT_SUCCESS`;
+- `COMPLETED_WORK_NOT_RERUN`;
+- `HUMAN_DECISION_DURABLE`;
+- `OBSERVABILITY_NOT_AUTHORITY`.
+
+Implementation/hardening head:
+
+`572995329fb0422bc2de72d83db6096cda70c8d6`
+
+Strict implementation evidence:
+
+- Backend Quality #956 (`32559638164`): **PASS**;
+- Alembic round trip: **PASS**;
+- verifier image + Ruff: **PASS**;
+- V1 deterministic demos: **5 / 5 PASS**;
+- V1.1 chaos recovery matrix: **10 / 10 PASS**;
+- full pytest: **442 passed, 1 warning in 42.41s**;
+- Frontend Quality #255 (`32559638135`): **PASS**.
+
+Chaos suite SHA-256:
+
+`088f8b5854448344a281f7a6e953ee23faf412b7973cdd0493c9209c6f5ed7b6`
+
+## Remaining acceptance protocol
+
+The implementation is complete, but V1.1 is intentionally not accepted yet. The remaining state transition is procedural and evidence-bound:
+
+```text
+implementation/hardening double-green        ✅
+        ↓
+complete candidate ledger                    ← CURRENT
+        ↓
+Backend + Frontend candidate-ledger CI        ⏳
+        ↓
+write Step 5.8 / Phase 5 / V1.1 ACCEPTED
+        ↓
+accepted-state Backend + Frontend CI          ⏳
+        ↓
+restore PR #41 stacked base
+```
+
+Only after both remaining CI layers pass may this roadmap say:
+
+```text
+Step 5.8 — ACCEPTED / COMPLETE
+Phase 5 — ACCEPTED / COMPLETE
+V1.1 — ACCEPTED / COMPLETE
+```
 
 ---
 
@@ -261,19 +175,19 @@ V1.1 is accepted only when recovery behavior is determined by durable evidence/f
 - multi-region consensus;
 - Kubernetes operator/controller implementation;
 - distributed transaction claims between PostgreSQL and Redis without an explicit outbox design;
-- using trace data, queue depth, or model confidence as task-success authority;
+- using trace data, queue depth, benchmark output, or model confidence as task-success authority;
 - silently retrying semantic/test failures under the label of crash recovery.
 
-## Resume/interview value
+## Engineering / interview value
 
-V1.1 is intentionally aimed at the questions that distinguish a toy Agent loop from a production runtime:
+V1.1 makes concrete the production questions that distinguish a toy Agent loop from a durable runtime:
 
-- What happens if a worker dies after doing work but before acknowledging completion?
-- How do you distinguish retryable infrastructure loss from an accepted task failure?
-- How do you prevent two recovery controllers from both taking ownership?
-- How do you resume from persisted evidence instead of rerunning expensive model/tool work?
-- How do lease, heartbeat, idempotency key, generation, and fencing token differ?
-- How do you pause for a human for minutes or hours without holding a process open?
-- How do you make observability useful without letting it become control-plane truth?
+- How do you distinguish worker loss from replay authority?
+- How do dispatch attempt, lease, generation and `run_token` differ?
+- How do you prevent duplicate recovery controllers and Operator clicks from duplicating mutation?
+- How do stale generations lose evidence and Git write authority permanently?
+- How do you resume from terminal or repair evidence instead of rerunning expensive Agent work?
+- How do Human decisions survive process restarts without bypassing deterministic gates?
+- How do you prove crash recovery under deliberate fault injection rather than only by architecture diagrams?
 
-Those are the engineering boundaries Phase 5 is designed to make concrete and demonstrable.
+Step 5.8 is the final V1.1 acceptance proof for those boundaries.
