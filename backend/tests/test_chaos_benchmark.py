@@ -27,10 +27,11 @@ def test_repository_chaos_manifest_covers_frozen_matrix() -> None:
     manifest, digest = load_chaos_manifest(_manifest_path())
 
     assert manifest.suite_id == "devflow-v1-1-chaos-recovery"
+    assert manifest.suite_version == "0.2.0"
     assert len(digest) == 64
     assert {item.fault_domain for item in manifest.scenarios} == set(ChaosFaultDomain)
     assert set(manifest.required_invariants) == set(ChaosInvariant)
-    assert len(manifest.scenarios) == 8
+    assert len(manifest.scenarios) == 10
 
 
 def test_chaos_manifest_rejects_duplicate_scenario_identity() -> None:
