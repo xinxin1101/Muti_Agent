@@ -6,7 +6,9 @@ from pydantic import ValidationError
 
 from app.api.models import ProductGitHubPublication
 from app.models.dispatch import WorkerExecutionEvidence, WorkerExecutionStatus
-from app.models.merge import MergeAttemptOutcome, MergeQueueSnapshot
+from app.models.integration_gate import HumanGateDecision, HumanIntegrationDecision
+from app.models.integration_repair import IntegrationConflictRepairEvidence
+from app.models.merge import MergeAttemptOutcome, MergeQueueAttempt, MergeQueueSnapshot
 from app.models.publication import (
     GitHubPublicationIntent,
     GitHubPublicationSourceBasis,
@@ -180,15 +182,13 @@ def _integration_source(
     reader = ReadOnlyCommitDiffReader(workspace)
     try:
         for attempt in merge_snapshot.attempts:
-            if attempt.outcome is not MergeAttemptOutcome.INTEGRATED:
-                raise PersistenceCorruptionError(
-                    "complete publication integration evidence contains a non-integrated attempt"
-                )
             task_parents = reader.commit_parents(attempt.task_commit)
             if task_parents != (attempt.task_base_commit,):
                 raise PersistenceCorruptionError(
                     "publication task commit no longer matches its accepted task base"
                 )
+            if attempt.outcome is MergeAttemptOutcome.CONFLICT:
+                continue
             if attempt.integration_commit is None:
                 raise PersistenceCorruptionError(
                     "complete publication integration attempt lacks integration commit"
@@ -201,11 +201,99 @@ def _integration_source(
                 raise PersistenceCorruptionError(
                     "publication integration commit no longer matches its accepted parent pair"
                 )
+            if attempt.outcome is MergeAttemptOutcome.REPAIRED:
+                _require_repaired_publication_authority(snapshot, attempt)
     except CommitDiffError as exc:
         raise PersistenceCorruptionError(
             "accepted integration publication source cannot be reproduced from local Git"
         ) from exc
     return source
+
+
+def _require_repaired_publication_authority(
+    snapshot: PersistedRunSnapshot,
+    attempt: MergeQueueAttempt,
+) -> None:
+    if (
+        attempt.integration_commit is None
+        or attempt.conflict_marker_commit is None
+        or attempt.conflict_evidence_fingerprint is None
+        or attempt.policy_fingerprint is None
+        or attempt.human_decision_commit is None
+    ):
+        raise PersistenceCorruptionError(
+            "repaired publication attempt lacks complete durable authority identity"
+        )
+
+    repair_matches: list[IntegrationConflictRepairEvidence] = []
+    decision_matches: list[HumanIntegrationDecision] = []
+    for evidence in snapshot.evidence:
+        if evidence.task_id != attempt.task_id:
+            continue
+        if evidence.kind is PersistenceEvidenceKind.INTEGRATION_REPAIR:
+            try:
+                repair = IntegrationConflictRepairEvidence.model_validate(evidence.payload)
+            except ValidationError as exc:
+                raise PersistenceCorruptionError(
+                    f"integration repair evidence {evidence.id} failed schema validation"
+                ) from exc
+            if repair.conflict_evidence_fingerprint == attempt.conflict_evidence_fingerprint:
+                repair_matches.append(repair)
+            continue
+
+        if evidence.kind is PersistenceEvidenceKind.HUMAN_DECISION:
+            try:
+                decision = HumanIntegrationDecision.model_validate(evidence.payload)
+            except ValidationError as exc:
+                raise PersistenceCorruptionError(
+                    f"human decision evidence {evidence.id} failed schema validation"
+                ) from exc
+            if decision.evidence_fingerprint == attempt.conflict_evidence_fingerprint:
+                decision_matches.append(decision)
+
+    if len(repair_matches) != 1:
+        raise PersistenceCorruptionError(
+            "repaired publication requires exactly one matching integration repair evidence"
+        )
+    if len(decision_matches) != 1:
+        raise PersistenceCorruptionError(
+            "repaired publication requires exactly one matching human decision evidence"
+        )
+
+    repair = repair_matches[0]
+    expected_repair = {
+        "run_id": snapshot.run_id,
+        "task_id": attempt.task_id,
+        "integration_head": attempt.previous_integration_commit,
+        "task_commit": attempt.task_commit,
+        "conflict_marker_commit": attempt.conflict_marker_commit,
+        "conflict_evidence_fingerprint": attempt.conflict_evidence_fingerprint,
+        "policy_fingerprint": attempt.policy_fingerprint,
+        "human_decision_commit": attempt.human_decision_commit,
+        "repair_commit": attempt.integration_commit,
+    }
+    for field, expected in expected_repair.items():
+        if getattr(repair, field) != expected:
+            raise PersistenceCorruptionError(
+                f"repaired publication evidence binding changed: {field}"
+            )
+
+    decision = decision_matches[0]
+    if decision.decision is not HumanGateDecision.AUTHORIZE_REPAIR:
+        raise PersistenceCorruptionError(
+            "repaired publication is not backed by AUTHORIZE_REPAIR"
+        )
+    expected_decision = {
+        "decision_commit": attempt.human_decision_commit,
+        "evidence_fingerprint": attempt.conflict_evidence_fingerprint,
+        "policy_fingerprint": attempt.policy_fingerprint,
+        "conflict_marker_commit": attempt.conflict_marker_commit,
+    }
+    for field, expected in expected_decision.items():
+        if getattr(decision, field) != expected:
+            raise PersistenceCorruptionError(
+                f"repaired publication human decision binding changed: {field}"
+            )
 
 
 def _single_task_source(

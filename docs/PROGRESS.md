@@ -4,14 +4,15 @@ This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The developmen
 
 ## Current position
 
-- Current phase: **Phase 5 — V1.1 Durable Agent Runtime — IN PROGRESS**
-- Completed item: **Step 5.4 — DAG-wide Run Reconciliation — ACCEPTED / COMPLETE**
-- Next item: **Step 5.5 — Durable Human Pause / Resume**
+- Current product milestone: **Phase 6 — Autonomous Multi-Agent Product Loop — ACCEPTED / COMPLETE**
+- Completed item: **Step 6.7 — Full Autonomous Product E2E — ACCEPTED / COMPLETE**
+- Next durable-runtime backlog item: **Step 5.6 — Causal Trace Correlation**
 - Phase 1 status: **ACCEPTED / COMPLETE**
 - Phase 2 status: **ACCEPTED / COMPLETE**
 - Phase 3 status: **ACCEPTED / COMPLETE**
 - Phase 4 status: **ACCEPTED / COMPLETE**
-- Phase 5 status: **IN PROGRESS**
+- Phase 5 status: **IN PROGRESS** — 5.1–5.5 accepted; 5.6–5.8 remain unaccepted backlog
+- Phase 6 status: **ACCEPTED / COMPLETE**
 - V0.1 status: **ACCEPTED / COMPLETE**
 - V0.2 status: **ACCEPTED / COMPLETE**
 - V0.3 status: **ACCEPTED / COMPLETE**
@@ -25,6 +26,10 @@ Frozen project principle:
 Frozen V1.1 principle:
 
 > **Recovery may restore execution liveness from durable facts; it may not create, rewrite, or guess runtime truth.**
+
+Frozen Phase 6 product principle:
+
+> **A user may request work in natural language; scheduling, execution, integration, repair, success, diff and publication remain server-owned evidence decisions.**
 
 ---
 
@@ -355,7 +360,7 @@ No browser state, benchmark aggregate, LLM self-report, event message, or public
 
 # Phase 5 — V1.1 Durable Agent Runtime — IN PROGRESS
 
-Phase 5 is a deliberately separate Post-V1.0 roadmap. It strengthens long-running execution and crash recovery instead of extending the V1.0 productization scope.
+Phase 5 is a deliberately separate Post-V1.0 roadmap. It strengthens long-running execution and crash recovery instead of extending the V1.0 productization scope. Phase 6 consumed and accepted the Durable Human Gate / Resume capability needed for the autonomous product loop, but it did not silently close the remaining V1.1 tracing/operator/chaos roadmap.
 
 | Step | Capability | Status | Acceptance snapshot |
 | --- | --- | --- | --- |
@@ -363,10 +368,10 @@ Phase 5 is a deliberately separate Post-V1.0 roadmap. It strengthens long-runnin
 | 5.2 | Durable Dispatch Attempt Ledger | **ACCEPTED / COMPLETE** | PostgreSQL-first REQUESTED/ENQUEUED/PUBLISH_FAILED ledger; crash ambiguity preserved; implementation head `30e92051aeae00e674010b66ecb8da329c793e0a`; Backend 380 tests + 5/5 V1 demos |
 | 5.3 | Idempotent Task Reconciler | **ACCEPTED / COMPLETE** | fresh locked prepare + publication revalidation; concurrent one-send; generation N→N+1 remains lease-owned; implementation head `0d7586405853f19923b906b782ac6ab167886ffe`; Backend 385 tests + 5/5 V1 demos |
 | 5.4 | DAG-wide Run Reconciliation | **ACCEPTED / COMPLETE** | persisted-DAG frontier reconstruction + integration-aware execution bases + Step 5.3-only dispatch authority; implementation head `16be10b49a563429f459e337410bcb2c94a1d3ae`; Backend 393 tests + 5/5 V1 demos |
-| 5.5 | Durable Human Pause / Resume | **NEXT / NOT STARTED** | — |
-| 5.6 | Causal Trace Correlation | **NOT STARTED** | — |
-| 5.7 | Operator Recovery / Approval Surface | **NOT STARTED** | — |
-| 5.8 | Chaos / Recovery Benchmark + V1.1 Acceptance | **NOT STARTED** | — |
+| 5.5 | Durable Human Pause / Resume | **ACCEPTED / COMPLETE via Phase 6** | durable typed Human decisions + restart-safe bounded repair; repair staging ref survives `git gc --prune=now`; strict CI green at `6673d87a3aea15a68196a15818a109e74046d1d7` |
+| 5.6 | Causal Trace Correlation | **NOT STARTED / NOT ACCEPTED** | — |
+| 5.7 | Operator Recovery / Approval Surface | **PARTIAL / NOT ACCEPTED** | Phase 6 exposes Human Gate approval UI/API, but the broader recovery/operator surface remains open |
+| 5.8 | Chaos / Recovery Benchmark + V1.1 Acceptance | **PARTIAL / NOT ACCEPTED** | Phase 6 covers repair DB→Git CAS crash/GC recovery, not the complete V1.1 chaos matrix |
 
 ## Step 5.1 — Recovery State Classifier — ACCEPTED / COMPLETE
 
@@ -605,18 +610,104 @@ Frozen Step 5.4 boundary:
 
 > **Run reconciliation may reconstruct the scheduling frontier from validated DAG and accepted terminal task facts; it may not create a second scheduler truth.**
 
-Next authority transition:
+## Step 5.5 — Durable Human Pause / Resume — ACCEPTED / COMPLETE via Phase 6
+
+Phase 6 closed the Human-pause authority required by the autonomous product loop without treating a browser click or an expired worker as resume authority.
+
+Accepted guarantees include:
+
+- pending Integration/Human Gate identity is durably reconstructible;
+- typed Human decisions survive API/worker restarts;
+- resume revalidates exact Git conflict, task commit, integration head, policy fingerprint and decision binding;
+- `AUTHORIZE_REPAIR` grants only bounded conflict-path repair authority;
+- the original TaskContract deterministic verifier still gates the repaired merged tree;
+- typed `INTEGRATION_REPAIR` and matching Human decision evidence are required by downstream execution-base resolution, terminal success, Diff and GitHub publication;
+- repair object liveness is protected by a server-owned staging ref before DB persistence;
+- a simulated crash after DB evidence and before integration CAS survives explicit reflog expiry plus `git gc --prune=now`;
+- a fresh service reuses the exact persisted repair commit and does not call the Agent again;
+- staging refs are deleted after successful CAS and never become runtime truth authority.
+
+Implementation hardening head `6673d87a3aea15a68196a15818a109e74046d1d7` independently passed strict Backend and Frontend quality gates.
+
+The broader Phase 5 Step 5.7 operator recovery surface and Step 5.8 chaos matrix remain unaccepted; accepting this Human Gate capability does not imply those roadmap items are complete.
+
+---
+
+# Phase 6 — Autonomous Multi-Agent Product Loop — ACCEPTED / COMPLETE
+
+Phase 6 connects the accepted runtime into the user-facing path that was previously missing:
 
 ```text
-reconstructed legal scheduling frontier
-        +
-intentional Human pause fact
-        +
-accepted Human resume/decision evidence
+repository + natural-language requirement
         ↓
-Step 5.5 must distinguish paused work from abandoned work
+Planner proposal
         ↓
-recovery may resume only when durable policy permits
+validated + persisted TaskDAG
+        ↓
+durable root dispatch
+        ↓
+parallel generation-bound worker commits
+        ↓
+evidence-bound topological integration
+        ↓
+Step 5.4 / Step 5.3 downstream reconciliation
+        ↓
+Durable Human Gate / bounded repair when required
+        ↓
+repair-aware terminal completion
+        ↓
+DAG / Diff / publication projections
+        ↓
+GitHub Draft PR
 ```
 
-Step 5.5 must not represent an intentional Human Gate pause as an expired/abandoned worker generation, and browser/operator intent must not become durable resume authority until it has crossed an authenticated, typed, persisted decision boundary.
+| Step | Capability | Status | Acceptance snapshot |
+| --- | --- | --- | --- |
+| 6.1 | Natural-language Run entry | **ACCEPTED / COMPLETE** | New Run uses Project + requirement; browser no longer manufactures TaskContract authority |
+| 6.2 | Planner → validated TaskDAG | **ACCEPTED / COMPLETE** | bounded multi-task structured planning + schema repair + TaskDAG validation |
+| 6.3 | Persist Run + DAG before dispatch | **ACCEPTED / COMPLETE** | frozen managed Git base + validated DAG persisted before any root publication |
+| 6.4 | Durable DAG Controller | **ACCEPTED / COMPLETE** | event-driven `advance(run_id)` reconstructs from PostgreSQL/Git; no resident scheduler truth |
+| 6.5 | Parallel execution + automatic integration | **ACCEPTED / COMPLETE** | generation-bound worktrees + topological merge history + Step 5.4-only downstream unlock |
+| 6.6 | Durable Human Pause / Resume + bounded repair | **ACCEPTED / COMPLETE** | typed Human authority + repair-aware completion/diff/publication + staging-ref GC crash recovery |
+| 6.7 | Full Autonomous Product E2E | **ACCEPTED / COMPLETE** | real Git + PostgreSQL 3-task E2E; implementation head `e4f12f2fe0f90b2d789f242f22d4b7b3a9126108`; Backend 402 tests + 5/5 demos; Frontend green |
+
+## Step 6.7 implementation-head acceptance evidence
+
+Backend Quality run #903:
+
+- PostgreSQL + Redis: **PASS**;
+- Alembic upgrade → downgrade base → re-upgrade: **PASS**;
+- verification Docker image: **PASS**;
+- Ruff: **PASS**;
+- V1 fixture validation: **PASS**;
+- deterministic control-plane demos: **5 / 5 PASS**;
+- pytest: **402 passed in 38.03s**.
+
+Frontend Quality run #198 on the same implementation head:
+
+- locked install: **PASS**;
+- TypeScript typecheck: **PASS**;
+- lint: **PASS**;
+- Vitest: **PASS**;
+- Vite production build: **PASS**.
+
+The deterministic Phase 6 E2E replaces only external nondeterminism with fixed test boundaries: a fixed Planner output, broker acknowledgement actor and GitHub remote response. It retains the production Git worktree/commit/merge logic, PostgreSQL evidence and dispatch stores, lease/`run_token` authority, Step 5.4 DAG reconciliation, Step 5.3 idempotent publication authority, repair-aware terminal completion, Integration Diff reconstruction and publication-source persistence.
+
+Design / acceptance:
+
+- `docs/AUTONOMOUS_MULTI_AGENT_PRODUCT_LOOP.md`
+- `docs/STEP_6_7_ACCEPTANCE.md`
+
+Frozen Phase 6 boundary:
+
+> **Natural-language intent may start the Run; only validated and persisted server-side facts may advance or finish it.**
+
+Remaining work is intentionally not hidden inside Phase 6 completion:
+
+```text
+Phase 5.6  Causal Trace Correlation                 NOT ACCEPTED
+Phase 5.7  broader Operator Recovery Surface       NOT ACCEPTED
+Phase 5.8  full Chaos / Recovery Benchmark         NOT ACCEPTED
+```
+
+Those capabilities may harden V1.1 further, but they are no longer blockers for the accepted Phase 6 Autonomous Multi-Agent Product Loop itself.

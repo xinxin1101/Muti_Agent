@@ -186,44 +186,53 @@ describe("App", () => {
     expect(screen.getByText(/workspace ready/)).toBeInTheDocument();
   });
 
-  it("renders the New Run TaskContract form", async () => {
+  it("renders the Phase 6 requirement-only New Run form", async () => {
     renderApp(`/runs/new?projectId=${project.project_id}`);
     expect(await screen.findByRole("heading", { name: "New Run" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Task ID")).toHaveValue("task-1");
+    expect(screen.getByLabelText("Requirement")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Task ID")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Base commit")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/Writable files/)).not.toBeInTheDocument();
   });
 
-  it("submits a validated run payload without browser base_commit", async () => {
-    vi.mocked(productApi.createRun).mockResolvedValue({
+  it("submits only project identity and natural-language requirement", async () => {
+    vi.mocked(productApi.createRequirementRun).mockResolvedValue({
       run_id: run.run_id,
       project_id: project.project_id,
-      task_id: "task-1",
       base_commit: run.base_commit,
-      dispatch_status: "QUEUED",
-      dispatch_id: "33333333-3333-3333-3333-333333333333",
-      broker_message_id: "message-1",
-      queue_name: "devflow_tasks",
-      detail: null,
+      dag_sha256: "d".repeat(64),
+      task_ids: ["auth-model", "auth-api"],
+      initial_ready_task_ids: ["auth-model"],
+      launch_state: "QUEUED",
+      dispatches: [
+        {
+          task_id: "auth-model",
+          state: "QUEUED",
+          dispatch_id: "33333333-3333-3333-3333-333333333333",
+          broker_message_id: "message-1",
+          queue_name: "devflow_tasks",
+          detail: null,
+        },
+      ],
     });
 
     renderApp(`/runs/new?projectId=${project.project_id}`);
-    fireEvent.change(await screen.findByLabelText("Objective"), {
-      target: { value: "Implement the product pages." },
-    });
-    fireEvent.change(screen.getByLabelText(/Writable files/), {
-      target: { value: "frontend/src/pages/**" },
-    });
-    fireEvent.change(screen.getByLabelText(/Acceptance criteria/), {
-      target: { value: "Product pages render." },
+    fireEvent.change(await screen.findByLabelText("Requirement"), {
+      target: { value: "Add JWT login and refresh tokens with deterministic tests." },
     });
     await screen.findByRole("option", { name: project.repository_url });
-    fireEvent.click(screen.getByRole("button", { name: "Start run" }));
+    fireEvent.click(screen.getByRole("button", { name: "Start Multi-Agent run" }));
 
-    await waitFor(() => expect(productApi.createRun).toHaveBeenCalledTimes(1));
-    const payload = vi.mocked(productApi.createRun).mock.calls[0]?.[0];
-    expect(payload).toBeDefined();
+    await waitFor(() =>
+      expect(productApi.createRequirementRun).toHaveBeenCalledTimes(1),
+    );
+    const payload = vi.mocked(productApi.createRequirementRun).mock.calls[0]?.[0];
+    expect(payload).toEqual({
+      project_id: project.project_id,
+      requirement: "Add JWT login and refresh tokens with deterministic tests.",
+    });
     expect(payload).not.toHaveProperty("base_commit");
-    expect(payload?.task.writable_files).toEqual(["frontend/src/pages/**"]);
+    expect(payload).not.toHaveProperty("task");
   });
 
   it("renders the Run Dashboard from backend status", async () => {

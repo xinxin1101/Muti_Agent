@@ -5,6 +5,7 @@ on:
     paths:
       - "frontend/**"
       - "benchmarks/**"
+      - "README.md"
       - "docs/FRONTEND_FOUNDATION.md"
       - "docs/STEP_4_1_ACCEPTANCE.md"
       - "docs/PRODUCT_PAGES.md"
@@ -30,6 +31,8 @@ on:
       - "docs/STEP_5_3_ACCEPTANCE.md"
       - "docs/DAG_RUN_RECONCILIATION.md"
       - "docs/STEP_5_4_ACCEPTANCE.md"
+      - "docs/AUTONOMOUS_MULTI_AGENT_PRODUCT_LOOP.md"
+      - "docs/STEP_6_7_ACCEPTANCE.md"
       - "docs/PROGRESS.md"
       - ".github/workflows/frontend-quality.yml"
   push:
@@ -38,6 +41,7 @@ on:
     paths:
       - "frontend/**"
       - "benchmarks/**"
+      - "README.md"
       - "docs/FRONTEND_FOUNDATION.md"
       - "docs/STEP_4_1_ACCEPTANCE.md"
       - "docs/PRODUCT_PAGES.md"
@@ -63,6 +67,8 @@ on:
       - "docs/STEP_5_3_ACCEPTANCE.md"
       - "docs/DAG_RUN_RECONCILIATION.md"
       - "docs/STEP_5_4_ACCEPTANCE.md"
+      - "docs/AUTONOMOUS_MULTI_AGENT_PRODUCT_LOOP.md"
+      - "docs/STEP_6_7_ACCEPTANCE.md"
       - "docs/PROGRESS.md"
       - ".github/workflows/frontend-quality.yml"
 

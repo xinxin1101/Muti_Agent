@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -61,6 +61,46 @@ function runtimeEvent(
     created_at: "2026-08-19T00:00:00Z",
     ...overrides,
   });
+}
+
+function humanGate(state: productApi.IntegrationGateStateName = "AWAITING_HUMAN") {
+  const recordedDecision: productApi.HumanGateDecisionName =
+    state === "ABORTED" ? "ABORT" : "AUTHORIZE_REPAIR";
+  return {
+    task_id: "task-1",
+    task_branch: "devflow/task/task-1",
+    task_commit: "c".repeat(40),
+    integration_ref: "refs/devflow/integration/run-test",
+    integration_head: "d".repeat(40),
+    conflict_ref: "refs/devflow/integration-conflicts/run-test",
+    conflict_marker_commit: "e".repeat(40),
+    evidence_fingerprint: "f".repeat(64),
+    policy_fingerprint: "a".repeat(64),
+    policy: {
+      route: "HUMAN_REQUIRED" as const,
+      evidence_fingerprint: "f".repeat(64),
+      automatic_repair_enabled: false,
+      human_repair_authorizable: true,
+      conflicting_paths: ["app/auth.py"],
+      reasons: ["automatic merge-conflict repair policy is disabled"],
+    },
+    state,
+    human_decision:
+      state === "AWAITING_HUMAN"
+        ? null
+        : {
+            decision: recordedDecision,
+            actor: "product-user",
+            note: "",
+            decision_ref: "refs/devflow/integration-decisions/run-test",
+            decision_commit: "1".repeat(40),
+            evidence_fingerprint: "f".repeat(64),
+            policy_fingerprint: "a".repeat(64),
+            conflict_marker_commit: "e".repeat(40),
+          },
+    repair_may_start: state === "REPAIR_AUTHORIZED",
+    integration_may_advance: false as const,
+  } satisfies productApi.HumanGateSnapshot;
 }
 
 function renderDashboard() {
@@ -158,6 +198,7 @@ beforeEach(() => {
     ],
     edges: [],
   });
+  vi.mocked(productApi.listHumanGates).mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -185,6 +226,36 @@ describe("RunDashboardPage live timeline", () => {
     const taskLink = screen.getByRole("link", { name: "Open task task-1" });
     expect(taskLink).toHaveAttribute("href", `/runs/${runId}/tasks/task-1`);
     expect(screen.getByText(/Topology: PERSISTED/)).toBeInTheDocument();
+  });
+
+  it("renders a durable conflict gate and sends only decision evidence", async () => {
+    const pendingGate = humanGate();
+    const authorizedGate = humanGate("REPAIR_AUTHORIZED");
+    vi.mocked(productApi.listHumanGates).mockResolvedValue([pendingGate]);
+    vi.mocked(productApi.decideHumanGate).mockResolvedValue(authorizedGate);
+
+    renderDashboard();
+
+    expect(
+      await screen.findByRole("region", { name: "Durable human gates" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("app/auth.py")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Decision note for task-1"), {
+      target: { value: "Reviewed conflict scope" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Authorize bounded repair" }));
+
+    await waitFor(() =>
+      expect(productApi.decideHumanGate).toHaveBeenCalledWith(runId, "task-1", {
+        evidence_fingerprint: "f".repeat(64),
+        decision: "AUTHORIZE_REPAIR",
+        note: "Reviewed conflict scope",
+      }),
+    );
+    const payload = vi.mocked(productApi.decideHumanGate).mock.calls[0]?.[2];
+    expect(payload).not.toHaveProperty("task_commit");
+    expect(payload).not.toHaveProperty("run_token");
+    expect(payload).not.toHaveProperty("branch");
   });
 
   it("subscribes after REST confirms the Run and renders accepted events", async () => {
@@ -234,6 +305,7 @@ describe("RunDashboardPage live timeline", () => {
     await waitFor(() =>
       expect(vi.mocked(productApi.getRunMetrics).mock.calls.length).toBeGreaterThanOrEqual(2),
     );
+    await waitFor(() => expect(productApi.listHumanGates).toHaveBeenCalledTimes(2));
   });
 
   it("fails closed on a sequence gap instead of presenting corrupted order", async () => {
