@@ -5,6 +5,8 @@ from pydantic import ValidationError
 
 from app.core.settings import Settings
 
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+
 
 def test_default_settings() -> None:
     settings = Settings(_env_file=None)
@@ -12,7 +14,7 @@ def test_default_settings() -> None:
     assert settings.app_name == "DevFlow"
     assert settings.environment == "development"
     assert settings.log_level == "INFO"
-    assert settings.workspace_root == Path(".devflow/workspaces")
+    assert settings.workspace_root == (_REPOSITORY_ROOT / ".devflow/workspaces").resolve()
     assert settings.worker_id is None
     assert settings.worker_lease_seconds == 60.0
     assert settings.worker_heartbeat_interval_seconds == 15.0
@@ -43,7 +45,7 @@ def test_prefixed_environment_variables_override_defaults(monkeypatch) -> None:
     assert settings.app_name == "DevFlow Test"
     assert settings.environment == "test"
     assert settings.log_level == "DEBUG"
-    assert settings.workspace_root == Path(".devflow/test-workspaces")
+    assert settings.workspace_root == (_REPOSITORY_ROOT / ".devflow/test-workspaces").resolve()
     assert settings.worker_id == "worker-test-01"
     assert settings.worker_lease_seconds == 30.0
     assert settings.worker_heartbeat_interval_seconds == 5.0
