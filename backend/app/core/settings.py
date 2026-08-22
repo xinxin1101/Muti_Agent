@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     repair_model: str = "Pro/deepseek-ai/DeepSeek-V3.2"
 
     verification_sandbox_image: str = "devflow-verifier:py311"
+    verification_node_sandbox_image: str = "devflow-verifier:node24"
     verification_sandbox_cpus: float = Field(default=1.0, ge=0.05, le=32.0)
     verification_sandbox_memory_mb: int = Field(default=512, ge=64, le=32_768)
     verification_sandbox_pids_limit: int = Field(default=128, ge=16, le=2_048)
