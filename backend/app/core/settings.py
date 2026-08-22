@@ -59,6 +59,13 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    @field_validator("workspace_root", mode="after")
+    @classmethod
+    def resolve_workspace_root(cls, value: Path) -> Path:
+        if value.is_absolute():
+            return value
+        return (_REPOSITORY_ROOT / value).resolve()
+
     @field_validator("siliconflow_api_key", "github_token", mode="before")
     @classmethod
     def normalize_optional_secret(cls, value: object) -> object:
