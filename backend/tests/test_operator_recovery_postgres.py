@@ -17,6 +17,7 @@ from app.persistence import (
     PostgresTaskLeaseStore,
     PostgresTaskReconciliationStore,
 )
+from app.persistence.operator import OperatorAwarePostgresEvidenceStore
 from app.runtime import EvidenceBoundTaskExecutionBaseResolver, IdempotentTaskReconciler
 from app.runtime.operator_recovery import (
     OperatorActionStaleError,
@@ -142,6 +143,7 @@ def test_concurrent_operator_actions_publish_once_and_make_old_action_stale() ->
 async def _concurrent_operator_actions_publish_once_and_make_old_action_stale() -> None:
     database_url = _database_url()
     evidence_store = PostgresEvidenceStore.from_url(database_url)
+    operator_audit_store = OperatorAwarePostgresEvidenceStore.from_url(database_url)
     dag_store = PostgresDAGStore.from_url(database_url)
     dispatch_store = PostgresDispatchAttemptStore.from_url(database_url)
     lease_store = PostgresTaskLeaseStore.from_url(database_url)
@@ -166,7 +168,7 @@ async def _concurrent_operator_actions_publish_once_and_make_old_action_stale() 
     controller = _UnusedController()
     coordinator = OperatorRecoveryCoordinator(
         planner=planner,
-        audit_store=evidence_store,
+        audit_store=operator_audit_store,
         run_controller=controller,
         run_reconciler=run_reconciler,
     )
@@ -209,6 +211,7 @@ async def _concurrent_operator_actions_publish_once_and_make_old_action_stale() 
         assert actor.calls == 1
     finally:
         await task_reconciler.dispose()
+        await operator_audit_store.dispose()
         await lease_store.dispose()
         await dispatch_store.dispose()
         await dag_store.dispose()
