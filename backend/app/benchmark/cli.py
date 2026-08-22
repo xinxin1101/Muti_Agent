@@ -10,6 +10,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from app.benchmark.chaos import load_chaos_manifest, run_chaos_recovery_benchmark
 from app.benchmark.client import BenchmarkApiClient
 from app.benchmark.demo import load_demo_manifest, run_control_plane_demo
 from app.benchmark.evaluator import evaluate_suite
@@ -46,6 +47,17 @@ def build_parser() -> argparse.ArgumentParser:
     demo.add_argument("--manifest", required=True, type=Path)
     demo.add_argument("--repository-root", type=Path, default=Path("."))
     demo.add_argument("--timeout-seconds", type=float, default=300.0)
+
+    chaos = subparsers.add_parser(
+        "chaos",
+        help=(
+            "Run the versioned Step 5.8 deterministic crash/race recovery matrix through "
+            "production authority components."
+        ),
+    )
+    chaos.add_argument("--manifest", required=True, type=Path)
+    chaos.add_argument("--repository-root", type=Path, default=Path("."))
+    chaos.add_argument("--timeout-seconds", type=float, default=600.0)
 
     evaluate = subparsers.add_parser(
         "evaluate",
@@ -171,6 +183,30 @@ def main(argv: list[str] | None = None) -> int:
                         "manifest_sha256": manifest_sha256,
                         "runtime_commit": result.runtime_commit,
                         "scenario_count": result.scenario_count,
+                        "passed": result.passed,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
+            return 0 if result.passed else 1
+
+        if args.command == "chaos":
+            manifest, manifest_sha256 = load_chaos_manifest(args.manifest)
+            result = run_chaos_recovery_benchmark(
+                args.manifest,
+                repository_root=args.repository_root,
+                timeout_seconds=args.timeout_seconds,
+            )
+            print(
+                json.dumps(
+                    {
+                        "suite_id": manifest.suite_id,
+                        "suite_version": manifest.suite_version,
+                        "suite_sha256": manifest_sha256,
+                        "runtime_commit": result.runtime_commit,
+                        "scenario_count": result.scenario_count,
+                        "invariant_count": result.invariant_count,
                         "passed": result.passed,
                     },
                     ensure_ascii=False,
