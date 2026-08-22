@@ -12,6 +12,7 @@ DevFlow turns a Git repository plus a natural-language requirement into a valida
 - Phase 4 / V1.0 — Productization — **ACCEPTED / COMPLETE**
 - Phase 5 / V1.1 — Durable Agent Runtime — **ACCEPTED / COMPLETE**
 - Phase 6 — Autonomous Multi-Agent Product Loop — **ACCEPTED / COMPLETE**
+- Release Hardening V2 — real-world clone-to-run readiness — **IN PROGRESS / NOT ACCEPTED**
 
 See `docs/PROGRESS.md` and the step acceptance documents for commit-bound CI evidence.
 
@@ -49,7 +50,7 @@ DAG / SSE / Diff / Metrics / Trace / Operator recovery surface
 GitHub Draft PR publication
 ```
 
-Trace, UI, Operator actions and benchmark output remain projections/requests. They never replace PostgreSQL, Git, lease/fencing, verification or Human-decision authority.
+Trace, UI, Operator actions, readiness checks and benchmark output remain projections/requests. They never replace PostgreSQL, Git, lease/fencing, verification or Human-decision authority.
 
 # Quick Start
 
@@ -86,7 +87,11 @@ DEVFLOW_REDIS_URL=redis://127.0.0.1:6379/0
 SILICONFLOW_API_KEY=<your key>
 ```
 
-`DEVFLOW_GITHUB_TOKEN` is optional and is required only for GitHub Draft PR publication. Blank provider/publication tokens are treated as **not configured**.
+Agent model ids are explicit configuration in `.env`. DevFlow checks the live SiliconFlow model catalogue through `/readyz`; if a configured model disappears, the product becomes `NOT_READY` instead of silently falling back to another model.
+
+`DEVFLOW_GITHUB_READ_TOKEN` is optional and is used only for private-repository reads. `DEVFLOW_GITHUB_PUBLICATION_TOKEN` is optional and is used only for accepted Draft PR publication. Blank provider/GitHub tokens are treated as **not configured**.
+
+Backend settings and secrets are frozen for the lifetime of each API/worker process. After editing `.env`, restart the affected process; DevFlow intentionally does not hot-reload credentials.
 
 The backend resolves this single repository-root `.env` independently of whether commands are started from the repository root or from `backend/`.
 
@@ -133,11 +138,19 @@ Terminal A, from `backend/`:
 devflow-api
 ```
 
-Health check:
+Liveness check:
 
 ```text
 http://127.0.0.1:8000/healthz
 ```
+
+Operational product readiness:
+
+```text
+http://127.0.0.1:8000/readyz
+```
+
+`/healthz` only proves the API process is alive. `/readyz` checks the current database schema, Redis reachability, configured verifier image, SiliconFlow reachability, and all configured Agent model ids. Readiness remains operational evidence only and never declares a Run successful.
 
 ## 6. Start the worker
 
@@ -165,7 +178,7 @@ Open:
 http://127.0.0.1:5173
 ```
 
-The frontend defaults to `http://127.0.0.1:8000` for the API. Override with `VITE_API_BASE_URL` only when intentionally using a different API origin.
+The frontend defaults to `http://127.0.0.1:8000` for the API. Override with `VITE_API_BASE_URL` only when intentionally using a different API origin. Port 5173 is strict: if occupied, Vite fails instead of silently moving to an origin not accepted by the API CORS policy.
 
 # Product usage
 
@@ -176,18 +189,20 @@ The frontend defaults to `http://127.0.0.1:8000` for the API. Override with `VIT
 5. If a merge conflict requires Human Gate review, explicitly authorize bounded repair or abort. Human approval does not bypass scope, verification, Git provenance or fencing.
 6. If durable recovery exposes an Operator action, the UI renders only the server-advertised opaque action. The server revalidates PostgreSQL/DAG/Git/lease/dispatch/fencing facts before any mutation.
 7. Inspect causal Trace for diagnostics; Trace never authorizes retry/success/merge.
-8. After a terminal accepted Run, configure `DEVFLOW_GITHUB_TOKEN` and use GitHub publication to create the evidence-bound Draft PR.
+8. After a terminal accepted Run, configure the GitHub publication credential, restart `devflow-api`, refresh the Run page, and create the evidence-bound Draft PR.
 
 # GitHub publication
 
 Add to the repository-root `.env` when publication is required:
 
 ```text
-DEVFLOW_GITHUB_TOKEN=<token with minimum repository write/PR permissions>
+DEVFLOW_GITHUB_PUBLICATION_TOKEN=<token with minimum repository write/PR permissions>
 DEVFLOW_GITHUB_PUBLICATION_TIMEOUT_SECONDS=30
 ```
 
-The token can publish only the server-selected accepted integration source. It cannot choose a source commit, declare a Run successful, bypass deterministic verification or override Human/Operator authority.
+Then restart `devflow-api`. Settings are process-scoped by design, so editing `.env` does not change credentials in an already running API process.
+
+The publication token can publish only the server-selected accepted integration source. It cannot choose a source commit, declare a Run successful, bypass deterministic verification or override Human/Operator authority. The legacy `DEVFLOW_GITHUB_TOKEN` remains a publication-only compatibility alias; it never grants private-repository read capability.
 
 # Quality and release tests
 
