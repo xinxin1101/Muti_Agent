@@ -32,7 +32,7 @@ describe("runtime event SSE boundary", () => {
     expect(
       runtimeEventStreamUrl(event.run_id, 7),
     ).toBe(
-      `http://localhost:8000/api/v1/runs/${event.run_id}/events?after_sequence=7`,
+      `http://127.0.0.1:8000/api/v1/runs/${event.run_id}/events?after_sequence=7`,
     );
   });
 

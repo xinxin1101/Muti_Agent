@@ -2,31 +2,86 @@
 
 Evidence-driven multi-agent software engineering runtime backend.
 
-## Single-task CLI
+The repository-root `../.env` is the single local configuration file. Backend settings resolve it independently of the current working directory, so commands may be started from `backend/` without copying credentials into a second file.
 
-After installing the backend and configuring `SILICONFLOW_API_KEY`, build the trusted baseline
-verification image and run one validated `TaskContract` against a managed local Git repository:
+## Product API prerequisites
+
+Install the backend:
 
 ```bash
 cd backend
 python -m pip install -e ".[dev]"
-docker build -f docker/verification.Dockerfile -t devflow-verifier:py311 .
-python -m app.cli run --workspace /path/to/repository --task /path/to/task.json
 ```
 
-The installed console script is equivalent:
+Configure PostgreSQL and Redis in `../.env`, then apply the accepted Alembic schema:
 
 ```bash
-devflow run --workspace /path/to/repository --task /path/to/task.json
+alembic upgrade head
 ```
 
-The workspace must be the top-level directory of a Git repository with a valid `HEAD`.
+The Product API performs a read-only schema preflight at startup. It refuses to start when PostgreSQL is unreachable, the Alembic table is missing, or the revision is not the accepted head. It does not run migrations implicitly.
+
+Build the trusted baseline verification image before executing Runs:
+
+```bash
+docker build -f docker/verification.Dockerfile -t devflow-verifier:py311 .
+```
+
+Start the API:
+
+```bash
+devflow-api
+```
+
+The local API binds to `127.0.0.1:8000` and exposes `/healthz`.
+
+## Redis / Dramatiq production worker
+
+Start a worker from `backend/`:
+
+```bash
+dramatiq app.workers.tasks
+```
+
+The Redis message contains only:
+
+```text
+dispatch_id
+run_id
+task_id
+```
+
+Redis/Dramatiq is **transport, not truth**. Queue delivery is permission to attempt work, never execution ownership or success authority. The worker reloads the persisted Run/Task/DAG facts and managed workspace before execution.
+
+Current accepted ownership/recovery semantics are:
+
+```text
+PostgreSQL Run / Task / DAG / dispatch / evidence
+        ↓ durable truth
+Lease acquisition
+        ↓ current liveness owner
+generation + server-issued run_token
+        ↓ stale-write fencing
+isolated generation-bound Git worktree
+        ↓
+Developer / deterministic verification / Reviewer / bounded Repair
+        ↓
+WorkerExecutionEvidence
+        ↓ terminal worker fact
+DAG / task reconciler
+        ↓ safe recovery / redispatch
+Git parent validation + CAS
+        ↓ integration authority
+Human Gate / Operator action
+        ↓ request / authorization only
+fresh authoritative revalidation
+```
+
+Dramatiq's task actor intentionally disables automatic framework retries (`max_retries=0`). Recovery is not delegated to broker redelivery. Durable recovery is performed through PostgreSQL dispatch/lease/evidence facts plus the accepted reconciler/controller paths. A stale generation cannot regain authority from Redis delivery, Trace metadata, UI state or an Operator request.
 
 ## Docker verification sandbox
 
-Production CLI verification is fail-closed and uses `DockerSandboxRunner` by default. DevFlow does
-not silently fall back to host execution when Docker, its daemon, cgroup resource control, or the
-configured verification image is unavailable.
+Production verification is fail-closed and uses `DockerSandboxRunner` by default. DevFlow does not silently fall back to host execution when Docker, its daemon, cgroup resource control, or the configured verification image is unavailable.
 
 Each verification command runs with these fixed boundaries:
 
@@ -35,22 +90,14 @@ Each verification command runs with these fixed boundaries:
 - network mode `none`;
 - all Linux capabilities dropped;
 - `no-new-privileges=true`;
-- non-root container UID/GID (the current non-root host UID/GID when available, otherwise a fixed
-  non-root fallback);
+- non-root container UID/GID;
 - explicit CPU, memory, PID, `/dev/shm`, and temporary-filesystem limits;
-- bounded command timeout, with forced container removal on timeout;
+- bounded command timeout with forced container removal;
 - no implicit image pull (`--pull never`).
 
-The baseline `devflow-verifier:py311` image contains the pinned pytest/Ruff toolchain required by the
-existing deterministic checks. Projects with additional verification dependencies should build a
-trusted project-specific verification image and configure `DEVFLOW_VERIFICATION_SANDBOX_IMAGE`.
-Dependencies must be baked into that image ahead of execution; verification itself remains offline.
+The baseline `devflow-verifier:py311` image contains the pinned pytest/Ruff toolchain required by existing deterministic checks. Projects with additional verification dependencies should build a trusted project-specific image and configure `DEVFLOW_VERIFICATION_SANDBOX_IMAGE`; verification itself remains offline.
 
-`pytest` and `ruff check` keep their typed `TEST_FAILURE` / `LINT_FAILURE` semantics. Additional
-project-specific commands are accepted only through a sandboxed command runner. The explicit host
-runner exists for focused unit tests and refuses project-specific commands.
-
-Sandbox policy is configurable only within bounded resource ranges through:
+Sandbox policy is bounded through:
 
 ```text
 DEVFLOW_VERIFICATION_SANDBOX_IMAGE
@@ -62,58 +109,30 @@ DEVFLOW_VERIFICATION_SANDBOX_SHM_MB
 DEVFLOW_VERIFICATION_SANDBOX_TIMEOUT_SECONDS
 ```
 
-The command emits one JSON evidence bundle containing:
+A model saying `done` never marks a task successful. Terminal success remains evidence-bound to scope/Git checks, deterministic verification and independent review, followed by accepted integration for multi-task Runs.
 
-- terminal task state and state-transition history;
-- actual Git changed files;
-- Developer execution evidence;
-- deterministic verification history including execution backend and sandbox policy facts;
-- semantic review decisions;
-- targeted repair attempts and terminal failures;
-- configured Agent model identifiers;
-- measured Developer/Repair token usage and latency.
+## Single-task CLI
 
-A model saying "done" never marks the task successful. The terminal `SUCCEEDED` state is reachable
-only after deterministic verification and independent semantic review both pass.
-
-## Redis / Dramatiq queued workers
-
-Step 3.5 adds a process-external dispatch boundary. A Redis message contains only:
-
-```text
-dispatch_id
-run_id
-task_id
-```
-
-The queue does not carry repository source, `TaskContract` bodies, database credentials, provider
-keys, Git credentials, or model prompts. The worker reloads the persisted Run/Task from PostgreSQL
-and then resolves the already-materialized managed Git repository before invoking the existing
-SingleTask runtime inside an isolated task worktree.
-
-Configure:
-
-```text
-DEVFLOW_DATABASE_URL
-DEVFLOW_REDIS_URL
-DEVFLOW_DRAMATIQ_NAMESPACE
-DEVFLOW_DRAMATIQ_QUEUE_NAME
-```
-
-Start the production worker with:
+The original validated `TaskContract` CLI remains available:
 
 ```bash
-cd backend
-dramatiq app.workers.tasks
+python -m app.cli run --workspace /path/to/repository --task /path/to/task.json
 ```
 
-`app.dispatch.DramatiqTaskDispatcher` is the application boundary used by an API/CLI layer to send a
-validated persisted task to the worker actor.
+or:
 
-The Step 3.5 actor explicitly uses `max_retries=0`. This is deliberate: Redis/Dramatiq delivery is
-not treated as execution ownership and DevFlow does not claim exactly-once task execution. Broker
-redelivery, worker-death recovery, lease/heartbeat ownership, and stale-writer fencing are completed
-only in later Phase 3 steps. A queue message is permission to attempt work, never a success signal.
+```bash
+devflow run --workspace /path/to/repository --task /path/to/task.json
+```
 
-See `../docs/REDIS_DRAMATIQ_WORKERS.md`, `../docs/DEVELOPMENT_PLAN.md`, and
-`../docs/PROGRESS.md` for the architecture boundary and acceptance ledger.
+The workspace must be the top-level directory of a Git repository with a valid `HEAD`.
+
+## Benchmark / recovery checks
+
+```bash
+devflow-benchmark validate --suite ../benchmarks/v1/demo-suite.json
+devflow-benchmark demo --manifest ../benchmarks/v1/control-plane-demo.json --repository-root . --timeout-seconds 180
+devflow-benchmark chaos --manifest ../benchmarks/v1_1/chaos-recovery.json --repository-root . --timeout-seconds 300
+```
+
+See `../README.md`, `../docs/PROGRESS.md`, `../docs/V1_1_ROADMAP.md`, and `../docs/RELEASE_READINESS.md` for the public product flow and accepted authority boundaries.

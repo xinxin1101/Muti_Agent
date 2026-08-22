@@ -6,8 +6,10 @@ on:
       - main
       - "agent/**"
     paths:
+      - ".env.example"
       - "backend/**"
       - "benchmarks/**"
+      - "scripts/**"
       - "README.md"
       - "docs/PRODUCT_PAGES.md"
       - "docs/STEP_4_2_ACCEPTANCE.md"
@@ -40,14 +42,19 @@ on:
       - "docs/STEP_5_8_ACCEPTANCE.md"
       - "docs/AUTONOMOUS_MULTI_AGENT_PRODUCT_LOOP.md"
       - "docs/STEP_6_7_ACCEPTANCE.md"
+      - "docs/RELEASE_READINESS.md"
+      - "docs/RELEASE_READINESS_CHECKLIST.md"
       - "docs/PROGRESS.md"
       - ".github/workflows/backend-quality.yml"
+      - ".github/workflows/release-readiness.yml"
   pull_request:
     branches:
       - main
     paths:
+      - ".env.example"
       - "backend/**"
       - "benchmarks/**"
+      - "scripts/**"
       - "README.md"
       - "docs/PRODUCT_PAGES.md"
       - "docs/STEP_4_2_ACCEPTANCE.md"
@@ -80,8 +87,11 @@ on:
       - "docs/STEP_5_8_ACCEPTANCE.md"
       - "docs/AUTONOMOUS_MULTI_AGENT_PRODUCT_LOOP.md"
       - "docs/STEP_6_7_ACCEPTANCE.md"
+      - "docs/RELEASE_READINESS.md"
+      - "docs/RELEASE_READINESS_CHECKLIST.md"
       - "docs/PROGRESS.md"
       - ".github/workflows/backend-quality.yml"
+      - ".github/workflows/release-readiness.yml"
 
 permissions:
   contents: read

@@ -1,12 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiClient, ApiError } from "./client";
+import { apiClient, ApiClient, ApiError } from "./client";
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
 describe("ApiClient", () => {
+  it("uses the backend IPv4 loopback default", () => {
+    expect(apiClient.baseUrl).toBe("http://127.0.0.1:8000");
+  });
+
   it("posts JSON through the typed backend boundary", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ ok: true }), {

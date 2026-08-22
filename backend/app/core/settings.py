@@ -2,12 +2,15 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Self
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+_REPOSITORY_ENV_FILE = _REPOSITORY_ROOT / ".env"
 
 
 class Settings(BaseSettings):
-    """Typed application settings loaded from environment variables and `.env`."""
+    """Typed application settings loaded from environment variables and repository `.env`."""
 
     app_name: str = "DevFlow"
     environment: Literal["development", "test", "production"] = "development"
@@ -49,12 +52,26 @@ class Settings(BaseSettings):
     verification_sandbox_timeout_seconds: float = Field(default=60.0, ge=0.05, le=600.0)
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_REPOSITORY_ENV_FILE,
         env_file_encoding="utf-8",
         env_prefix="DEVFLOW_",
         case_sensitive=False,
         extra="ignore",
     )
+
+    @field_validator("workspace_root", mode="after")
+    @classmethod
+    def resolve_workspace_root(cls, value: Path) -> Path:
+        if value.is_absolute():
+            return value
+        return (_REPOSITORY_ROOT / value).resolve()
+
+    @field_validator("siliconflow_api_key", "github_token", mode="before")
+    @classmethod
+    def normalize_optional_secret(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @model_validator(mode="after")
     def validate_worker_lease_cadence(self) -> Self:
