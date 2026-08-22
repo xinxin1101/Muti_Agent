@@ -5,7 +5,7 @@ from uuid import UUID
 from app.agents.dag_planner import MultiTaskPlannerAgent
 from app.agents.developer import DeveloperAgent
 from app.api.catalog import PostgresProductCatalog
-from app.api.trace import TraceableAutonomousProductRuntimeService
+from app.api.operator import OperatorAwareAutonomousProductRuntimeService
 from app.core.settings import Settings
 from app.dispatch import DurableDramatiqTaskDispatcher
 from app.models.sandbox import DockerSandboxPolicy
@@ -21,6 +21,7 @@ from app.persistence.repair_completion import RepairAwarePostgresMultiTaskComple
 from app.providers.siliconflow import SiliconFlowDriver
 from app.publication import GitHubPublicationGateway
 from app.runtime.integration_repair import IntegrationConflictRepairService
+from app.runtime.operator_recovery import OperatorRecoveryCoordinator, OperatorRecoveryPlanner
 from app.runtime.product_controller import DurableMultiAgentRunController
 from app.runtime.reconciler import IdempotentTaskReconciler
 from app.runtime.repair_execution_base import RepairAwareEvidenceBoundTaskExecutionBaseResolver
@@ -37,11 +38,13 @@ class _ProductRunController:
         self,
         *,
         controller: DurableMultiAgentRunController,
+        run_reconciler: DAGRunReconciler,
         task_reconciler: IdempotentTaskReconciler,
         completion_store: RepairAwarePostgresMultiTaskCompletionStore,
         lease_store: PostgresTaskLeaseStore,
     ) -> None:
         self._controller = controller
+        self._run_reconciler = run_reconciler
         self._task_reconciler = task_reconciler
         self._completion_store = completion_store
         self._lease_store = lease_store
@@ -49,13 +52,16 @@ class _ProductRunController:
     async def advance(self, run_id: UUID):
         return await self._controller.advance(run_id)
 
+    async def reconcile_run(self, run_id: UUID):
+        return await self._run_reconciler.reconcile_run(run_id)
+
     async def dispose(self) -> None:
         await self._task_reconciler.dispose()
         await self._completion_store.dispose()
         await self._lease_store.dispose()
 
 
-def build_product_service(settings: Settings) -> TraceableAutonomousProductRuntimeService:
+def build_product_service(settings: Settings) -> OperatorAwareAutonomousProductRuntimeService:
     if settings.database_url is None:
         raise ValueError("DEVFLOW_DATABASE_URL is required by the product API")
 
@@ -154,9 +160,21 @@ def build_product_service(settings: Settings) -> TraceableAutonomousProductRunti
             completion_store=completion_store,
             conflict_repairer=conflict_repairer,
         ),
+        run_reconciler=dag_run_reconciler,
         task_reconciler=task_reconciler,
         completion_store=completion_store,
         lease_store=lease_store,
+    )
+    operator_recovery = OperatorRecoveryCoordinator(
+        planner=OperatorRecoveryPlanner(
+            run_reader=evidence_store,
+            dag_reader=dag_store,
+            lease_reader=lease_store,
+            execution_base_resolver=execution_base_resolver,
+        ),
+        audit_store=evidence_store,
+        run_controller=run_controller,
+        run_reconciler=run_controller,
     )
     requirement_planner = (
         None
@@ -174,7 +192,7 @@ def build_product_service(settings: Settings) -> TraceableAutonomousProductRunti
             timeout_seconds=settings.github_publication_timeout_seconds,
         )
     )
-    return TraceableAutonomousProductRuntimeService(
+    return OperatorAwareAutonomousProductRuntimeService(
         catalog=catalog,
         evidence_store=evidence_store,
         dag_store=dag_store,
@@ -186,4 +204,5 @@ def build_product_service(settings: Settings) -> TraceableAutonomousProductRunti
         requirement_planner=requirement_planner,
         run_controller=run_controller,
         trace_dispatch_reader=dispatch_store,
+        operator_recovery=operator_recovery,
     )
