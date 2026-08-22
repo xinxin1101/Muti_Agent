@@ -36,6 +36,8 @@ on:
       - "docs/STEP_5_6_ACCEPTANCE.md"
       - "docs/OPERATOR_RECOVERY_SURFACE.md"
       - "docs/STEP_5_7_ACCEPTANCE.md"
+      - "docs/CHAOS_RECOVERY_BENCHMARK.md"
+      - "docs/STEP_5_8_ACCEPTANCE.md"
       - "docs/AUTONOMOUS_MULTI_AGENT_PRODUCT_LOOP.md"
       - "docs/STEP_6_7_ACCEPTANCE.md"
       - "docs/PROGRESS.md"
@@ -74,6 +76,8 @@ on:
       - "docs/STEP_5_6_ACCEPTANCE.md"
       - "docs/OPERATOR_RECOVERY_SURFACE.md"
       - "docs/STEP_5_7_ACCEPTANCE.md"
+      - "docs/CHAOS_RECOVERY_BENCHMARK.md"
+      - "docs/STEP_5_8_ACCEPTANCE.md"
       - "docs/AUTONOMOUS_MULTI_AGENT_PRODUCT_LOOP.md"
       - "docs/STEP_6_7_ACCEPTANCE.md"
       - "docs/PROGRESS.md"
@@ -158,6 +162,13 @@ jobs:
           --manifest ../benchmarks/v1/control-plane-demo.json
           --repository-root .
           --timeout-seconds 180
+
+      - name: Run deterministic V1.1 chaos recovery benchmark
+        run: >-
+          devflow-benchmark chaos
+          --manifest ../benchmarks/v1_1/chaos-recovery.json
+          --repository-root .
+          --timeout-seconds 300
 
       - name: Run pytest
         run: pytest

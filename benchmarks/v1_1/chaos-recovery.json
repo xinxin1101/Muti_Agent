@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "suite_id": "devflow-v1-1-chaos-recovery",
+  "suite_version": "0.2.0",
+  "description": "Deterministic Step 5.8 crash/race scenarios proving V1.1 durable recovery invariants.",
+  "required_invariants": [
+    "AT_MOST_ONE_MUTATION",
+    "STALE_GENERATION_FENCED",
+    "UNKNOWN_STATE_NOT_GUESSED",
+    "FAILURE_NOT_SUCCESS",
+    "COMPLETED_WORK_NOT_RERUN",
+    "HUMAN_DECISION_DURABLE",
+    "OBSERVABILITY_NOT_AUTHORITY"
+  ],
+  "scenarios": [
+    {
+      "scenario_id": "C01_ACTIVE_WORKER_LOSS",
+      "fault_domain": "LEASE",
+      "title": "Worker disappears while lease is active",
+      "pytest_nodeid": "tests/test_chaos_recovery.py::test_c01_active_worker_loss_waits_for_expiry",
+      "invariants": ["UNKNOWN_STATE_NOT_GUESSED", "AT_MOST_ONE_MUTATION"]
+    },
+    {
+      "scenario_id": "C02_STALE_EVIDENCE_WRITE",
+      "fault_domain": "FENCING",
+      "title": "Expired generation attempts a late evidence write",
+      "pytest_nodeid": "tests/test_chaos_recovery.py::test_c02_stale_generation_cannot_append_evidence",
+      "invariants": ["STALE_GENERATION_FENCED", "FAILURE_NOT_SUCCESS"]
+    },
+    {
+      "scenario_id": "C03_STALE_GIT_MUTATION",
+      "fault_domain": "GIT",
+      "title": "Expired generation attempts a late Git mutation",
+      "pytest_nodeid": "tests/test_chaos_recovery.py::test_c03_stale_generation_cannot_mutate_git",
+      "invariants": ["STALE_GENERATION_FENCED", "AT_MOST_ONE_MUTATION"]
+    },
+    {
+      "scenario_id": "C04_TERMINAL_EVIDENCE_CONTROLLER_CRASH",
+      "fault_domain": "PROCESS_RESTART",
+      "title": "Terminal worker evidence survives controller crash",
+      "pytest_nodeid": "tests/test_chaos_recovery.py::test_c04_terminal_evidence_resumes_without_semantic_rerun",
+      "invariants": ["COMPLETED_WORK_NOT_RERUN", "FAILURE_NOT_SUCCESS"]
+    },
+    {
+      "scenario_id": "C05_DUPLICATE_RECONCILER_RACE",
+      "fault_domain": "CONCURRENCY",
+      "title": "Duplicate reconcilers race on one expired task",
+      "pytest_nodeid": "tests/test_chaos_recovery.py::test_c05_duplicate_reconcilers_publish_once",
+      "invariants": ["AT_MOST_ONE_MUTATION"]
+    },
+    {
+      "scenario_id": "C06_BROKER_PUBLISH_FAILURE",
+      "fault_domain": "BROKER",
+      "title": "Broker publish fails after durable dispatch intent",
+      "pytest_nodeid": "tests/test_chaos_recovery.py::test_c06_publish_failure_remains_explicit",
+      "invariants": ["UNKNOWN_STATE_NOT_GUESSED", "FAILURE_NOT_SUCCESS"]
+    },
+    {
+      "scenario_id": "C07_HUMAN_GATE_RESTART",
+      "fault_domain": "HUMAN_GATE",
+      "title": "Pending Human Gate survives process restart",
+      "pytest_nodeid": "tests/test_chaos_recovery.py::test_c07_pending_human_gate_survives_restart",
+      "invariants": ["HUMAN_DECISION_DURABLE", "OBSERVABILITY_NOT_AUTHORITY"]
+    },
+    {
+      "scenario_id": "C08_DAG_RESUME",
+      "fault_domain": "DAG",
+      "title": "DAG restart does not rerun completed dependencies",
+      "pytest_nodeid": "tests/test_chaos_recovery.py::test_c08_dag_resume_does_not_rerun_completed_dependencies",
+      "invariants": ["COMPLETED_WORK_NOT_RERUN", "AT_MOST_ONE_MUTATION"]
+    },
+    {
+      "scenario_id": "C09_OPERATOR_ADVANCE_RACE",
+      "fault_domain": "OPERATOR",
+      "title": "Concurrent Operator ADVANCE_RUN requests cannot duplicate publication",
+      "pytest_nodeid": "tests/test_operator_recovery_postgres.py::test_concurrent_operator_actions_publish_once_and_make_old_action_stale",
+      "invariants": [
+        "AT_MOST_ONE_MUTATION",
+        "OBSERVABILITY_NOT_AUTHORITY",
+        "UNKNOWN_STATE_NOT_GUESSED"
+      ]
+    },
+    {
+      "scenario_id": "C10_REPAIR_CRASH_REUSE",
+      "fault_domain": "REPAIR",
+      "title": "Persisted repair survives crash before integration Git CAS",
+      "pytest_nodeid": "tests/test_integration_repair_recovery.py::test_persisted_repair_resumes_after_crash_before_git_cas",
+      "invariants": [
+        "COMPLETED_WORK_NOT_RERUN",
+        "HUMAN_DECISION_DURABLE",
+        "AT_MOST_ONE_MUTATION"
+      ]
+    }
+  ]
+}
