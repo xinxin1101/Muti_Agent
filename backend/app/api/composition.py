@@ -28,7 +28,8 @@ from app.runtime.product_controller import DurableMultiAgentRunController
 from app.runtime.reconciler import IdempotentTaskReconciler
 from app.runtime.repair_execution_base import RepairAwareEvidenceBoundTaskExecutionBaseResolver
 from app.runtime.run_reconciler import DAGRunReconciler
-from app.verification import DeterministicVerifier, DockerSandboxRunner
+from app.verification import DeterministicVerifier
+from app.verification.project_profile import ProjectAwareVerificationRunner
 from app.workers.executor import ManagedProjectWorkspaceResolver
 from app.workspace import ManagedProjectProvisioner
 
@@ -156,7 +157,11 @@ def build_product_service(settings: Settings) -> HardenedOperatorAwareAutonomous
             developer=DeveloperAgent(driver=driver, model=settings.developer_model),
             verifier=DeterministicVerifier(
                 command_timeout_seconds=settings.verification_sandbox_timeout_seconds,
-                command_runner=DockerSandboxRunner(sandbox_policy),
+                command_runner=ProjectAwareVerificationRunner(
+                    base_policy=sandbox_policy,
+                    node_image=settings.verification_node_sandbox_image,
+                    cache_root=settings.workspace_root / "verification-deps",
+                ),
             ),
             repair_root=settings.workspace_root / "integration-repairs",
         )
