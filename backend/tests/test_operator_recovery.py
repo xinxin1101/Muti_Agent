@@ -47,6 +47,9 @@ def _plan(
         lease_generation = 0
         lease_dispatch_id = None
         if state is DAGTaskFrontierState.RECONCILE_CANDIDATE:
+            lease_state = TaskLeaseState.EXPIRED
+            lease_generation = 1
+            lease_dispatch_id = uuid4()
             execution_base = TaskExecutionBase(
                 run_id=selected_run_id,
                 task_id=task_id,
@@ -84,13 +87,34 @@ def _plan(
     )
 
 
-def _requested_attempt(*, run_id: UUID, task_id: str) -> PersistedDispatchAttempt:
+def _attempt(
+    *,
+    run_id: UUID,
+    task_id: str,
+    dispatch_id: UUID | None = None,
+    attempt_number: int = 1,
+    state: DispatchAttemptState = DispatchAttemptState.REQUESTED,
+) -> PersistedDispatchAttempt:
+    selected_dispatch = dispatch_id or uuid4()
+    if state is DispatchAttemptState.ENQUEUED:
+        return PersistedDispatchAttempt(
+            dispatch_id=selected_dispatch,
+            run_id=run_id,
+            task_id=task_id,
+            attempt_number=attempt_number,
+            state=state,
+            broker_message_id=f"broker-{attempt_number}",
+            queue_name="devflow_tasks",
+            requested_at=_OBSERVED,
+            resolved_at=_OBSERVED,
+            updated_at=_OBSERVED,
+        )
     return PersistedDispatchAttempt(
-        dispatch_id=uuid4(),
+        dispatch_id=selected_dispatch,
         run_id=run_id,
         task_id=task_id,
-        attempt_number=1,
-        state=DispatchAttemptState.REQUESTED,
+        attempt_number=attempt_number,
+        state=state,
         requested_at=_OBSERVED,
         updated_at=_OBSERVED,
     )
@@ -99,9 +123,8 @@ def _requested_attempt(*, run_id: UUID, task_id: str) -> PersistedDispatchAttemp
 def test_action_id_ignores_observation_time_but_binds_dispatch_ledger() -> None:
     run_id = uuid4()
     first_plan = _plan(run_id=run_id, observed_at=_OBSERVED)
-    second_plan = _plan(
-        run_id=run_id,
-        observed_at=datetime(2026, 8, 22, 6, 5, tzinfo=UTC),
+    second_plan = first_plan.model_copy(
+        update={"observed_at": datetime(2026, 8, 22, 6, 5, tzinfo=UTC)}
     )
     empty = {"A": ()}
 
@@ -109,7 +132,7 @@ def test_action_id_ignores_observation_time_but_binds_dispatch_ledger() -> None:
     second = OperatorRecoveryPlanner._advance_action(second_plan, dispatches=empty)
     after_dispatch = OperatorRecoveryPlanner._advance_action(
         second_plan,
-        dispatches={"A": (_requested_attempt(run_id=run_id, task_id="A"),)},
+        dispatches={"A": (_attempt(run_id=run_id, task_id="A"),)},
     )
 
     assert first.action_id == second.action_id
@@ -123,8 +146,42 @@ def test_active_owner_and_terminal_run_never_advertise_operator_mutation() -> No
         run_status="SUCCEEDED",
     )
 
-    assert OperatorRecoveryPlanner._should_offer_advance(active) is False
-    assert OperatorRecoveryPlanner._should_offer_advance(terminal) is False
+    assert OperatorRecoveryPlanner._should_offer_advance(active, dispatches={"A": ()}) is False
+    assert OperatorRecoveryPlanner._should_offer_advance(terminal, dispatches={"A": ()}) is False
+
+
+def test_newer_unclaimed_dispatch_suppresses_another_operator_advance() -> None:
+    plan = _plan()
+    task = plan.tasks[0]
+    assert task.lease_dispatch_id is not None
+    current = _attempt(
+        run_id=plan.run_id,
+        task_id=task.task_id,
+        dispatch_id=task.lease_dispatch_id,
+        attempt_number=1,
+        state=DispatchAttemptState.ENQUEUED,
+    )
+    newer = _attempt(
+        run_id=plan.run_id,
+        task_id=task.task_id,
+        attempt_number=2,
+        state=DispatchAttemptState.REQUESTED,
+    )
+
+    assert (
+        OperatorRecoveryPlanner._should_offer_advance(
+            plan,
+            dispatches={task.task_id: (current,)},
+        )
+        is True
+    )
+    assert (
+        OperatorRecoveryPlanner._should_offer_advance(
+            plan,
+            dispatches={task.task_id: (current, newer)},
+        )
+        is False
+    )
 
 
 class _PlanSource:
