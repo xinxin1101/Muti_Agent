@@ -72,9 +72,15 @@ def attach_operator_routes(
         response_model=OperatorActionExecutionResult,
     )
     async def execute_operator_action(
+        request: Request,
         run_id: UUID,
         action_id: str,
     ) -> OperatorActionExecutionResult:
+        if request.query_params or await request.body():
+            raise HTTPException(
+                status_code=400,
+                detail="operator action accepts only the server-issued action id",
+            )
         if _ACTION_ID_RE.fullmatch(action_id) is None:
             raise HTTPException(status_code=404, detail="operator action does not exist")
         try:
