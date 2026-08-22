@@ -13,7 +13,6 @@ from app.models.sandbox import DockerSandboxPolicy
 from app.models.task import TaskContract
 from app.persistence import (
     PostgresDAGStore,
-    PostgresEvidenceStore,
     PostgresTaskLeaseStore,
     PostgresTaskReconciliationStore,
 )
@@ -25,12 +24,13 @@ from app.runtime.product_controller import DurableMultiAgentRunController
 from app.runtime.reconciler import IdempotentTaskReconciler
 from app.runtime.repair_execution_base import RepairAwareEvidenceBoundTaskExecutionBaseResolver
 from app.runtime.run_reconciler import DAGRunReconciler
-from app.verification import DeterministicVerifier, DockerSandboxRunner
-from app.workers.executor import (
-    LocalQueuedTaskExecutionBackend,
-    ManagedProjectWorkspaceResolver,
-    QueuedTaskWorker,
+from app.trace.persistence import TraceAwarePostgresEvidenceStore
+from app.trace.worker import (
+    TraceAwareLocalQueuedTaskExecutionBackend,
+    TraceAwareQueuedTaskWorker,
 )
+from app.verification import DeterministicVerifier, DockerSandboxRunner
+from app.workers.executor import ManagedProjectWorkspaceResolver, QueuedTaskWorker
 from app.workers.lease import LeasedQueuedTaskWorker
 
 
@@ -94,7 +94,7 @@ async def execute_task_from_settings(
     if settings.database_url is None:
         raise ValueError("DEVFLOW_DATABASE_URL is required by queued workers")
 
-    evidence_store = PostgresEvidenceStore.from_url(
+    evidence_store = TraceAwarePostgresEvidenceStore.from_url(
         settings.database_url,
         echo=settings.database_echo,
     )
@@ -121,16 +121,19 @@ async def execute_task_from_settings(
             dag_reader=dag_store,
             workspace_resolver=resolver,
         )
-        backend = LocalQueuedTaskExecutionBackend(
+        backend = TraceAwareLocalQueuedTaskExecutionBackend(
             workspace_resolver=resolver,
             worktree_root=settings.workspace_root / "worktrees",
             runner_factory=build_runner_factory(settings),
             git_fence=lease_store,
+            trace_store=evidence_store,
         )
-        queued_worker = QueuedTaskWorker(
-            store=evidence_store,
-            backend=backend,
-            execution_base_resolver=execution_base_resolver,
+        queued_worker = TraceAwareQueuedTaskWorker(
+            QueuedTaskWorker(
+                store=evidence_store,
+                backend=backend,
+                execution_base_resolver=execution_base_resolver,
+            )
         )
         leased_worker = LeasedQueuedTaskWorker(
             worker=queued_worker,

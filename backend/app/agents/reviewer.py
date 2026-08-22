@@ -17,6 +17,7 @@ from app.models import (
     VerificationResult,
 )
 from app.providers.base import AgentDriver
+from app.trace.collector import TaskTraceCollector
 from app.workspace import LocalGitWorkspace
 
 
@@ -60,6 +61,7 @@ class ReviewerAgent:
         *,
         workspace: LocalGitWorkspace,
         context_packet: ContextPacket | None = None,
+        trace: TaskTraceCollector | None = None,
     ) -> ReviewDecision:
         """Review actual Git diff only after deterministic hard verification passes."""
 
@@ -74,6 +76,12 @@ class ReviewerAgent:
         response = await self._driver.complete(
             self._build_initial_request(task, verification, git_diff, context_packet)
         )
+        if trace is not None:
+            trace.record_agent_turn(
+                role=AgentRole.REVIEWER,
+                iteration=1,
+                response=response,
+            )
         last_output = response.content
         last_error = self._validation_error(last_output)
         if last_error is None:
@@ -91,6 +99,13 @@ class ReviewerAgent:
                     repair_attempt=repair_attempt,
                 )
             )
+            if trace is not None:
+                trace.record_agent_turn(
+                    role=AgentRole.REVIEWER,
+                    iteration=repair_attempt + 1,
+                    response=response,
+                    name="reviewer.schema_repair_turn",
+                )
             last_output = response.content
             last_error = self._validation_error(last_output)
             if last_error is None:

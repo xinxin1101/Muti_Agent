@@ -20,6 +20,7 @@ from app.models.task import TaskContract
 from app.providers.base import AgentDriver
 from app.runtime import FailureClassifier
 from app.tools import RepositoryToolbox
+from app.trace.collector import TaskTraceCollector
 from app.workspace import LocalGitWorkspace
 
 
@@ -69,6 +70,7 @@ class RepairAgent:
         attempt: int,
         workspace: LocalGitWorkspace,
         context_packet: ContextPacket | None = None,
+        trace: TaskTraceCollector | None = None,
     ) -> RepairRunResult:
         normalized_failures = list(failures)
         if not normalized_failures:
@@ -153,6 +155,14 @@ class RepairAgent:
                     latency_ms=total_latency_ms,
                 )
 
+            turn_span_id = None
+            if trace is not None:
+                turn_span_id = trace.record_agent_turn(
+                    role=AgentRole.REPAIR,
+                    iteration=iteration,
+                    response=response,
+                )
+
             prompt_tokens += response.usage.prompt_tokens
             completion_tokens += response.usage.completion_tokens
             total_tokens += response.usage.total_tokens
@@ -203,8 +213,18 @@ class RepairAgent:
                 )
 
             for call in response.tool_calls:
+                tool_started = trace.clock() if trace is not None else 0.0
                 tool_result = toolbox.execute(call)
                 tool_call_count += 1
+                if trace is not None:
+                    assert turn_span_id is not None
+                    trace.record_tool_call(
+                        role=AgentRole.REPAIR,
+                        iteration=iteration,
+                        parent_span_id=turn_span_id,
+                        result=tool_result,
+                        duration_ms=trace.duration_ms(tool_started),
+                    )
                 messages.append(
                     AgentMessage(
                         role=MessageRole.TOOL,

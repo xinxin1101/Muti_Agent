@@ -110,7 +110,7 @@ class LeasedQueuedTaskWorker:
             name=f"devflow-heartbeat:{envelope.run_id}:{envelope.task_id}",
         )
         execution_task = asyncio.create_task(
-            self._worker.execute(envelope, run_token=run_token),
+            self._execute_generation(envelope, grant),
             name=f"devflow-execution:{envelope.run_id}:{envelope.task_id}",
         )
         heartbeat_failed = False
@@ -148,6 +148,25 @@ class LeasedQueuedTaskWorker:
             if not heartbeat_failed:
                 await self._release_after_failure(envelope, run_token)
             raise
+
+    async def _execute_generation(
+        self,
+        envelope: TaskDispatchEnvelope,
+        grant: TaskLeaseGrant,
+    ) -> WorkerExecutionEvidence:
+        """Use the optional trace-aware extension without breaking the V1 worker protocol."""
+
+        execute_generation = getattr(self._worker, "execute_generation", None)
+        if execute_generation is None:
+            return await self._worker.execute(
+                envelope,
+                run_token=grant.run_token,
+            )
+        return await execute_generation(
+            envelope,
+            run_token=grant.run_token,
+            generation=grant.snapshot.generation,
+        )
 
     async def _heartbeat_loop(
         self,

@@ -1,17 +1,17 @@
 # DevFlow Implementation Progress
 
-This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The development plan defines what should be built; this ledger records what has actually passed acceptance. Detailed design, hardening history, and failure evidence remain in the corresponding acceptance documents, pull requests, CI runs, and Git history.
+This file is the execution ledger for `docs/DEVELOPMENT_PLAN.md`. The development plan defines what should be built; this ledger records what has actually passed acceptance. Detailed design, hardening history, failure evidence, and authority analysis remain in the corresponding design/acceptance documents, pull requests, CI runs, and Git history.
 
 ## Current position
 
 - Current product milestone: **Phase 6 — Autonomous Multi-Agent Product Loop — ACCEPTED / COMPLETE**
-- Completed item: **Step 6.7 — Full Autonomous Product E2E — ACCEPTED / COMPLETE**
-- Next durable-runtime backlog item: **Step 5.6 — Causal Trace Correlation**
+- Completed durable-runtime item: **Step 5.6 — Causal Trace Correlation — ACCEPTED / COMPLETE**
+- Next durable-runtime backlog item: **Step 5.7 — Operator Recovery / Approval Surface**
 - Phase 1 status: **ACCEPTED / COMPLETE**
 - Phase 2 status: **ACCEPTED / COMPLETE**
 - Phase 3 status: **ACCEPTED / COMPLETE**
 - Phase 4 status: **ACCEPTED / COMPLETE**
-- Phase 5 status: **IN PROGRESS** — 5.1–5.5 accepted; 5.6–5.8 remain unaccepted backlog
+- Phase 5 status: **IN PROGRESS** — 5.1–5.6 accepted; 5.7–5.8 remain unaccepted backlog
 - Phase 6 status: **ACCEPTED / COMPLETE**
 - V0.1 status: **ACCEPTED / COMPLETE**
 - V0.2 status: **ACCEPTED / COMPLETE**
@@ -30,6 +30,10 @@ Frozen V1.1 principle:
 Frozen Phase 6 product principle:
 
 > **A user may request work in natural language; scheduling, execution, integration, repair, success, diff and publication remain server-owned evidence decisions.**
+
+Frozen Step 5.6 principle:
+
+> **Trace may explain accepted runtime history; it may not decide, repair, schedule, resume, verify, merge, finalize, or publish that history.**
 
 ---
 
@@ -50,7 +54,7 @@ Phase 1 was completed through PR #1–#10.
 | 1.9 | Failure-aware targeted Repair | 97 tests passed |
 | 1.10 | Single-task Orchestrator + CLI | 104 tests passed |
 
-Phase 1 established the single-task evidence loop:
+Phase 1 established:
 
 ```text
 TaskContract
@@ -88,7 +92,7 @@ Phase 2 completion commit:
 
 `4d091949f1ba5a57465dc30edd4f5935f1a06fdd`
 
-Frozen Phase 2 boundary:
+Accepted boundary:
 
 - validated dependency truth determines legal scheduling order;
 - parallel tasks execute in isolated Git worktrees;
@@ -119,7 +123,7 @@ Phase 3 completion commit:
 
 `774ac16bfedcc8d02690ef803fd8f1eee6593158`
 
-Accepted Phase 3 guarantees:
+Accepted runtime foundation:
 
 ```text
 bounded Docker verification
@@ -143,13 +147,9 @@ Frozen Phase 3 principles:
 
 > **Typed evidence decides what happened; structured events make that accepted history queryable.**
 
-Detailed documents include `POSTGRESQL_PERSISTENCE.md`, `REDIS_DRAMATIQ_WORKERS.md`, `LEASE_HEARTBEAT.md`, `RUN_TOKEN_FENCING.md`, `STRUCTURED_RUNTIME_EVENTS.md`, and their acceptance ledgers.
-
 ---
 
 # Phase 4 — V1.0 Productization — ACCEPTED / COMPLETE
-
-Phase 4 turns the accepted runtime into an operable, observable, publishable, and evaluable product without moving runtime authority into the browser or benchmark layer.
 
 | Step | Capability | Status | Acceptance snapshot |
 | --- | --- | --- | --- |
@@ -162,107 +162,11 @@ Phase 4 turns the accepted runtime into an operable, observable, publishable, an
 | 4.7 | GitHub branch + Draft PR integration | **ACCEPTED** | evidence-bound/fenced publication projection; Backend 332 tests |
 | 4.8 | Benchmark / Demo Suite | **ACCEPTED** | versioned fixtures + raw evaluation metrics + 5 deterministic demos; Backend 361 tests; Frontend green |
 
-## Step 4.1 — Frontend foundation
+Accepted product read/projection boundary:
 
-Accepted boundary:
+> **The browser may present accepted runtime truth; it may not manufacture runtime truth.**
 
-> **The browser may present runtime truth; it may not manufacture runtime truth.**
-
-Design / acceptance: `FRONTEND_FOUNDATION.md`, `STEP_4_1_ACCEPTANCE.md`.
-
-## Step 4.2 — Product pages and Product API
-
-Accepted boundary:
-
-> **The browser may request work; Git, typed persistence, and the accepted runtime still decide what work exists and what happened.**
-
-Design / acceptance: `PRODUCT_PAGES.md`, `STEP_4_2_ACCEPTANCE.md`.
-
-## Step 4.3 — SSE live runtime timeline
-
-Accepted boundary:
-
-> **SSE may make accepted runtime history live; it may not become a second runtime history or a second success authority.**
-
-Design / acceptance: `SSE_LIVE_EVENTS.md`, `STEP_4_3_ACCEPTANCE.md`.
-
-## Step 4.4 — DAG visualization
-
-Accepted boundary:
-
-> **The browser may render validated DAG truth and refreshed evidence-derived presentation state; it may not create, edit, schedule, or replace that truth.**
-
-Design / acceptance: `DAG_VISUALIZATION.md`, `STEP_4_4_ACCEPTANCE.md`.
-
-## Step 4.5 — Diff viewer
-
-Accepted boundary:
-
-> **Persisted typed evidence chooses the commit pair; Git proves the code delta; the browser only renders the bounded result.**
-
-Design / acceptance: `DIFF_VIEWER.md`, `STEP_4_5_ACCEPTANCE.md`.
-
-## Step 4.6 — Run metrics
-
-Accepted boundary:
-
-> **Typed evidence decides runtime truth; metrics only summarize that accepted truth.**
-
-Product Run Metrics remains a descriptive read model. Step 4.8 extends its raw typed counters for Reviewer rejection, scope violation, and durable Developer/Repair token usage without adding a success formula to Product Run Metrics.
-
-Design / acceptance: `RUN_METRICS.md`, `STEP_4_6_ACCEPTANCE.md`.
-
-## Step 4.7 — GitHub branch + Draft PR publication
-
-Accepted boundary:
-
-> **Accepted runtime/Git evidence selects what may be published; GitHub only receives that already-accepted projection.**
-
-Design / acceptance: `GITHUB_PUBLICATION.md`, `STEP_4_7_ACCEPTANCE.md`.
-
-## Step 4.8 — Benchmark / Demo Suite — ACCEPTED / COMPLETE
-
-Design / acceptance:
-
-- `docs/BENCHMARK_DEMO_SUITE.md`
-- `docs/STEP_4_8_ACCEPTANCE.md`
-- `benchmarks/v1/demo-suite.json`
-- `benchmarks/v1/control-plane-demo.json`
-
-### Accepted evaluation architecture
-
-```text
-accepted Product/runtime truth
-        ↓
-bounded typed observations
-        ↓
-deterministic comparison
-        ↓
-read-only descriptive report
-```
-
-The benchmark records Development Plan evaluation metrics without promoting any aggregate into runtime authority:
-
-- task success rate;
-- first-pass success rate;
-- repaired success rate;
-- average repair/retry count;
-- Reviewer rejection rate;
-- scope violations detected;
-- mean/median terminal latency;
-- Developer/Repair prompt/completion/total token usage where durably available;
-- model cost only when authoritative data exists.
-
-Current token/cost availability is explicit:
-
-```text
-token_usage = PARTIAL
-token_usage_scope = DEVELOPER_REPAIR_ONLY
-reviewer token usage = NOT_AVAILABLE
-estimated model cost = NOT_AVAILABLE
-```
-
-### Required V1 deterministic demos
+Step 4.8 deterministic demo set remains:
 
 ```text
 NORMAL_SUCCESS
@@ -272,61 +176,13 @@ INVALID_AGENT_OUTPUT
 PARALLEL_CONFLICT
 ```
 
-The hardened Parallel Conflict demo runs two tasks concurrently through `ParallelWorkerCoordinator`, creates isolated worktree commits, enters `TopologicalMergeQueue`, produces a real Git conflict, and structurally classifies it without corrupting the base workspace.
-
-The hardened Normal Success demo uses a protected golden pytest executed through the default Docker `DeterministicVerifier`, so the demonstration proves both scoped implementation and production-equivalent deterministic verification.
-
-### Deterministic/live separation
-
-```text
-devflow-benchmark demo      deterministic control-plane CI harness
-devflow-benchmark run       stochastic live Product API / SiliconFlow benchmark
-devflow-benchmark evaluate  deterministic offline reevaluation
-```
-
-Live runs record an operator-declared experiment identity: runtime commit, provider, role-model mapping, context strategy, and verifier identity. CI requires no paid SiliconFlow call.
-
-### Step 4.8 implementation-head acceptance evidence
-
-Final hardening implementation head before the acceptance-ledger commit:
+Step 4.8 implementation head:
 
 `f07e95fbfbcb6d5179925c41ce573d2cb63cd47d`
 
-Backend Quality:
+Backend acceptance: **361 passed in 29.50s + 5/5 demos**. Frontend Quality: **PASS**.
 
-- PostgreSQL + Redis: **PASS**;
-- Alembic upgrade → downgrade base → re-upgrade: **PASS**;
-- verification Docker image: **PASS**;
-- Ruff: **PASS**;
-- V1 fixture validation: **PASS**;
-- deterministic control-plane demos: **5 / 5 PASS**;
-- pytest: **361 passed in 29.50s**.
-
-Frontend Quality on the same implementation head:
-
-- locked install: **PASS**;
-- TypeScript typecheck: **PASS**;
-- lint: **PASS**;
-- Vitest: **PASS**;
-- Vite production build: **PASS**.
-
-The final hardening pass also removed a pre-existing lease-lifecycle test race: heartbeat is now exercised while generation 1 is comfortably live, then the renewed short lease is deliberately allowed to expire before takeover. Production lease renewal/fencing semantics were not relaxed.
-
-PR #33 merge review had no unresolved review threads after hardening.
-
-The acceptance/progress ledger paths themselves trigger both Backend Quality and Frontend Quality, so the final ledger head must independently pass both workflows before merge.
-
-Frozen Step 4.8 boundary:
-
-> **The benchmark may measure success, repair, failure, latency, and available usage evidence; only the accepted runtime decides what actually happened.**
-
----
-
-# V1.0 — ACCEPTED / COMPLETE
-
-With Steps 4.1 through 4.8 accepted, **Phase 4 — V1.0 Productization is ACCEPTED / COMPLETE**.
-
-V1.0 provides one coherent evidence-driven product path:
+V1.0 coherent product path:
 
 ```text
 browser request
@@ -360,259 +216,62 @@ No browser state, benchmark aggregate, LLM self-report, event message, or public
 
 # Phase 5 — V1.1 Durable Agent Runtime — IN PROGRESS
 
-Phase 5 is a deliberately separate Post-V1.0 roadmap. It strengthens long-running execution and crash recovery instead of extending the V1.0 productization scope. Phase 6 consumed and accepted the Durable Human Gate / Resume capability needed for the autonomous product loop, but it did not silently close the remaining V1.1 tracing/operator/chaos roadmap.
+Phase 5 strengthens long-running execution, crash recovery, causal observability, operator intervention, and recovery validation without creating parallel runtime truth.
 
 | Step | Capability | Status | Acceptance snapshot |
 | --- | --- | --- | --- |
-| 5.1 | Recovery State Classifier | **ACCEPTED / COMPLETE** | typed read-only durable recovery projection; implementation head `b4503968310cdc3e5e0cd27bfa062abfc5b253f9`; Backend 377 tests + 5/5 V1 demos |
-| 5.2 | Durable Dispatch Attempt Ledger | **ACCEPTED / COMPLETE** | PostgreSQL-first REQUESTED/ENQUEUED/PUBLISH_FAILED ledger; crash ambiguity preserved; implementation head `30e92051aeae00e674010b66ecb8da329c793e0a`; Backend 380 tests + 5/5 V1 demos |
-| 5.3 | Idempotent Task Reconciler | **ACCEPTED / COMPLETE** | fresh locked prepare + publication revalidation; concurrent one-send; generation N→N+1 remains lease-owned; implementation head `0d7586405853f19923b906b782ac6ab167886ffe`; Backend 385 tests + 5/5 V1 demos |
-| 5.4 | DAG-wide Run Reconciliation | **ACCEPTED / COMPLETE** | persisted-DAG frontier reconstruction + integration-aware execution bases + Step 5.3-only dispatch authority; implementation head `16be10b49a563429f459e337410bcb2c94a1d3ae`; Backend 393 tests + 5/5 V1 demos |
-| 5.5 | Durable Human Pause / Resume | **ACCEPTED / COMPLETE via Phase 6** | durable typed Human decisions + restart-safe bounded repair; repair staging ref survives `git gc --prune=now`; strict CI green at `6673d87a3aea15a68196a15818a109e74046d1d7` |
-| 5.6 | Causal Trace Correlation | **NOT STARTED / NOT ACCEPTED** | — |
-| 5.7 | Operator Recovery / Approval Surface | **PARTIAL / NOT ACCEPTED** | Phase 6 exposes Human Gate approval UI/API, but the broader recovery/operator surface remains open |
-| 5.8 | Chaos / Recovery Benchmark + V1.1 Acceptance | **PARTIAL / NOT ACCEPTED** | Phase 6 covers repair DB→Git CAS crash/GC recovery, not the complete V1.1 chaos matrix |
+| 5.1 | Recovery State Classifier | **ACCEPTED / COMPLETE** | typed read-only durable recovery projection; implementation head `b4503968310cdc3e5e0cd27bfa062abfc5b253f9`; Backend 377 tests + 5/5 demos |
+| 5.2 | Durable Dispatch Attempt Ledger | **ACCEPTED / COMPLETE** | PostgreSQL-first REQUESTED/ENQUEUED/PUBLISH_FAILED ledger; implementation head `30e92051aeae00e674010b66ecb8da329c793e0a`; Backend 380 tests + 5/5 demos |
+| 5.3 | Idempotent Task Reconciler | **ACCEPTED / COMPLETE** | fresh locked prepare/publication revalidation; implementation head `0d7586405853f19923b906b782ac6ab167886ffe`; Backend 385 tests + 5/5 demos |
+| 5.4 | DAG-wide Run Reconciliation | **ACCEPTED / COMPLETE** | persisted-DAG frontier + integration-aware execution bases + Step 5.3-only dispatch authority; implementation head `16be10b49a563429f459e337410bcb2c94a1d3ae`; Backend 393 tests + 5/5 demos |
+| 5.5 | Durable Human Pause / Resume | **ACCEPTED / COMPLETE via Phase 6** | durable typed Human decision + restart-safe bounded repair; hardening head `6673d87a3aea15a68196a15818a109e74046d1d7` |
+| 5.6 | Causal Trace Correlation | **ACCEPTED / COMPLETE** | metadata-only `TRACE_BATCH` + durable Run→Task→Dispatch→Generation correlation + read-only projector/API; implementation head `e4942113ae5d10283cb31e6be3f832d04a782b61`; Backend 412 tests + 5/5 demos; candidate ledger `f0ca4d5f76cfc376d65cbc342648f01a8faf4939` strict CI green |
+| 5.7 | Operator Recovery / Approval Surface | **PARTIAL / NOT ACCEPTED** | Phase 6 exposes Human Gate approval UI/API, but broader recovery/operator controls remain open |
+| 5.8 | Chaos / Recovery Benchmark + V1.1 Acceptance | **PARTIAL / NOT ACCEPTED** | Phase 6 covers repair DB→Git CAS crash/GC recovery, not the full V1.1 chaos matrix |
 
 ## Step 5.1 — Recovery State Classifier — ACCEPTED / COMPLETE
 
-Accepted architecture:
+Accepted boundary:
 
-```text
-PersistedRunSnapshot
-        +
-TaskLeaseSnapshot
-        +
-validated WORKER_EXECUTION / DISPATCH_EVENT evidence
-        ↓
-RecoveryStateClassifier
-        ↓
-TaskRecoveryAssessment
-        ↓
-RunRecoveryPlan
-```
+> **Recovery classification may explain durable state; it may not mutate or redispatch work.**
 
-Accepted dispositions:
+Implementation head `b4503968310cdc3e5e0cd27bfa062abfc5b253f9`: **377 passed + 5/5 demos**.
 
-```text
-NO_ACTION_RUN_TERMINAL
-WAIT_ACTIVE_OWNER
-RESUME_FROM_TERMINAL_EVIDENCE
-REDISPATCH_CANDIDATE_EXPIRED_GENERATION
-BLOCKED_UNOWNED_DISPATCH_AMBIGUITY
-BLOCKED_RELEASED_EVIDENCE_GAP
-```
-
-Step 5.1 performs no enqueue, lease mutation, evidence append, scheduler transition, Git mutation, Run finalization, or GitHub publication. A redispatch candidate remains a diagnosis only; future mutation requires fresh locked PostgreSQL revalidation.
-
-The final PostgreSQL integration hardening proves `RecoveryInspector` composes the real `PostgresEvidenceStore` and `PostgresTaskLeaseStore` without modifying Run truth, runtime events, lease ownership, generation, dispatch identity, or lifecycle timestamps.
-
-Implementation-head Backend Quality evidence:
-
-- exact head: `b4503968310cdc3e5e0cd27bfa062abfc5b253f9`;
-- PostgreSQL + Redis: **PASS**;
-- Alembic round trip: **PASS**;
-- verifier image: **PASS**;
-- Ruff: **PASS**;
-- V1 fixture validation: **PASS**;
-- deterministic control-plane demos: **5 / 5 PASS**;
-- pytest: **377 passed in 35.41s**.
-
-Design / acceptance:
-
-- `docs/V1_1_ROADMAP.md`
-- `docs/DURABLE_RECOVERY.md`
-- `docs/STEP_5_1_ACCEPTANCE.md`
+Design / acceptance: `DURABLE_RECOVERY.md`, `STEP_5_1_ACCEPTANCE.md`.
 
 ## Step 5.2 — Durable Dispatch Attempt Ledger — ACCEPTED / COMPLETE
 
-Accepted architecture:
-
-```text
-persisted RUNNING Run + Task
-        ↓
-PostgreSQL REQUESTED
-        ↓ commit before broker
-Dramatiq actor.send(stable dispatch_id)
-        ↓
-┌────────────────────────────┬──────────────────────────────┐
-│ acknowledgement observed   │ BrokerConnectionError        │
-↓                            ↓
-ENQUEUED                     PUBLISH_FAILED
-```
-
-If a process crashes after the broker may have accepted the message but before PostgreSQL can record the acknowledgement, the durable row remains `REQUESTED`. That state is an explicit unknown publication outcome, not a fabricated failure and not retry authorization.
-
-Accepted guarantees:
-
-- one stable `dispatch_id` per publication attempt;
-- PostgreSQL intent is committed before broker publication;
-- ordinary dispatch creates only attempt 1;
-- competing initial attempts for one Task serialize and fail closed;
-- exact ENQUEUED replay reconstructs a receipt without a second broker call;
-- REQUESTED/PUBLISH_FAILED replay never calls the broker implicitly;
-- terminal broker/failure facts are immutable;
-- known broker failure is durable but is not treated as proof of non-delivery;
-- PostgreSQL/Redis atomicity and exactly-once delivery are explicitly not claimed.
-
-Implementation-head acceptance evidence:
-
-- exact head: `30e92051aeae00e674010b66ecb8da329c793e0a`;
-- PostgreSQL + Redis: **PASS**;
-- Alembic `0001 → 0007 → base → 0007`: **PASS**;
-- verifier image: **PASS**;
-- Ruff: **PASS**;
-- V1 fixture validation: **PASS**;
-- deterministic control-plane demos: **5 / 5 PASS**;
-- pytest: **380 passed in 28.15s**;
-- Frontend Quality: **PASS**;
-- PR #35 review threads at acceptance: **0 unresolved**.
-
-Design / acceptance:
-
-- `docs/DURABLE_DISPATCH_LEDGER.md`
-- `docs/STEP_5_2_ACCEPTANCE.md`
-
-Frozen Step 5.2 boundary:
+Accepted boundary:
 
 > **PostgreSQL records dispatch intent and observed publication outcomes; it never pretends to be an atomic transaction with Redis.**
 
+Implementation head `30e92051aeae00e674010b66ecb8da329c793e0a`: **380 passed + 5/5 demos**.
+
+Design / acceptance: `DURABLE_DISPATCH_LEDGER.md`, `STEP_5_2_ACCEPTANCE.md`.
+
 ## Step 5.3 — Idempotent Task Reconciler — ACCEPTED / COMPLETE
 
-Accepted architecture:
-
-```text
-recovery candidate
-        ↓
-Txn A: lock + fresh DB-time revalidation
-        ↓
-durable REQUESTED
-        ↓ commit
-Txn B: re-lock + fresh revalidation
-        ↓
-hold authority locks across broker send
-        ↓
-ENQUEUED / PUBLISH_FAILED
-```
-
-Accepted guarantees:
-
-- a stale Step 5.1 diagnosis is never mutation authorization;
-- concurrent reconcilers publish at most one fresh dispatch for one Task;
-- ACTIVE owners are never raced by recovery;
-- EXPIRED generations without terminal worker evidence receive at most one fresh dispatch identity;
-- existing REQUESTED/PUBLISH_FAILED histories are not implicitly republished;
-- accepted terminal worker evidence is resumed rather than rerun;
-- worker evidence must be hash-valid, typed, and bound to durable dispatch history;
-- recovered ownership still flows through `PostgresTaskLeaseStore.acquire_task_lease()`;
-- generation advances N → N+1 only through that existing lease authority;
-- generation N+1 receives a fresh `run_token`;
-- the previous token remains fenced after takeover;
-- failure injection preserves `lease_acquired_at < heartbeat_at < lease_until < observed_at`; production lease validation was not weakened.
-
-Implementation-head acceptance evidence:
-
-- exact head: `0d7586405853f19923b906b782ac6ab167886ffe`;
-- PostgreSQL + Redis: **PASS**;
-- Alembic `0001 → 0007 → base → 0007`: **PASS**;
-- verifier image: **PASS**;
-- Ruff: **PASS**;
-- V1 fixture validation: **PASS**;
-- deterministic control-plane demos: **5 / 5 PASS**;
-- pytest: **385 passed in 35.08s**;
-- Frontend Quality: **PASS**;
-- PR #36 review threads at implementation acceptance: **0 unresolved**.
-
-Design / acceptance:
-
-- `docs/IDEMPOTENT_RECONCILER.md`
-- `docs/STEP_5_3_ACCEPTANCE.md`
-
-Frozen Step 5.3 boundary:
+Accepted boundary:
 
 > **A recovery diagnosis may nominate work; only fresh locked PostgreSQL facts may authorize a new dispatch attempt.**
 
-Next authority transition:
+Implementation head `0d7586405853f19923b906b782ac6ab167886ffe`: **385 passed + 5/5 demos**.
 
-```text
-validated persisted DAG
-        +
-accepted terminal task facts
-        +
-fresh per-task ownership/recovery authority
-        ↓
-Step 5.4 reconstructs the legal scheduling frontier
-        ↓
-actual dispatch remains delegated to Step 5.3
-```
-
-Step 5.4 must not become a second scheduler truth: completed dependencies must never rerun, downstream tasks become eligible only after all accepted dependencies succeed, and every mutation must retain Step 5.3's fresh per-Task revalidation.
+Design / acceptance: `IDEMPOTENT_RECONCILER.md`, `STEP_5_3_ACCEPTANCE.md`.
 
 ## Step 5.4 — DAG-wide Run Reconciliation — ACCEPTED / COMPLETE
 
-Accepted architecture:
-
-```text
-validated persisted DAG
-        +
-accepted terminal WORKER_EXECUTION facts
-        +
-fresh DB-time ownership facts
-        +
-accepted cumulative integration evidence
-        ↓
-reconstruct legal DAG frontier
-        ↓
-prove dependency-aware execution base
-        ↓
-delegate candidates to Step 5.3
-```
-
-Accepted guarantees:
-
-- no second mutable/persisted scheduler truth was introduced;
-- `TaskDAG` remains the dependency/ready/blocked authority;
-- successful terminal Tasks are completed facts and never rerun by recovery;
-- failed terminal Tasks block descendants through existing DAG semantics;
-- ACTIVE ownership is never raced;
-- RELEASED ownership with missing terminal evidence remains blocked rather than silently reacquired;
-- a DAG-ready dependent Task waits until accepted integration evidence proves its code base contains all direct dependencies;
-- root Tasks use the frozen Run base;
-- dependent Tasks use an evidence-bound integration head;
-- merge snapshots are cumulative, deterministic, bounded, and cross-checked against successful Worker commit pairs;
-- managed Git revalidates exact task and integration parent chains;
-- queue payloads do not carry base SHA, branch, lease generation, or `run_token`;
-- multi-task queued workers fail closed without the dependency-aware base resolver;
-- only `RECONCILE_CANDIDATE` Tasks are nominated to Step 5.3;
-- Step 5.3 still performs fresh locked mutation authorization and provides per-Task exactly-one fresh publication under concurrency.
-
-Implementation-head acceptance evidence:
-
-- exact head: `16be10b49a563429f459e337410bcb2c94a1d3ae`;
-- PostgreSQL + Redis: **PASS**;
-- Alembic `0001 → 0007 → base → 0007`: **PASS**;
-- no Step 5.4 database migration required;
-- verification Docker image: **PASS**;
-- Ruff: **PASS**;
-- V1 fixture validation: **PASS**;
-- deterministic control-plane demos: **5 / 5 PASS**;
-- pytest: **393 passed in 35.07s**.
-
-Documentation/workflow hardening head `04b8d735b218d17196c766a725985f6115c3fe9f` independently passed Backend Quality with **393 passed in 39.44s** and Frontend Quality with locked install, typecheck, lint, tests, and production build.
-
-PR #37 merge review found no unresolved review threads and confirmed production composition injects managed-Git execution-base verification. Persisted evidence is loaded in ascending evidence-id order, so cumulative integration history has a deterministic durable order.
-
-Design / acceptance:
-
-- `docs/DAG_RUN_RECONCILIATION.md`
-- `docs/STEP_5_4_ACCEPTANCE.md`
-
-Frozen Step 5.4 boundary:
+Accepted boundary:
 
 > **Run reconciliation may reconstruct the scheduling frontier from validated DAG and accepted terminal task facts; it may not create a second scheduler truth.**
 
+Implementation head `16be10b49a563429f459e337410bcb2c94a1d3ae`: **393 passed + 5/5 demos**. Documentation/workflow hardening head `04b8d735b218d17196c766a725985f6115c3fe9f` independently passed Backend and Frontend Quality.
+
+Design / acceptance: `DAG_RUN_RECONCILIATION.md`, `STEP_5_4_ACCEPTANCE.md`.
+
 ## Step 5.5 — Durable Human Pause / Resume — ACCEPTED / COMPLETE via Phase 6
 
-Phase 6 closed the Human-pause authority required by the autonomous product loop without treating a browser click or an expired worker as resume authority.
+Phase 6 closed the Human-pause authority required by the autonomous product loop.
 
 Accepted guarantees include:
 
@@ -620,22 +279,117 @@ Accepted guarantees include:
 - typed Human decisions survive API/worker restarts;
 - resume revalidates exact Git conflict, task commit, integration head, policy fingerprint and decision binding;
 - `AUTHORIZE_REPAIR` grants only bounded conflict-path repair authority;
-- the original TaskContract deterministic verifier still gates the repaired merged tree;
-- typed `INTEGRATION_REPAIR` and matching Human decision evidence are required by downstream execution-base resolution, terminal success, Diff and GitHub publication;
-- repair object liveness is protected by a server-owned staging ref before DB persistence;
-- a simulated crash after DB evidence and before integration CAS survives explicit reflog expiry plus `git gc --prune=now`;
-- a fresh service reuses the exact persisted repair commit and does not call the Agent again;
-- staging refs are deleted after successful CAS and never become runtime truth authority.
+- deterministic verification gates repaired merged code;
+- typed `INTEGRATION_REPAIR` and matching Human decision evidence are required downstream;
+- server-owned repair staging refs preserve crash/GC object liveness;
+- fresh services can reuse exact persisted repair commits without rerunning the Agent;
+- staging refs are cleanup/liveness mechanisms, not runtime truth.
 
-Implementation hardening head `6673d87a3aea15a68196a15818a109e74046d1d7` independently passed strict Backend and Frontend quality gates.
+Hardening head `6673d87a3aea15a68196a15818a109e74046d1d7` passed strict Backend and Frontend quality gates.
 
-The broader Phase 5 Step 5.7 operator recovery surface and Step 5.8 chaos matrix remain unaccepted; accepting this Human Gate capability does not imply those roadmap items are complete.
+## Step 5.6 — Causal Trace Correlation — ACCEPTED / COMPLETE
+
+Accepted architecture:
+
+```text
+Persisted Run / Tasks / DAG
+        +
+Durable dispatch attempts
+        +
+Lease/runtime events
+        +
+metadata-only TRACE_BATCH
+        +
+accepted typed runtime/integration evidence
+        ↓
+CausalTraceProjector
+        ↓
+RUN
+ └─ TASK
+     └─ DISPATCH
+         └─ GENERATION
+             ├─ AGENT_TURN
+             │   └─ TOOL_CALL
+             ├─ VERIFICATION
+             ├─ REVIEW
+             ├─ REPAIR
+             └─ WORKER_EXECUTION
+     └─ INTEGRATION
+```
+
+Accepted guarantees:
+
+- trace is diagnostic-only and never becomes scheduler/recovery/success authority;
+- `TRACE_BATCH` stores metadata, not model/tool transcripts;
+- Developer, Reviewer and Repair production classes emit model-turn spans when a collector exists;
+- Reviewer schema-repair is represented as a distinct turn;
+- controlled Tool calls are children of the Agent turn that requested them;
+- deterministic verification invocations are traced independently;
+- the Orchestrator preserves exact legacy Agent call shapes when `trace=None`;
+- dispatch/generation correlation is reconstructed from durable server-owned facts;
+- `TRACE_BATCH.generation` must agree with durable lease events or projection fails closed;
+- `run_token` remains write authority and never enters trace payload/API output;
+- PostgreSQL trace persistence inherits existing typed/hash/fencing/idempotency boundaries;
+- trace persistence failure is isolated and cannot convert task success into failure or authorize retry;
+- Product API `GET /api/v1/runs/{run_id}/trace` accepts no browser-authored correlation selectors;
+- bounded/corrupt trace projection fails as observability failure without mutating Run truth.
+
+Privacy contract excludes:
+
+```text
+raw prompts
+raw completions
+Tool arguments
+Tool result bodies
+repository contents/diffs
+verifier stdout/stderr bodies
+credentials/API keys
+run_token
+```
+
+Implementation head:
+
+`e4942113ae5d10283cb31e6be3f832d04a782b61`
+
+Backend Quality run #919 (`32497790074`):
+
+- PostgreSQL + Redis: **PASS**;
+- Alembic `base → 0007 → base → 0007`: **PASS**;
+- no Step 5.6 migration required;
+- verification Docker image: **PASS**;
+- Ruff: **PASS**;
+- V1 fixture validation: **PASS**;
+- deterministic control-plane demos: **5 / 5 PASS**;
+- pytest: **412 passed in 37.91s**.
+
+Frontend Quality run #212 (`32497790067`): **PASS** for locked install, typecheck, lint, tests and production build.
+
+Candidate design/progress/workflow ledger head:
+
+`f0ca4d5f76cfc376d65cbc342648f01a8faf4939`
+
+Backend Quality run #924 (`32498551791`) on that candidate ledger: **PASS**, including **5/5 demos** and **412 passed, 1 warning in 37.64s**.
+
+Frontend Quality run #217 (`32498551783`) on that candidate ledger: **PASS**.
+
+PR #39 had **0 inline review threads** at the acceptance transition.
+
+Design / acceptance:
+
+- `docs/CAUSAL_TRACE_CORRELATION.md`
+- `docs/STEP_5_6_ACCEPTANCE.md`
+
+Frozen Step 5.6 boundary:
+
+> **Trace may explain accepted runtime history; it may not decide, repair, schedule, resume, verify, merge, finalize, or publish that history.**
+
+The accepted-state ledger head created by the final status transition must itself pass Backend Quality and Frontend Quality. No subsequent document mutation is required merely to copy that head's own CI identifiers back into this file.
 
 ---
 
 # Phase 6 — Autonomous Multi-Agent Product Loop — ACCEPTED / COMPLETE
 
-Phase 6 connects the accepted runtime into the user-facing path that was previously missing:
+Phase 6 connects the accepted runtime into the user-facing natural-language path:
 
 ```text
 repository + natural-language requirement
@@ -665,33 +419,25 @@ GitHub Draft PR
 | --- | --- | --- | --- |
 | 6.1 | Natural-language Run entry | **ACCEPTED / COMPLETE** | New Run uses Project + requirement; browser no longer manufactures TaskContract authority |
 | 6.2 | Planner → validated TaskDAG | **ACCEPTED / COMPLETE** | bounded multi-task structured planning + schema repair + TaskDAG validation |
-| 6.3 | Persist Run + DAG before dispatch | **ACCEPTED / COMPLETE** | frozen managed Git base + validated DAG persisted before any root publication |
+| 6.3 | Persist Run + DAG before dispatch | **ACCEPTED / COMPLETE** | frozen managed Git base + validated DAG persisted before root publication |
 | 6.4 | Durable DAG Controller | **ACCEPTED / COMPLETE** | event-driven `advance(run_id)` reconstructs from PostgreSQL/Git; no resident scheduler truth |
 | 6.5 | Parallel execution + automatic integration | **ACCEPTED / COMPLETE** | generation-bound worktrees + topological merge history + Step 5.4-only downstream unlock |
 | 6.6 | Durable Human Pause / Resume + bounded repair | **ACCEPTED / COMPLETE** | typed Human authority + repair-aware completion/diff/publication + staging-ref GC crash recovery |
 | 6.7 | Full Autonomous Product E2E | **ACCEPTED / COMPLETE** | real Git + PostgreSQL 3-task E2E; implementation head `e4f12f2fe0f90b2d789f242f22d4b7b3a9126108`; Backend 402 tests + 5/5 demos; Frontend green |
 
-## Step 6.7 implementation-head acceptance evidence
-
-Backend Quality run #903:
+Step 6.7 implementation-head Backend Quality run #903:
 
 - PostgreSQL + Redis: **PASS**;
-- Alembic upgrade → downgrade base → re-upgrade: **PASS**;
+- Alembic round trip: **PASS**;
 - verification Docker image: **PASS**;
 - Ruff: **PASS**;
 - V1 fixture validation: **PASS**;
 - deterministic control-plane demos: **5 / 5 PASS**;
 - pytest: **402 passed in 38.03s**.
 
-Frontend Quality run #198 on the same implementation head:
+Frontend Quality run #198: **PASS**.
 
-- locked install: **PASS**;
-- TypeScript typecheck: **PASS**;
-- lint: **PASS**;
-- Vitest: **PASS**;
-- Vite production build: **PASS**.
-
-The deterministic Phase 6 E2E replaces only external nondeterminism with fixed test boundaries: a fixed Planner output, broker acknowledgement actor and GitHub remote response. It retains the production Git worktree/commit/merge logic, PostgreSQL evidence and dispatch stores, lease/`run_token` authority, Step 5.4 DAG reconciliation, Step 5.3 idempotent publication authority, repair-aware terminal completion, Integration Diff reconstruction and publication-source persistence.
+The deterministic Phase 6 E2E replaces only external nondeterminism with fixed test boundaries; it retains production Git worktree/commit/merge logic, PostgreSQL evidence/dispatch stores, lease/`run_token` authority, Step 5.4 DAG reconciliation, Step 5.3 idempotent publication authority, repair-aware terminal completion, integration diff reconstruction and publication-source persistence.
 
 Design / acceptance:
 
@@ -702,12 +448,25 @@ Frozen Phase 6 boundary:
 
 > **Natural-language intent may start the Run; only validated and persisted server-side facts may advance or finish it.**
 
-Remaining work is intentionally not hidden inside Phase 6 completion:
+Remaining V1.1 work:
 
 ```text
-Phase 5.6  Causal Trace Correlation                 NOT ACCEPTED
-Phase 5.7  broader Operator Recovery Surface       NOT ACCEPTED
-Phase 5.8  full Chaos / Recovery Benchmark         NOT ACCEPTED
+Phase 5.7  broader Operator Recovery / Approval Surface    NOT ACCEPTED
+Phase 5.8  full Chaos / Recovery Benchmark                NOT ACCEPTED
 ```
 
-Those capabilities may harden V1.1 further, but they are no longer blockers for the accepted Phase 6 Autonomous Multi-Agent Product Loop itself.
+These remain separate from the already-accepted Phase 6 Autonomous Multi-Agent Product Loop.
+
+---
+
+# Current acceptance boundary
+
+Step 5.6 is now **ACCEPTED / COMPLETE** because both its implementation head and its complete candidate ledger independently passed strict Backend and Frontend quality gates before the accepted status was written.
+
+The accepted-state ledger head containing this status must now independently pass both workflows once more. When it does, that external CI result completes the final acceptance condition without requiring a self-referential follow-up edit.
+
+Next core development target:
+
+**Step 5.7 — Operator Recovery / Approval Surface**
+
+It may consume Causal Trace only as read-only diagnostic context. Every mutating operator action must still receive fresh PostgreSQL/Git/lease/fencing revalidation.

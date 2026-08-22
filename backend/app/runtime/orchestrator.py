@@ -21,6 +21,7 @@ from app.models.run import AgentUsageSummary, SingleTaskRunResult, TaskRunState
 from app.providers.errors import AgentProviderError
 from app.runtime.failure_classifier import FailureClassifier
 from app.runtime.state_machine import TaskStateMachine
+from app.trace.collector import TaskTraceCollector
 from app.verification import DeterministicVerifier
 from app.workspace import LocalGitWorkspace
 
@@ -56,6 +57,7 @@ class SingleTaskOrchestrator:
         task: TaskContract,
         *,
         workspace: LocalGitWorkspace,
+        trace: TaskTraceCollector | None = None,
     ) -> SingleTaskRunResult:
         machine = TaskStateMachine()
         verifications = []
@@ -83,11 +85,19 @@ class SingleTaskOrchestrator:
             )
 
         try:
-            developer_result = await self._developer.run(
-                task,
-                workspace=workspace,
-                context_packet=developer_context,
-            )
+            if trace is None:
+                developer_result = await self._developer.run(
+                    task,
+                    workspace=workspace,
+                    context_packet=developer_context,
+                )
+            else:
+                developer_result = await self._developer.run(
+                    task,
+                    workspace=workspace,
+                    context_packet=developer_context,
+                    trace=trace,
+                )
         except AgentProviderError as exc:
             machine.transition(TaskRunState.FAILED, detail="Developer model provider failed.")
             return self._result(
@@ -155,11 +165,18 @@ class SingleTaskOrchestrator:
         machine.transition(TaskRunState.VERIFYING, detail="Deterministic hard gate started.")
 
         while True:
+            verification_started = trace.clock() if trace is not None else 0.0
             verification = await asyncio.to_thread(
                 self._verifier.verify,
                 task,
                 workspace=workspace,
             )
+            if trace is not None:
+                trace.record_verification(
+                    attempt=len(verifications) + 1,
+                    result=verification,
+                    duration_ms=trace.duration_ms(verification_started),
+                )
             verifications.append(verification)
 
             if not verification.passed:
@@ -191,6 +208,7 @@ class SingleTaskOrchestrator:
                     verifications=verifications,
                     reviews=reviews,
                     repairs=repairs,
+                    trace=trace,
                 )
                 if isinstance(repair_result, SingleTaskRunResult):
                     return repair_result
@@ -224,12 +242,21 @@ class SingleTaskOrchestrator:
                 )
 
             try:
-                decision = await self._reviewer.review(
-                    task,
-                    verification,
-                    workspace=workspace,
-                    context_packet=reviewer_context,
-                )
+                if trace is None:
+                    decision = await self._reviewer.review(
+                        task,
+                        verification,
+                        workspace=workspace,
+                        context_packet=reviewer_context,
+                    )
+                else:
+                    decision = await self._reviewer.review(
+                        task,
+                        verification,
+                        workspace=workspace,
+                        context_packet=reviewer_context,
+                        trace=trace,
+                    )
             except InvalidReviewerOutputError as exc:
                 machine.transition(
                     TaskRunState.FAILED,
@@ -298,6 +325,7 @@ class SingleTaskOrchestrator:
                 verifications=verifications,
                 reviews=reviews,
                 repairs=repairs,
+                trace=trace,
             )
             if isinstance(repair_result, SingleTaskRunResult):
                 return repair_result
@@ -319,6 +347,7 @@ class SingleTaskOrchestrator:
         verifications,
         reviews,
         repairs,
+        trace: TaskTraceCollector | None,
     ):
         if attempt > task.max_retries:
             terminal = FailureClassifier.terminalize(
@@ -360,13 +389,23 @@ class SingleTaskOrchestrator:
             )
 
         try:
-            repair_result = await self._repair.repair(
-                task,
-                failures,
-                attempt=attempt,
-                workspace=workspace,
-                context_packet=repair_context,
-            )
+            if trace is None:
+                repair_result = await self._repair.repair(
+                    task,
+                    failures,
+                    attempt=attempt,
+                    workspace=workspace,
+                    context_packet=repair_context,
+                )
+            else:
+                repair_result = await self._repair.repair(
+                    task,
+                    failures,
+                    attempt=attempt,
+                    workspace=workspace,
+                    context_packet=repair_context,
+                    trace=trace,
+                )
         except RepairBudgetExhaustedError as exc:
             machine.transition(
                 TaskRunState.FAILED,
