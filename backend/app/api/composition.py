@@ -17,6 +17,7 @@ from app.persistence import (
     PostgresTaskLeaseStore,
     PostgresTaskReconciliationStore,
 )
+from app.persistence.operator import OperatorAwarePostgresEvidenceStore
 from app.persistence.repair_completion import RepairAwarePostgresMultiTaskCompletionStore
 from app.providers.siliconflow import SiliconFlowDriver
 from app.publication import GitHubPublicationGateway
@@ -68,6 +69,10 @@ def build_product_service(settings: Settings) -> OperatorAwareAutonomousProductR
     from app.workers.tasks import execute_devflow_task
 
     evidence_store = PostgresEvidenceStore.from_url(
+        settings.database_url,
+        echo=settings.database_echo,
+    )
+    operator_audit_store = OperatorAwarePostgresEvidenceStore.from_url(
         settings.database_url,
         echo=settings.database_echo,
     )
@@ -173,7 +178,7 @@ def build_product_service(settings: Settings) -> OperatorAwareAutonomousProductR
             dispatch_reader=dispatch_store,
             execution_base_resolver=execution_base_resolver,
         ),
-        audit_store=evidence_store,
+        audit_store=operator_audit_store,
         run_controller=run_controller,
         run_reconciler=run_controller,
     )
@@ -206,4 +211,5 @@ def build_product_service(settings: Settings) -> OperatorAwareAutonomousProductR
         run_controller=run_controller,
         trace_dispatch_reader=dispatch_store,
         operator_recovery=operator_recovery,
+        operator_audit_resource=operator_audit_store,
     )
