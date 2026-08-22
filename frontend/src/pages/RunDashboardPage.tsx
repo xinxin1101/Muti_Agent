@@ -14,6 +14,7 @@ import {
 } from "../api/runtime-events";
 import { GitHubPublication } from "../components/GitHubPublication";
 import { HumanGatePanel } from "../components/HumanGatePanel";
+import { OperatorRecoveryPanel } from "../components/OperatorRecoveryPanel";
 import { RunDAG } from "../components/RunDAG";
 import { RunMetrics } from "../components/RunMetrics";
 import { StatusBadge } from "../components/StatusBadge";
@@ -126,6 +127,7 @@ export function RunDashboardPage() {
           void queryClient.invalidateQueries({ queryKey: ["run", runId] });
           void queryClient.invalidateQueries({ queryKey: ["run-dag", runId] });
           void queryClient.invalidateQueries({ queryKey: ["human-gates", runId] });
+          void queryClient.invalidateQueries({ queryKey: ["operator-recovery", runId] });
         }
       } catch (error) {
         source.close();
@@ -170,6 +172,8 @@ export function RunDashboardPage() {
       </div>
 
       {launch ? <LaunchNotice launch={launch} /> : null}
+
+      <OperatorRecoveryPanel runId={runId} />
 
       <HumanGatePanel runId={runId} />
 
