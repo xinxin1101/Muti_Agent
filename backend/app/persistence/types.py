@@ -28,6 +28,7 @@ class PersistenceEvidenceKind(StrEnum):
     DISPATCH_EVENT = "DISPATCH_EVENT"
     WORKER_EXECUTION = "WORKER_EXECUTION"
     TRACE_BATCH = "TRACE_BATCH"
+    OPERATOR_ACTION = "OPERATOR_ACTION"
 
 
 class PersistedRunStatus(StrEnum):
