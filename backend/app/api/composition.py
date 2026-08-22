@@ -5,19 +5,20 @@ from uuid import UUID
 from app.agents.dag_planner import MultiTaskPlannerAgent
 from app.agents.developer import DeveloperAgent
 from app.api.catalog import PostgresProductCatalog
-from app.api.operator import OperatorAwareAutonomousProductRuntimeService
+from app.api.hardened import HardenedOperatorAwareAutonomousProductRuntimeService
+from app.api.repository_context import RepositoryPlanningContextBuilder
 from app.core.settings import Settings
 from app.dispatch import DurableDramatiqTaskDispatcher
 from app.models.sandbox import DockerSandboxPolicy
 from app.persistence import (
     PostgresDAGStore,
     PostgresDispatchAttemptStore,
-    PostgresEvidenceStore,
     PostgresGitHubPublicationStore,
     PostgresTaskLeaseStore,
     PostgresTaskReconciliationStore,
 )
 from app.persistence.operator import OperatorAwarePostgresEvidenceStore
+from app.persistence.project import ProjectAwarePostgresEvidenceStore
 from app.persistence.repair_completion import RepairAwarePostgresMultiTaskCompletionStore
 from app.providers.siliconflow import SiliconFlowDriver
 from app.publication import GitHubPublicationGateway
@@ -62,13 +63,13 @@ class _ProductRunController:
         await self._lease_store.dispose()
 
 
-def build_product_service(settings: Settings) -> OperatorAwareAutonomousProductRuntimeService:
+def build_product_service(settings: Settings) -> HardenedOperatorAwareAutonomousProductRuntimeService:
     if settings.database_url is None:
         raise ValueError("DEVFLOW_DATABASE_URL is required by the product API")
 
     from app.workers.tasks import execute_devflow_task
 
-    evidence_store = PostgresEvidenceStore.from_url(
+    evidence_store = ProjectAwarePostgresEvidenceStore.from_url(
         settings.database_url,
         echo=settings.database_echo,
     )
@@ -106,7 +107,11 @@ def build_product_service(settings: Settings) -> OperatorAwareAutonomousProductR
     )
 
     repository_root = settings.workspace_root / "repos"
-    provisioner = ManagedProjectProvisioner(repository_root)
+    provisioner = ManagedProjectProvisioner(
+        repository_root,
+        git_timeout_seconds=settings.git_clone_timeout_seconds,
+        read_token=settings.github_read_token,
+    )
     resolver = ManagedProjectWorkspaceResolver(repository_root)
     dispatcher = DurableDramatiqTaskDispatcher(
         run_store=evidence_store,
@@ -199,7 +204,7 @@ def build_product_service(settings: Settings) -> OperatorAwareAutonomousProductR
             timeout_seconds=settings.github_publication_timeout_seconds,
         )
     )
-    return OperatorAwareAutonomousProductRuntimeService(
+    return HardenedOperatorAwareAutonomousProductRuntimeService(
         catalog=catalog,
         evidence_store=evidence_store,
         dag_store=dag_store,
@@ -213,4 +218,5 @@ def build_product_service(settings: Settings) -> OperatorAwareAutonomousProductR
         trace_dispatch_reader=dispatch_store,
         operator_recovery=operator_recovery,
         operator_audit_resource=operator_audit_store,
+        planning_context_builder=RepositoryPlanningContextBuilder(),
     )
