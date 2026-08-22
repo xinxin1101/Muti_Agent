@@ -14,6 +14,7 @@ from app.models.integration_gate import HumanIntegrationDecision, IntegrationGat
 from app.models.integration_repair import IntegrationConflictRepairEvidence
 from app.models.merge import MergeQueueSnapshot
 from app.models.multi_run import MultiTaskRunResult
+from app.models.operator_recovery import OperatorActionRequestEvidence
 from app.models.repair import RepairRunResult
 from app.models.review import ReviewDecision
 from app.models.run import RunEvent, SingleTaskRunResult
@@ -38,6 +39,7 @@ EvidenceModel: TypeAlias = (
     | WorkerDispatchEvent
     | WorkerExecutionEvidence
     | TaskTraceBatch
+    | OperatorActionRequestEvidence
 )
 TerminalRunResult: TypeAlias = SingleTaskRunResult | MultiTaskRunResult
 
@@ -57,6 +59,7 @@ _EVIDENCE_MODELS: dict[PersistenceEvidenceKind, type[BaseModel]] = {
     PersistenceEvidenceKind.DISPATCH_EVENT: WorkerDispatchEvent,
     PersistenceEvidenceKind.WORKER_EXECUTION: WorkerExecutionEvidence,
     PersistenceEvidenceKind.TRACE_BATCH: TaskTraceBatch,
+    PersistenceEvidenceKind.OPERATOR_ACTION: OperatorActionRequestEvidence,
 }
 
 

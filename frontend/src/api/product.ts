@@ -87,6 +87,65 @@ export type HumanGateDecisionPayload = Readonly<{
   note?: string;
 }>;
 
+export type OperatorAction = Readonly<{
+  action_id: string;
+  kind: "ADVANCE_RUN";
+  label: string;
+  description: string;
+}>;
+
+export type OperatorRecoveryTask = Readonly<{
+  run_id: string;
+  task_id: string;
+  depends_on: readonly string[];
+  topological_index: number;
+  frontier_state:
+    | "RUN_TERMINAL"
+    | "SUCCEEDED"
+    | "FAILED"
+    | "BLOCKED_UPSTREAM_FAILURE"
+    | "WAIT_DEPENDENCIES"
+    | "WAIT_ACTIVE_OWNER"
+    | "BLOCKED_RECOVERY_GAP"
+    | "WAIT_INTEGRATION_BASE"
+    | "RECONCILE_CANDIDATE";
+  lease_state: "UNOWNED" | "ACTIVE" | "EXPIRED" | "RELEASED";
+  lease_generation: number;
+  lease_dispatch_id: string | null;
+  worker_execution_status: "SUCCEEDED" | "FAILED" | null;
+  worker_execution_evidence_id: number | null;
+  reason: string;
+}>;
+
+export type OperatorRecoveryPlan = Readonly<{
+  run_id: string;
+  diagnostic_only: true;
+  mutation_requires_fresh_revalidation: true;
+  reconciliation: Readonly<{
+    run_id: string;
+    run_status: "RUNNING" | "SUCCEEDED" | "FAILED";
+    dag_sha256: string;
+    topology_source: "PERSISTED" | "LEGACY_SINGLE_TASK";
+    observed_at: string;
+    topological_order: readonly string[];
+    completed_task_ids: readonly string[];
+    failed_task_ids: readonly string[];
+    blocked_task_ids: readonly string[];
+    ready_task_ids: readonly string[];
+    reconcile_task_ids: readonly string[];
+    tasks: readonly OperatorRecoveryTask[];
+  }>;
+  actions: readonly OperatorAction[];
+}>;
+
+export type OperatorActionExecutionResult = Readonly<{
+  run_id: string;
+  action: OperatorAction;
+  request_evidence_id: number;
+  execution_delegated: true;
+  refreshed_plan: OperatorRecoveryPlan;
+}>;
+
 export function listProjects(): Promise<readonly ProductProject[]> {
   return apiClient.getJson<readonly ProductProject[]>(`${API_PREFIX}/projects`);
 }
@@ -137,6 +196,21 @@ export function decideHumanGate(
   return apiClient.postJson<HumanGateSnapshot, HumanGateDecisionPayload>(
     `${API_PREFIX}/runs/${runId}/human-gates/${encodeURIComponent(taskId)}/decision`,
     payload,
+  );
+}
+
+export function getOperatorRecovery(runId: string): Promise<OperatorRecoveryPlan> {
+  return apiClient.getJson<OperatorRecoveryPlan>(
+    `${API_PREFIX}/runs/${runId}/operator-recovery`,
+  );
+}
+
+export function executeOperatorAction(
+  runId: string,
+  actionId: string,
+): Promise<OperatorActionExecutionResult> {
+  return apiClient.postNoBody<OperatorActionExecutionResult>(
+    `${API_PREFIX}/runs/${runId}/operator-actions/${encodeURIComponent(actionId)}`,
   );
 }
 

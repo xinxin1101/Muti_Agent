@@ -5,6 +5,7 @@ import uvicorn
 from app.api.app import create_app
 from app.api.autonomous import attach_autonomous_routes
 from app.api.composition import build_product_service
+from app.api.operator import attach_operator_routes
 from app.api.trace import attach_trace_routes
 from app.core.settings import get_settings
 
@@ -15,6 +16,7 @@ def build_app():
     application = create_app(service, close_service=True)
     attach_autonomous_routes(application, service)
     attach_trace_routes(application, service)
+    attach_operator_routes(application, service)
     return application
 
 
