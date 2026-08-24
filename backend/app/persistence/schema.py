@@ -6,7 +6,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.persistence.database import create_postgres_engine
 
-EXPECTED_ALEMBIC_REVISION = "0007_dispatch_attempts"
+EXPECTED_ALEMBIC_REVISION = "0008_project_lifecycle"
 _MIGRATION_HINT = "Run `cd backend && alembic upgrade head`."
 
 
