@@ -116,19 +116,20 @@ class FakeOpenAIHandler(BaseHTTPRequestHandler):
             ):
                 self._completion(model, content="Implementation complete.")
                 return
+            target = self._developer_target(messages)
             self._completion(
                 model,
                 content=None,
                 tool_calls=[
                     {
-                        "id": "call-v25-write",
+                        "id": f"call-v25-write-{target['suffix']}",
                         "type": "function",
                         "function": {
                             "name": "write_file",
                             "arguments": json.dumps(
                                 {
-                                    "path": "distributed_e2e.txt",
-                                    "content": "DevFlow V2.5 distributed E2E\n",
+                                    "path": target["path"],
+                                    "content": target["content"],
                                 },
                                 separators=(",", ":"),
                             ),
@@ -175,32 +176,78 @@ class FakeOpenAIHandler(BaseHTTPRequestHandler):
         return "unknown"
 
     @staticmethod
-    def _planner_content() -> str:
+    def _developer_target(messages: list[Any]) -> dict[str, str]:
+        conversation = json.dumps(messages, sort_keys=True)
+        if "distributed_e2e_b.txt" in conversation:
+            return {
+                "suffix": "b",
+                "path": "distributed_e2e_b.txt",
+                "content": "DevFlow V2.5 distributed E2E B\n",
+            }
+        return {
+            "suffix": "a",
+            "path": "distributed_e2e_a.txt",
+            "content": "DevFlow V2.5 distributed E2E A\n",
+        }
+
+    @staticmethod
+    def _verification_command(path: str, marker: str) -> str:
+        return (
+            "python -c \"from pathlib import Path; assert "
+            f"Path('{path}').read_text().strip() == '{marker}'\""
+        )
+
+    @classmethod
+    def _planner_content(cls) -> str:
         return json.dumps(
             {
                 "tasks": [
                     {
                         "task": {
-                            "task_id": "distributed-e2e",
+                            "task_id": "distributed-e2e-a",
                             "objective": (
-                                "Create distributed_e2e.txt containing the V2.5 distributed "
-                                "release marker."
+                                "Create distributed_e2e_a.txt containing the first V2.5 "
+                                "distributed release marker."
                             ),
                             "readable_files": ["README.md"],
-                            "writable_files": ["distributed_e2e.txt"],
+                            "writable_files": ["distributed_e2e_a.txt"],
                             "readonly_files": [],
                             "acceptance_criteria": [
-                                "distributed_e2e.txt contains the DevFlow V2.5 distributed E2E marker"
+                                "distributed_e2e_a.txt contains the first deterministic marker"
                             ],
                             "verification_commands": [
-                                "python -c \"from pathlib import Path; assert "
-                                "Path('distributed_e2e.txt').read_text().strip() == "
-                                "'DevFlow V2.5 distributed E2E'\""
+                                cls._verification_command(
+                                    "distributed_e2e_a.txt",
+                                    "DevFlow V2.5 distributed E2E A",
+                                )
                             ],
                             "max_retries": 0,
                         },
                         "depends_on": [],
-                    }
+                    },
+                    {
+                        "task": {
+                            "task_id": "distributed-e2e-b",
+                            "objective": (
+                                "After distributed-e2e-a is integrated, create "
+                                "distributed_e2e_b.txt containing the second V2.5 marker."
+                            ),
+                            "readable_files": ["distributed_e2e_a.txt"],
+                            "writable_files": ["distributed_e2e_b.txt"],
+                            "readonly_files": ["distributed_e2e_a.txt"],
+                            "acceptance_criteria": [
+                                "distributed_e2e_b.txt contains the second deterministic marker"
+                            ],
+                            "verification_commands": [
+                                cls._verification_command(
+                                    "distributed_e2e_b.txt",
+                                    "DevFlow V2.5 distributed E2E B",
+                                )
+                            ],
+                            "max_retries": 0,
+                        },
+                        "depends_on": ["distributed-e2e-a"],
+                    },
                 ]
             },
             separators=(",", ":"),
