@@ -192,7 +192,11 @@ class FakeOpenAIHandler(BaseHTTPRequestHandler):
                             "acceptance_criteria": [
                                 "distributed_e2e.txt contains the DevFlow V2.5 distributed E2E marker"
                             ],
-                            "verification_commands": ["git diff --check"],
+                            "verification_commands": [
+                                "python -c \"from pathlib import Path; assert "
+                                "Path('distributed_e2e.txt').read_text().strip() == "
+                                "'DevFlow V2.5 distributed E2E'\""
+                            ],
                             "max_retries": 0,
                         },
                         "depends_on": [],
