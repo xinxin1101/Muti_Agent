@@ -20,7 +20,9 @@ from app.verification.sandbox import (
     VerificationExecution,
 )
 
-_PINNED_REQUIREMENT_RE = re.compile(r"^[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_,.-]+\])?==[^\s;]+(?:\s*;.*)?$")
+_PINNED_REQUIREMENT_RE = re.compile(
+    r"^[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_,.-]+\])?==[^\s;]+(?:\s*;.*)?$"
+)
 
 
 class ProjectVerificationKind(StrEnum):
@@ -139,7 +141,11 @@ class ProjectDependencyCacheBuilder:
         self._node_image = node_image
         self._build_timeout_seconds = build_timeout_seconds
 
-    def ensure(self, workspace: Path, profile: ProjectVerificationProfile) -> DependencyMount | None:
+    def ensure(
+        self,
+        workspace: Path,
+        profile: ProjectVerificationProfile,
+    ) -> DependencyMount | None:
         if profile.kind is ProjectVerificationKind.PYTHON_BASE:
             return None
         final = self._root / profile.digest
