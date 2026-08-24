@@ -6,11 +6,11 @@ from app.models.events import (
     RuntimeEventLevel,
     RuntimeEventSource,
 )
-from app.persistence.repository import PostgresEvidenceStore
+from app.persistence.project import ProjectAwarePostgresEvidenceStore
 from app.persistence.types import PersistenceEvidenceKind
 
 
-class OperatorAwarePostgresEvidenceStore(PostgresEvidenceStore):
+class OperatorAwarePostgresEvidenceStore(ProjectAwarePostgresEvidenceStore):
     """Extend the accepted evidence transaction path for typed operator-request audit events."""
 
     @classmethod
