@@ -64,7 +64,9 @@ class _ProductRunController:
         await self._lease_store.dispose()
 
 
-def build_product_service(settings: Settings) -> HardenedOperatorAwareAutonomousProductRuntimeService:
+def build_product_service(
+    settings: Settings,
+) -> HardenedOperatorAwareAutonomousProductRuntimeService:
     if settings.database_url is None:
         raise ValueError("DEVFLOW_DATABASE_URL is required by the product API")
 
