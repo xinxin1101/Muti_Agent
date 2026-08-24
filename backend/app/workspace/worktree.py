@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -180,7 +181,7 @@ class TaskWorktreeManager:
         )
 
     def commit_task_changes(self, task_id: str) -> str:
-        """Commit one successful task without invoking repository-controlled Git hooks."""
+        """Commit one successful task without hooks or host Git-identity dependencies."""
 
         record = self.record_for(task_id)
         entry = self._find_registered_path(record.path, self._registered_worktrees())
@@ -225,6 +226,7 @@ class TaskWorktreeManager:
                 "-m",
                 f"DevFlow task {record.task_id}",
             ],
+            env=self._commit_environment(),
         ).stdout.strip()
         if _COMMIT_PATTERN.fullmatch(commit) is None:
             raise TaskWorktreeError("Git did not return a full task commit id")
@@ -464,6 +466,16 @@ class TaskWorktreeManager:
             raise ValueError("task_id must use the TaskContract task_id format")
         return task_id
 
+    @staticmethod
+    def _commit_environment() -> dict[str, str]:
+        return {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "DevFlow",
+            "GIT_AUTHOR_EMAIL": "devflow@local.invalid",
+            "GIT_COMMITTER_NAME": "DevFlow",
+            "GIT_COMMITTER_EMAIL": "devflow@local.invalid",
+        }
+
     def _git(
         self,
         arguments: list[str],
@@ -478,6 +490,7 @@ class TaskWorktreeManager:
         arguments: list[str],
         *,
         check: bool = True,
+        env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         command = ["git", "-C", str(root), *arguments]
         try:
@@ -487,6 +500,7 @@ class TaskWorktreeManager:
                 text=True,
                 timeout=self._git_timeout_seconds,
                 check=False,
+                env=env,
             )
         except FileNotFoundError as exc:
             raise TaskWorktreeError("git executable is not available") from exc
