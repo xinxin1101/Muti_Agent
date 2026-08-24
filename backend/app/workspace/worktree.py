@@ -355,17 +355,27 @@ class TaskWorktreeManager:
         if resolved.returncode != 0 or _COMMIT_PATTERN.fullmatch(canonical) is None:
             raise TaskWorktreeError("frozen base commit does not exist in the repository")
 
-        ancestry = self._git(
+        ancestor = self._git(
             ["merge-base", "--is-ancestor", canonical, current_head],
             check=False,
         )
-        if ancestry.returncode == 1:
-            raise TaskWorktreeError(
-                "frozen base commit must remain an ancestor of the managed repository HEAD"
-            )
-        if ancestry.returncode != 0:
+        if ancestor.returncode == 0:
+            return canonical
+        if ancestor.returncode != 1:
             raise TaskWorktreeError("Git could not validate frozen base ancestry")
-        return canonical
+
+        descendant = self._git(
+            ["merge-base", "--is-ancestor", current_head, canonical],
+            check=False,
+        )
+        if descendant.returncode == 0:
+            return canonical
+        if descendant.returncode != 1:
+            raise TaskWorktreeError("Git could not validate frozen base ancestry")
+
+        raise TaskWorktreeError(
+            "frozen base commit must remain on the managed repository HEAD ancestry"
+        )
 
     def _resolve_task_base(self, requested: str | None) -> str:
         if requested is None:
