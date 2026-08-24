@@ -309,7 +309,7 @@ def main() -> int:
                     )
 
                 readiness = _request_json("GET", f"{API_BASE_URL}/readyz", timeout=20.0)
-                if readiness.get("status") != "ready":
+                if readiness.get("status") != "READY":
                     raise DistributedE2EFailure(f"API readiness failed: {readiness!r}")
 
                 project = _request_json(
