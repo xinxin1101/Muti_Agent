@@ -151,6 +151,9 @@ jobs:
       - name: Boot API, Dramatiq worker, and frontend
         run: python scripts/release_smoke.py
 
+      - name: Run V2.5 real distributed release E2E
+        run: python scripts/distributed_release_e2e.py
+
       - name: Run deterministic autonomous product E2E
         working-directory: backend
         env:
