@@ -13,8 +13,8 @@ from app.dispatch.errors import WorkerExecutionBoundaryError
 from app.models.dispatch import TaskDispatchEnvelope
 from app.models.project import canonical_repository_url
 from app.persistence.project import ProjectAwarePostgresEvidenceStore
-from app.workspace import LocalGitWorkspace, ManagedProjectProvisioner
 from app.workers.project_identity import ProjectIdentityValidatingQueuedTaskWorker
+from app.workspace import LocalGitWorkspace, ManagedProjectProvisioner
 
 
 def _git(root: Path, *args: str) -> str:
