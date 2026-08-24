@@ -25,10 +25,7 @@ def canonical_repository_url(value: str) -> str:
     except ValueError as exc:
         raise ValueError("repository_url contains an invalid port") from exc
     hostname = parsed.hostname.lower()
-    if port not in {None, 443}:
-        netloc = f"{hostname}:{port}"
-    else:
-        netloc = hostname
+    netloc = f"{hostname}:{port}" if port not in {None, 443} else hostname
     path = parsed.path.rstrip("/")
     if path.lower().endswith(".git"):
         path = path[:-4]
