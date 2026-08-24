@@ -30,7 +30,12 @@ class HardenedOperatorAwareAutonomousProductRuntimeService(
 ):
     """Real-world Product entry points over the already-accepted runtime authority layers."""
 
-    def __init__(self, *, planning_context_builder: RepositoryPlanningContextBuilder, **kwargs) -> None:
+    def __init__(
+        self,
+        *,
+        planning_context_builder: RepositoryPlanningContextBuilder,
+        **kwargs,
+    ) -> None:
         super().__init__(**kwargs)
         self._planning_context_builder = planning_context_builder
 
