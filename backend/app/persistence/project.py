@@ -20,7 +20,8 @@ class ProjectAwarePostgresEvidenceStore(PostgresEvidenceStore):
         default_branch: str,
         project_id: UUID | None = None,
     ) -> UUID:
-        canonical = canonical_repository_url(repository_url)
+        repository = self._required_text(repository_url, "repository_url", max_length=2000)
+        canonical = canonical_repository_url(repository)
         branch = self._required_text(default_branch, "default_branch", max_length=255)
         candidate_id = project_id or uuid4()
         async with self._session_factory.begin() as session:
@@ -36,7 +37,7 @@ class ProjectAwarePostgresEvidenceStore(PostgresEvidenceStore):
                     ),
                     {
                         "id": candidate_id,
-                        "repository": canonical,
+                        "repository": repository,
                         "canonical": canonical,
                         "branch": branch,
                         "status": ProjectProvisionStatus.PROVISIONING.value,
