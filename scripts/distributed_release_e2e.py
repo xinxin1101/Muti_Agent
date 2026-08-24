@@ -21,6 +21,11 @@ RUN_TIMEOUT_SECONDS = 180.0
 
 DEFAULT_REPOSITORY_URL = "https://github.com/xinxin1101/Muti_Agent.git"
 DEFAULT_REPOSITORY_BRANCH = "main"
+TASK_FILES = {
+    "distributed-e2e-a": "distributed_e2e_a.txt",
+    "distributed-e2e-b": "distributed_e2e_b.txt",
+}
+TASK_ORDER = tuple(TASK_FILES)
 
 
 class DistributedE2EFailure(RuntimeError):
@@ -130,16 +135,54 @@ def _diagnostics(log_paths: dict[str, Path]) -> str:
     return "".join(sections)
 
 
-def _assert_authoritative_result(run_id: str, task_id: str) -> None:
+def _run_state_diagnostics(run_id: str) -> str:
+    state: dict[str, Any] = {}
+    for label, url in (
+        ("run", f"{API_BASE_URL}/api/v1/runs/{run_id}"),
+        ("dag", f"{API_BASE_URL}/api/v1/runs/{run_id}/dag"),
+        ("metrics", f"{API_BASE_URL}/api/v1/runs/{run_id}/metrics"),
+    ):
+        try:
+            state[label] = _request_json("GET", url)
+        except DistributedE2EFailure as exc:
+            state[label] = {"diagnostic_error": str(exc)}
+    for task_id in TASK_ORDER:
+        try:
+            state[f"task:{task_id}"] = _request_json(
+                "GET",
+                f"{API_BASE_URL}/api/v1/runs/{run_id}/tasks/{task_id}",
+            )
+        except DistributedE2EFailure as exc:
+            state[f"task:{task_id}"] = {"diagnostic_error": str(exc)}
+    return "\n===== authoritative run state =====\n" + json.dumps(
+        state,
+        sort_keys=True,
+        indent=2,
+    )
+
+
+def _assert_authoritative_result(run_id: str) -> None:
+    dag = _request_json("GET", f"{API_BASE_URL}/api/v1/runs/{run_id}/dag")
+    if tuple(dag.get("topological_order") or ()) != TASK_ORDER:
+        raise DistributedE2EFailure(f"unexpected persisted DAG order: {dag!r}")
+    edges = dag.get("edges") or []
+    edge_pairs = {
+        (item.get("source_task_id"), item.get("target_task_id"))
+        for item in edges
+        if isinstance(item, dict)
+    }
+    if edge_pairs != {("distributed-e2e-a", "distributed-e2e-b")}:
+        raise DistributedE2EFailure(f"unexpected persisted DAG edges: {dag!r}")
+
     metrics = _request_json("GET", f"{API_BASE_URL}/api/v1/runs/{run_id}/metrics")
     if metrics.get("status") != "SUCCEEDED":
         raise DistributedE2EFailure(f"metrics did not project SUCCEEDED: {metrics!r}")
     evidence = metrics.get("evidence") or {}
     required_counts = {
-        "verification_attempts": 1,
-        "review_decisions": 1,
-        "worker_executions": 1,
-        "merge_queue_snapshots": 1,
+        "verification_attempts": len(TASK_ORDER),
+        "review_decisions": len(TASK_ORDER),
+        "worker_executions": len(TASK_ORDER),
+        "merge_queue_snapshots": len(TASK_ORDER),
     }
     for key, minimum in required_counts.items():
         if int(evidence.get(key, 0)) < minimum:
@@ -147,42 +190,48 @@ def _assert_authoritative_result(run_id: str, task_id: str) -> None:
                 f"authoritative evidence count {key} was below {minimum}: {evidence!r}"
             )
     runtime_events = metrics.get("runtime_events") or {}
-    if int(runtime_events.get("lease_acquisitions", 0)) < 1:
+    if int(runtime_events.get("lease_acquisitions", 0)) < len(TASK_ORDER):
         raise DistributedE2EFailure(
-            f"no durable worker lease acquisition was observed: {runtime_events!r}"
+            f"durable worker lease acquisitions were incomplete: {runtime_events!r}"
         )
 
-    task = _request_json(
-        "GET",
-        f"{API_BASE_URL}/api/v1/runs/{run_id}/tasks/{task_id}",
-    )
-    kinds = {item.get("kind") for item in task.get("evidence", []) if isinstance(item, dict)}
     required_kinds = {
         "DEVELOPER_RUN",
         "VERIFICATION_RESULT",
         "REVIEW_DECISION",
         "WORKER_EXECUTION",
     }
-    missing = sorted(required_kinds - kinds)
-    if missing:
-        raise DistributedE2EFailure(
-            f"task is missing authoritative evidence kinds {missing}: {sorted(kinds)}"
+    for task_id, expected_file in TASK_FILES.items():
+        task = _request_json(
+            "GET",
+            f"{API_BASE_URL}/api/v1/runs/{run_id}/tasks/{task_id}",
         )
+        kinds = {
+            item.get("kind")
+            for item in task.get("evidence", [])
+            if isinstance(item, dict)
+        }
+        missing = sorted(required_kinds - kinds)
+        if missing:
+            raise DistributedE2EFailure(
+                f"task {task_id} is missing authoritative evidence kinds {missing}: "
+                f"{sorted(kinds)}"
+            )
 
-    integration_diff = _request_json(
-        "GET",
-        f"{API_BASE_URL}/api/v1/runs/{run_id}/tasks/{task_id}/diff?kind=INTEGRATION",
-    )
-    files = integration_diff.get("files") or []
-    paths = {item.get("path") for item in files if isinstance(item, dict)}
-    if "distributed_e2e.txt" not in paths:
-        raise DistributedE2EFailure(
-            f"authoritative integration diff omitted distributed_e2e.txt: {paths!r}"
+        integration_diff = _request_json(
+            "GET",
+            f"{API_BASE_URL}/api/v1/runs/{run_id}/tasks/{task_id}/diff?kind=INTEGRATION",
         )
-    if integration_diff.get("evidence_basis") != "MERGE_QUEUE_SNAPSHOT":
-        raise DistributedE2EFailure(
-            "integration diff was not bound to MERGE_QUEUE_SNAPSHOT evidence"
-        )
+        files = integration_diff.get("files") or []
+        paths = {item.get("path") for item in files if isinstance(item, dict)}
+        if expected_file not in paths:
+            raise DistributedE2EFailure(
+                f"integration diff for {task_id} omitted {expected_file}: {paths!r}"
+            )
+        if integration_diff.get("evidence_basis") != "MERGE_QUEUE_SNAPSHOT":
+            raise DistributedE2EFailure(
+                f"integration diff for {task_id} was not bound to MERGE_QUEUE_SNAPSHOT evidence"
+            )
 
 
 def _assert_provider_transport(path: Path) -> None:
@@ -196,9 +245,13 @@ def _assert_provider_transport(path: Path) -> None:
             raise DistributedE2EFailure(
                 f"OpenAI-compatible provider did not observe {required}: {agents!r}"
             )
-    if agents.count("developer") < 2:
+    if agents.count("developer") < 2 * len(TASK_ORDER):
         raise DistributedE2EFailure(
-            f"Developer tool round trip did not cross HTTP twice: {agents!r}"
+            f"Developer tool round trips did not cross HTTP for both tasks: {agents!r}"
+        )
+    if agents.count("reviewer") < len(TASK_ORDER):
+        raise DistributedE2EFailure(
+            f"Reviewer did not cross HTTP for both tasks: {agents!r}"
         )
     if "repair" in agents:
         raise DistributedE2EFailure(
@@ -220,6 +273,7 @@ def main() -> int:
     provider: subprocess.Popen[bytes] | None = None
     api: subprocess.Popen[bytes] | None = None
     worker: subprocess.Popen[bytes] | None = None
+    run_id: str | None = None
 
     with tempfile.TemporaryDirectory(prefix="devflow-v25-distributed-") as temp_dir:
         temp_root = Path(temp_dir)
@@ -331,20 +385,25 @@ def main() -> int:
                     payload={
                         "project_id": project_id,
                         "requirement": (
-                            "Create distributed_e2e.txt with the deterministic DevFlow V2.5 "
-                            "distributed release marker."
+                            "Create two deterministic V2.5 distributed release marker files in "
+                            "dependency order so DevFlow must integrate the first task before "
+                            "dispatching the second."
                         ),
                     },
                     timeout=60.0,
                 )
                 if launch.get("launch_state") != "QUEUED":
                     raise DistributedE2EFailure(f"requirement Run was not queued: {launch!r}")
-                task_ids = launch.get("task_ids")
-                if task_ids != ["distributed-e2e"]:
+                task_ids = tuple(launch.get("task_ids") or ())
+                if task_ids != TASK_ORDER:
                     raise DistributedE2EFailure(f"unexpected Planner DAG: {launch!r}")
                 dispatches = launch.get("dispatches") or []
                 if len(dispatches) != 1 or dispatches[0].get("state") != "QUEUED":
                     raise DistributedE2EFailure(f"initial dispatch was not queued: {launch!r}")
+                if dispatches[0].get("task_id") != TASK_ORDER[0]:
+                    raise DistributedE2EFailure(
+                        f"dependent task was dispatched before its prerequisite: {launch!r}"
+                    )
 
                 run_id = str(launch["run_id"])
                 terminal = _wait_for_terminal_run(run_id)
@@ -353,10 +412,13 @@ def main() -> int:
                         f"distributed Run did not succeed: {terminal!r}"
                     )
 
-                _assert_authoritative_result(run_id, "distributed-e2e")
+                _assert_authoritative_result(run_id)
                 _assert_provider_transport(provider_records)
         except Exception as exc:
-            raise DistributedE2EFailure(f"{exc}{_diagnostics(log_paths)}") from exc
+            state = _run_state_diagnostics(run_id) if run_id is not None else ""
+            raise DistributedE2EFailure(
+                f"{exc}{state}{_diagnostics(log_paths)}"
+            ) from exc
         finally:
             _stop(worker)
             _stop(api)
