@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.27,<2"]
+requires = ["hatchling==1.27.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -7,7 +7,7 @@ name = "devflow-backend"
 version = "0.1.0"
 description = "Evidence-driven multi-agent software engineering runtime backend"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.12"
 dependencies = [
     "alembic>=1.18,<2",
     "dramatiq[redis]>=2.2,<3",
