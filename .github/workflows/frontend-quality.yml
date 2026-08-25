@@ -2,97 +2,33 @@ name: Frontend Quality
 
 on:
   pull_request:
+    branches:
+      - main
     paths:
       - ".env.example"
+      - ".nvmrc"
       - "frontend/**"
       - "benchmarks/**"
       - "scripts/**"
       - "README.md"
-      - "docs/FRONTEND_FOUNDATION.md"
-      - "docs/STEP_4_1_ACCEPTANCE.md"
-      - "docs/PRODUCT_PAGES.md"
-      - "docs/STEP_4_2_ACCEPTANCE.md"
-      - "docs/SSE_LIVE_EVENTS.md"
-      - "docs/STEP_4_3_ACCEPTANCE.md"
-      - "docs/DAG_VISUALIZATION.md"
-      - "docs/STEP_4_4_ACCEPTANCE.md"
-      - "docs/DIFF_VIEWER.md"
-      - "docs/STEP_4_5_ACCEPTANCE.md"
-      - "docs/RUN_METRICS.md"
-      - "docs/STEP_4_6_ACCEPTANCE.md"
-      - "docs/GITHUB_PUBLICATION.md"
-      - "docs/STEP_4_7_ACCEPTANCE.md"
-      - "docs/BENCHMARK_DEMO_SUITE.md"
-      - "docs/STEP_4_8_ACCEPTANCE.md"
-      - "docs/V1_1_ROADMAP.md"
-      - "docs/DURABLE_RECOVERY.md"
-      - "docs/STEP_5_1_ACCEPTANCE.md"
-      - "docs/DURABLE_DISPATCH_LEDGER.md"
-      - "docs/STEP_5_2_ACCEPTANCE.md"
-      - "docs/IDEMPOTENT_RECONCILER.md"
-      - "docs/STEP_5_3_ACCEPTANCE.md"
-      - "docs/DAG_RUN_RECONCILIATION.md"
-      - "docs/STEP_5_4_ACCEPTANCE.md"
-      - "docs/CAUSAL_TRACE_CORRELATION.md"
-      - "docs/STEP_5_6_ACCEPTANCE.md"
-      - "docs/OPERATOR_RECOVERY_SURFACE.md"
-      - "docs/STEP_5_7_ACCEPTANCE.md"
-      - "docs/CHAOS_RECOVERY_BENCHMARK.md"
-      - "docs/STEP_5_8_ACCEPTANCE.md"
-      - "docs/AUTONOMOUS_MULTI_AGENT_PRODUCT_LOOP.md"
-      - "docs/STEP_6_7_ACCEPTANCE.md"
-      - "docs/RELEASE_READINESS.md"
-      - "docs/RELEASE_READINESS_CHECKLIST.md"
-      - "docs/PROGRESS.md"
+      - "docs/**"
       - ".github/workflows/frontend-quality.yml"
       - ".github/workflows/release-readiness.yml"
+      - ".github/workflows/windows-portability.yml"
   push:
     branches:
       - main
     paths:
       - ".env.example"
+      - ".nvmrc"
       - "frontend/**"
       - "benchmarks/**"
       - "scripts/**"
       - "README.md"
-      - "docs/FRONTEND_FOUNDATION.md"
-      - "docs/STEP_4_1_ACCEPTANCE.md"
-      - "docs/PRODUCT_PAGES.md"
-      - "docs/STEP_4_2_ACCEPTANCE.md"
-      - "docs/SSE_LIVE_EVENTS.md"
-      - "docs/STEP_4_3_ACCEPTANCE.md"
-      - "docs/DAG_VISUALIZATION.md"
-      - "docs/STEP_4_4_ACCEPTANCE.md"
-      - "docs/DIFF_VIEWER.md"
-      - "docs/STEP_4_5_ACCEPTANCE.md"
-      - "docs/RUN_METRICS.md"
-      - "docs/STEP_4_6_ACCEPTANCE.md"
-      - "docs/GITHUB_PUBLICATION.md"
-      - "docs/STEP_4_7_ACCEPTANCE.md"
-      - "docs/BENCHMARK_DEMO_SUITE.md"
-      - "docs/STEP_4_8_ACCEPTANCE.md"
-      - "docs/V1_1_ROADMAP.md"
-      - "docs/DURABLE_RECOVERY.md"
-      - "docs/STEP_5_1_ACCEPTANCE.md"
-      - "docs/DURABLE_DISPATCH_LEDGER.md"
-      - "docs/STEP_5_2_ACCEPTANCE.md"
-      - "docs/IDEMPOTENT_RECONCILER.md"
-      - "docs/STEP_5_3_ACCEPTANCE.md"
-      - "docs/DAG_RUN_RECONCILIATION.md"
-      - "docs/STEP_5_4_ACCEPTANCE.md"
-      - "docs/CAUSAL_TRACE_CORRELATION.md"
-      - "docs/STEP_5_6_ACCEPTANCE.md"
-      - "docs/OPERATOR_RECOVERY_SURFACE.md"
-      - "docs/STEP_5_7_ACCEPTANCE.md"
-      - "docs/CHAOS_RECOVERY_BENCHMARK.md"
-      - "docs/STEP_5_8_ACCEPTANCE.md"
-      - "docs/AUTONOMOUS_MULTI_AGENT_PRODUCT_LOOP.md"
-      - "docs/STEP_6_7_ACCEPTANCE.md"
-      - "docs/RELEASE_READINESS.md"
-      - "docs/RELEASE_READINESS_CHECKLIST.md"
-      - "docs/PROGRESS.md"
+      - "docs/**"
       - ".github/workflows/frontend-quality.yml"
       - ".github/workflows/release-readiness.yml"
+      - ".github/workflows/windows-portability.yml"
 
 permissions:
   contents: read
@@ -109,13 +45,13 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
-      - name: Set up Node.js
+      - name: Set up Node.js 24
         uses: actions/setup-node@v4
         with:
           node-version: "24"
-          cache: "npm"
+          cache: npm
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install locked frontend dependencies
