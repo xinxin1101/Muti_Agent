@@ -12,7 +12,7 @@ DevFlow turns a Git repository plus a natural-language requirement into a valida
 - Phase 4 / V1.0 — Productization — **ACCEPTED / COMPLETE**
 - Phase 5 / V1.1 — Durable Agent Runtime — **ACCEPTED / COMPLETE**
 - Phase 6 — Autonomous Multi-Agent Product Loop — **ACCEPTED / COMPLETE**
-- Release Hardening V2 — real-world clone-to-run readiness — **IN PROGRESS / V2.6 ACCEPTANCE PENDING**
+- Release Hardening V2 — real-world clone-to-run readiness — **ACCEPTED / COMPLETE**
 
 See `docs/PROGRESS.md` and the acceptance documents for commit-bound CI evidence.
 
@@ -256,6 +256,7 @@ The following are not release blockers for the current résumé/demo scope and r
 
 - `docs/DEVELOPMENT_PLAN.md` — original implementation plan and milestone boundaries
 - `docs/PROGRESS.md` — evidence-driven execution ledger
+- `docs/RELEASE_HARDENING_V2_ACCEPTANCE.md` — V2 acceptance snapshot
 - `docs/AUTONOMOUS_MULTI_AGENT_PRODUCT_LOOP.md` — autonomous product-loop architecture
 - `docs/CAUSAL_TRACE_CORRELATION.md` — metadata-only causal trace
 - `docs/OPERATOR_RECOVERY_SURFACE.md` — bounded operator recovery authority
