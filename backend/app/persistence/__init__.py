@@ -16,12 +16,12 @@ from app.persistence.errors import (
     TaskLeaseExpiredError,
 )
 from app.persistence.leases import PostgresTaskLeaseStore
+from app.persistence.project import ProjectAwarePostgresEvidenceStore
 from app.persistence.publication import PostgresGitHubPublicationStore
 from app.persistence.reconciliation import (
     PostgresTaskReconciliationStore,
     PreparedDispatchPublication,
 )
-from app.persistence.repository import PostgresEvidenceStore
 from app.persistence.types import (
     ContextFingerprintReference,
     PersistedEvidence,
@@ -30,6 +30,11 @@ from app.persistence.types import (
     PersistedTask,
     PersistenceEvidenceKind,
 )
+
+# Project lifecycle and branch-scoped identity are part of the accepted persistence schema from
+# revision 0008 onward. Keep the public store name stable for existing callers while routing all new
+# Project creation through the lifecycle-aware implementation.
+PostgresEvidenceStore = ProjectAwarePostgresEvidenceStore
 
 __all__ = [
     "ContextFingerprintReference",

@@ -28,10 +28,37 @@ class PersistenceBase(DeclarativeBase):
 
 class ProjectRow(PersistenceBase):
     __tablename__ = "projects"
+    __table_args__ = (
+        UniqueConstraint(
+            "canonical_repository_url",
+            "default_branch",
+            name="uq_projects_repository_branch",
+        ),
+        CheckConstraint(
+            "provision_status IN ('PROVISIONING', 'READY', 'FAILED', 'ARCHIVED')",
+            name="ck_projects_provision_status",
+        ),
+        CheckConstraint(
+            "(provision_status = 'FAILED' AND provision_error_code IS NOT NULL "
+            "AND provision_error_message IS NOT NULL) OR "
+            "(provision_status <> 'FAILED' AND provision_error_code IS NULL "
+            "AND provision_error_message IS NULL)",
+            name="ck_projects_provision_error_shape",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    repository_url: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    repository_url: Mapped[str] = mapped_column(Text, nullable=False)
+    canonical_repository_url: Mapped[str] = mapped_column(Text, nullable=False)
     default_branch: Mapped[str] = mapped_column(String(255), nullable=False)
+    provision_status: Mapped[str] = mapped_column(String(32), nullable=False, default="READY")
+    provision_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    provision_error_message: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    last_provisioned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_synced_commit: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

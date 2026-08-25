@@ -1,22 +1,47 @@
 from __future__ import annotations
 
+import base64
+import os
+import re
 import shutil
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlparse
 from uuid import UUID
 
+from pydantic import SecretStr
+
+from app.models.project import canonical_repository_url
 from app.workspace.git import LocalGitWorkspace, WorkspaceGitError
+
+_COMMIT_RE = re.compile(r"^[0-9a-f]{40,64}$")
 
 
 class ProjectProvisionError(RuntimeError):
     """Raised when a repository cannot be materialized into the managed workspace."""
 
+    def __init__(self, message: str, *, code: str = "PROJECT_PROVISION_FAILED") -> None:
+        super().__init__(message)
+        self.code = code
+
+
+@dataclass(frozen=True)
+class WorkspaceReadiness:
+    ready: bool
+    detail: str
+    head_commit: str | None = None
+
 
 class ManagedProjectProvisioner:
-    """Clone or validate one managed project repository without browser-held credentials."""
+    """Provision and fetch managed repositories without changing Run-bound Git truth."""
 
-    def __init__(self, root: str | Path, *, git_timeout_seconds: float = 120.0) -> None:
+    def __init__(
+        self,
+        root: str | Path,
+        *,
+        git_timeout_seconds: float = 300.0,
+        read_token: SecretStr | None = None,
+    ) -> None:
         if git_timeout_seconds <= 0:
             raise ValueError("git_timeout_seconds must be greater than zero")
         candidate = Path(root).expanduser()
@@ -25,6 +50,7 @@ class ManagedProjectProvisioner:
         candidate.mkdir(parents=True, exist_ok=True)
         self._root = candidate.resolve()
         self._git_timeout_seconds = git_timeout_seconds
+        self._read_token = read_token
 
     @property
     def root(self) -> Path:
@@ -34,6 +60,8 @@ class ManagedProjectProvisioner:
         return self._root / str(project_id)
 
     def is_ready(self, project_id: UUID) -> bool:
+        """Legacy local-only readiness retained for focused V1 callers/tests."""
+
         path = self.project_path(project_id)
         if path.is_symlink() or not path.is_dir():
             return False
@@ -41,77 +69,175 @@ class ManagedProjectProvisioner:
             LocalGitWorkspace(path)
         except (ValueError, WorkspaceGitError):
             return False
-        return True
+        return not (path / ".gitmodules").exists()
 
-    def provision(self, project_id: UUID, *, repository_url: str, default_branch: str) -> None:
-        repository = self._validate_repository_url(repository_url)
-        branch = default_branch.strip()
-        if not branch:
-            raise ValueError("default_branch must not be empty")
-
+    def readiness(
+        self,
+        project_id: UUID,
+        *,
+        repository_url: str,
+        default_branch: str,
+    ) -> WorkspaceReadiness:
+        repository = canonical_repository_url(repository_url)
+        branch = self._branch(default_branch)
         target = self.project_path(project_id)
-        if target.is_symlink():
-            raise ProjectProvisionError("managed project workspace must not be a symbolic link")
-        if target.exists():
+        if target.is_symlink() or not target.is_dir():
+            return WorkspaceReadiness(False, "managed project directory is missing or unsafe")
+        if (target / ".gitmodules").exists():
+            return WorkspaceReadiness(False, "Git submodule projects are not supported yet")
+        try:
             workspace = LocalGitWorkspace(target)
             origin = self._git(
                 ["-C", str(workspace.root), "config", "--get", "remote.origin.url"]
             ).strip()
-            if origin != repository:
-                raise ProjectProvisionError(
-                    "managed project workspace origin does not match persisted repository URL"
-                )
+            if canonical_repository_url(origin) != repository:
+                return WorkspaceReadiness(False, "managed repository origin identity mismatch")
             current_branch = self._git(
                 ["-C", str(workspace.root), "symbolic-ref", "--short", "HEAD"]
             ).strip()
             if current_branch != branch:
-                raise ProjectProvisionError(
-                    "managed project workspace branch does not match persisted default branch"
-                )
+                return WorkspaceReadiness(False, "managed repository default branch mismatch")
+            dirty = self._git(
+                ["-C", str(workspace.root), "status", "--porcelain", "--untracked-files=all"]
+            ).strip()
+            if dirty:
+                return WorkspaceReadiness(False, "managed base workspace contains local changes")
+            head = workspace.head_commit()
+        except (ValueError, WorkspaceGitError, ProjectProvisionError):
+            return WorkspaceReadiness(False, "managed repository failed Git identity validation")
+        return WorkspaceReadiness(True, "managed repository identity is ready", head_commit=head)
+
+    def provision(self, project_id: UUID, *, repository_url: str, default_branch: str) -> None:
+        repository = canonical_repository_url(repository_url)
+        branch = self._branch(default_branch)
+        target = self.project_path(project_id)
+        if target.is_symlink():
+            raise ProjectProvisionError(
+                "managed project workspace must not be a symbolic link",
+                code="WORKSPACE_SYMLINK",
+            )
+        if target.exists():
+            state = self.readiness(
+                project_id,
+                repository_url=repository,
+                default_branch=branch,
+            )
+            if not state.ready:
+                raise ProjectProvisionError(state.detail, code="WORKSPACE_IDENTITY_MISMATCH")
             return
 
         try:
             self._git(
                 [
                     "clone",
+                    "--filter=blob:none",
                     "--branch",
                     branch,
                     "--single-branch",
                     "--",
                     repository,
                     str(target),
-                ]
+                ],
+                authenticated=self._is_github(repository),
             )
             LocalGitWorkspace(target)
+            if (target / ".gitmodules").exists():
+                raise ProjectProvisionError(
+                    "Git submodule projects are not supported by this release",
+                    code="SUBMODULE_PROJECT_UNSUPPORTED",
+                )
         except Exception:
             if target.exists() and not target.is_symlink():
                 shutil.rmtree(target, ignore_errors=True)
             raise
 
-    @staticmethod
-    def _validate_repository_url(value: str) -> str:
-        normalized = value.strip()
-        parsed = urlparse(normalized)
-        if parsed.scheme != "https" or not parsed.hostname:
-            raise ValueError("repository_url must be an absolute HTTPS URL")
-        if parsed.username is not None or parsed.password is not None:
-            raise ValueError("repository_url must not embed credentials")
-        return normalized
+    def synchronize(
+        self,
+        project_id: UUID,
+        *,
+        repository_url: str,
+        default_branch: str,
+    ) -> str:
+        """Fetch the remote branch and return its immutable commit without pull/reset."""
 
-    def _git(self, arguments: list[str]) -> str:
+        repository = canonical_repository_url(repository_url)
+        branch = self._branch(default_branch)
+        state = self.readiness(
+            project_id,
+            repository_url=repository,
+            default_branch=branch,
+        )
+        if not state.ready:
+            raise ProjectProvisionError(state.detail, code="WORKSPACE_NOT_READY")
+        target = self.project_path(project_id)
+        self._git(
+            [
+                "-C",
+                str(target),
+                "fetch",
+                "--no-tags",
+                "--prune",
+                "origin",
+                branch,
+            ],
+            authenticated=self._is_github(repository),
+        )
+        commit = self._git(
+            ["-C", str(target), "rev-parse", f"refs/remotes/origin/{branch}^{{commit}}"]
+        ).strip().lower()
+        if _COMMIT_RE.fullmatch(commit) is None:
+            raise ProjectProvisionError(
+                "remote branch did not resolve to a valid commit",
+                code="REMOTE_COMMIT_INVALID",
+            )
+        return commit
+
+    @staticmethod
+    def _branch(value: str) -> str:
+        branch = value.strip()
+        if not branch:
+            raise ValueError("default_branch must not be empty")
+        if branch.startswith("-") or ".." in branch or any(ch.isspace() for ch in branch):
+            raise ValueError("default_branch is not a safe Git branch name")
+        return branch
+
+    @staticmethod
+    def _is_github(repository_url: str) -> bool:
+        return repository_url.lower().startswith("https://github.com/")
+
+    def _git(self, arguments: list[str], *, authenticated: bool = False) -> str:
+        env = os.environ.copy()
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        if authenticated and self._read_token is not None:
+            token = self._read_token.get_secret_value().strip()
+            if token:
+                credential = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+                env["GIT_CONFIG_COUNT"] = "1"
+                env["GIT_CONFIG_KEY_0"] = "http.https://github.com/.extraheader"
+                env["GIT_CONFIG_VALUE_0"] = f"AUTHORIZATION: basic {credential}"
         try:
             completed = subprocess.run(
                 ["git", *arguments],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 timeout=self._git_timeout_seconds,
                 check=False,
+                env=env,
             )
         except FileNotFoundError as exc:
-            raise ProjectProvisionError("git executable is not available") from exc
+            raise ProjectProvisionError(
+                "git executable is not available",
+                code="GIT_UNAVAILABLE",
+            ) from exc
         except subprocess.TimeoutExpired as exc:
-            raise ProjectProvisionError("git project provisioning timed out") from exc
+            raise ProjectProvisionError(
+                "git project provisioning/sync timed out",
+                code="GIT_TIMEOUT",
+            ) from exc
         if completed.returncode != 0:
-            detail = completed.stderr.strip() or "unknown git error"
-            raise ProjectProvisionError(f"git project provisioning failed: {detail}")
+            raise ProjectProvisionError(
+                "git project provisioning/sync failed without exposing remote credentials",
+                code="GIT_COMMAND_FAILED",
+            )
         return completed.stdout

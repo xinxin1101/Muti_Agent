@@ -2,27 +2,39 @@ name: Release Readiness
 
 on:
   pull_request:
+    branches:
+      - main
     paths:
       - ".env.example"
+      - ".python-version"
+      - ".nvmrc"
       - "backend/**"
       - "frontend/**"
       - "scripts/**"
+      - "compose.dev.yml"
       - "README.md"
       - "docs/RELEASE_READINESS.md"
       - "docs/RELEASE_READINESS_CHECKLIST.md"
+      - "docs/PROGRESS.md"
       - ".github/workflows/release-readiness.yml"
+      - ".github/workflows/windows-portability.yml"
   push:
     branches:
       - main
     paths:
       - ".env.example"
+      - ".python-version"
+      - ".nvmrc"
       - "backend/**"
       - "frontend/**"
       - "scripts/**"
+      - "compose.dev.yml"
       - "README.md"
       - "docs/RELEASE_READINESS.md"
       - "docs/RELEASE_READINESS_CHECKLIST.md"
+      - "docs/PROGRESS.md"
       - ".github/workflows/release-readiness.yml"
+      - ".github/workflows/windows-portability.yml"
 
 permissions:
   contents: read
@@ -31,7 +43,7 @@ jobs:
   release-readiness:
     name: Release Readiness
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     services:
       postgres:
@@ -67,7 +79,7 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: backend/pyproject.toml
+          cache-dependency-path: backend/requirements-dev.lock
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -76,27 +88,52 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Install backend
+      - name: Install locked backend environment
         working-directory: backend
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          python -m pip install -r requirements-dev.lock
+          python -m pip install --no-deps -e .
 
       - name: Install frontend
         working-directory: frontend
         run: npm ci --no-audit --no-fund
 
-      - name: Create repository-root environment
+      - name: Validate portable Docker Compose stack
+        run: docker compose -f compose.dev.yml config --quiet
+
+      - name: Create repository-root environment from the public template
         run: |
-          cat > .env <<'EOF'
-          DEVFLOW_DATABASE_URL=postgresql+psycopg://devflow:devflow@127.0.0.1:5432/devflow_release
-          DEVFLOW_REDIS_URL=redis://127.0.0.1:6379/0
-          DEVFLOW_DRAMATIQ_NAMESPACE=devflow-release-smoke
-          DEVFLOW_DRAMATIQ_QUEUE_NAME=devflow_tasks
-          SILICONFLOW_API_KEY=
-          DEVFLOW_GITHUB_TOKEN=
-          DEVFLOW_VERIFICATION_SANDBOX_IMAGE=devflow-verifier:py311
-          EOF
+          cp .env.example .env
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('.env')
+          lines = path.read_text(encoding='utf-8').splitlines()
+          replacements = {
+              'DEVFLOW_DATABASE_URL': 'postgresql+psycopg://devflow:devflow@127.0.0.1:5432/devflow_release',
+              'DEVFLOW_REDIS_URL': 'redis://127.0.0.1:6379/0',
+              'DEVFLOW_DRAMATIQ_NAMESPACE': 'devflow-release-smoke',
+              'SILICONFLOW_API_KEY': '',
+              'DEVFLOW_GITHUB_READ_TOKEN': '',
+              'DEVFLOW_GITHUB_PUBLICATION_TOKEN': '',
+              'DEVFLOW_VERIFICATION_SANDBOX_IMAGE': 'devflow-verifier:py311',
+              'DEVFLOW_VERIFICATION_NODE_SANDBOX_IMAGE': 'devflow-verifier:node24',
+          }
+          output = []
+          seen = set()
+          for line in lines:
+              if '=' in line and not line.lstrip().startswith('#'):
+                  key = line.split('=', 1)[0]
+                  if key in replacements:
+                      line = f'{key}={replacements[key]}'
+                      seen.add(key)
+              output.append(line)
+          missing = sorted(set(replacements) - seen)
+          if missing:
+              raise SystemExit(f'.env.example missing expected keys: {missing}')
+          path.write_text('\n'.join(output) + '\n', encoding='utf-8')
+          PY
 
       - name: Prove API rejects an unmigrated database
         shell: bash
@@ -124,12 +161,14 @@ jobs:
           s=get_settings();
           asyncio.run(require_database_schema_current(s.database_url, echo=s.database_echo))"
 
-      - name: Build verification sandbox image
-        working-directory: backend
-        run: docker build -f docker/verification.Dockerfile -t devflow-verifier:py311 .
+      - name: Build Python and Node trusted verification bases
+        run: python scripts/build_verification_bases.py
 
       - name: Boot API, Dramatiq worker, and frontend
         run: python scripts/release_smoke.py
+
+      - name: Run V2.5 real distributed release E2E
+        run: python scripts/distributed_release_e2e.py
 
       - name: Run deterministic autonomous product E2E
         working-directory: backend

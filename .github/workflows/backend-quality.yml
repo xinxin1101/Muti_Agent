@@ -7,91 +7,31 @@ on:
       - "agent/**"
     paths:
       - ".env.example"
+      - ".python-version"
       - "backend/**"
       - "benchmarks/**"
       - "scripts/**"
+      - "compose.dev.yml"
       - "README.md"
-      - "docs/PRODUCT_PAGES.md"
-      - "docs/STEP_4_2_ACCEPTANCE.md"
-      - "docs/SSE_LIVE_EVENTS.md"
-      - "docs/STEP_4_3_ACCEPTANCE.md"
-      - "docs/DAG_VISUALIZATION.md"
-      - "docs/STEP_4_4_ACCEPTANCE.md"
-      - "docs/DIFF_VIEWER.md"
-      - "docs/STEP_4_5_ACCEPTANCE.md"
-      - "docs/RUN_METRICS.md"
-      - "docs/STEP_4_6_ACCEPTANCE.md"
-      - "docs/GITHUB_PUBLICATION.md"
-      - "docs/STEP_4_7_ACCEPTANCE.md"
-      - "docs/BENCHMARK_DEMO_SUITE.md"
-      - "docs/STEP_4_8_ACCEPTANCE.md"
-      - "docs/V1_1_ROADMAP.md"
-      - "docs/DURABLE_RECOVERY.md"
-      - "docs/STEP_5_1_ACCEPTANCE.md"
-      - "docs/DURABLE_DISPATCH_LEDGER.md"
-      - "docs/STEP_5_2_ACCEPTANCE.md"
-      - "docs/IDEMPOTENT_RECONCILER.md"
-      - "docs/STEP_5_3_ACCEPTANCE.md"
-      - "docs/DAG_RUN_RECONCILIATION.md"
-      - "docs/STEP_5_4_ACCEPTANCE.md"
-      - "docs/CAUSAL_TRACE_CORRELATION.md"
-      - "docs/STEP_5_6_ACCEPTANCE.md"
-      - "docs/OPERATOR_RECOVERY_SURFACE.md"
-      - "docs/STEP_5_7_ACCEPTANCE.md"
-      - "docs/CHAOS_RECOVERY_BENCHMARK.md"
-      - "docs/STEP_5_8_ACCEPTANCE.md"
-      - "docs/AUTONOMOUS_MULTI_AGENT_PRODUCT_LOOP.md"
-      - "docs/STEP_6_7_ACCEPTANCE.md"
-      - "docs/RELEASE_READINESS.md"
-      - "docs/RELEASE_READINESS_CHECKLIST.md"
-      - "docs/PROGRESS.md"
+      - "docs/**"
       - ".github/workflows/backend-quality.yml"
       - ".github/workflows/release-readiness.yml"
+      - ".github/workflows/windows-portability.yml"
   pull_request:
     branches:
       - main
     paths:
       - ".env.example"
+      - ".python-version"
       - "backend/**"
       - "benchmarks/**"
       - "scripts/**"
+      - "compose.dev.yml"
       - "README.md"
-      - "docs/PRODUCT_PAGES.md"
-      - "docs/STEP_4_2_ACCEPTANCE.md"
-      - "docs/SSE_LIVE_EVENTS.md"
-      - "docs/STEP_4_3_ACCEPTANCE.md"
-      - "docs/DAG_VISUALIZATION.md"
-      - "docs/STEP_4_4_ACCEPTANCE.md"
-      - "docs/DIFF_VIEWER.md"
-      - "docs/STEP_4_5_ACCEPTANCE.md"
-      - "docs/RUN_METRICS.md"
-      - "docs/STEP_4_6_ACCEPTANCE.md"
-      - "docs/GITHUB_PUBLICATION.md"
-      - "docs/STEP_4_7_ACCEPTANCE.md"
-      - "docs/BENCHMARK_DEMO_SUITE.md"
-      - "docs/STEP_4_8_ACCEPTANCE.md"
-      - "docs/V1_1_ROADMAP.md"
-      - "docs/DURABLE_RECOVERY.md"
-      - "docs/STEP_5_1_ACCEPTANCE.md"
-      - "docs/DURABLE_DISPATCH_LEDGER.md"
-      - "docs/STEP_5_2_ACCEPTANCE.md"
-      - "docs/IDEMPOTENT_RECONCILER.md"
-      - "docs/STEP_5_3_ACCEPTANCE.md"
-      - "docs/DAG_RUN_RECONCILIATION.md"
-      - "docs/STEP_5_4_ACCEPTANCE.md"
-      - "docs/CAUSAL_TRACE_CORRELATION.md"
-      - "docs/STEP_5_6_ACCEPTANCE.md"
-      - "docs/OPERATOR_RECOVERY_SURFACE.md"
-      - "docs/STEP_5_7_ACCEPTANCE.md"
-      - "docs/CHAOS_RECOVERY_BENCHMARK.md"
-      - "docs/STEP_5_8_ACCEPTANCE.md"
-      - "docs/AUTONOMOUS_MULTI_AGENT_PRODUCT_LOOP.md"
-      - "docs/STEP_6_7_ACCEPTANCE.md"
-      - "docs/RELEASE_READINESS.md"
-      - "docs/RELEASE_READINESS_CHECKLIST.md"
-      - "docs/PROGRESS.md"
+      - "docs/**"
       - ".github/workflows/backend-quality.yml"
       - ".github/workflows/release-readiness.yml"
+      - ".github/workflows/windows-portability.yml"
 
 permissions:
   contents: read
@@ -144,12 +84,13 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: backend/pyproject.toml
+          cache-dependency-path: backend/requirements-dev.lock
 
-      - name: Install backend with development dependencies
+      - name: Install locked backend environment
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          python -m pip install -r requirements-dev.lock
+          python -m pip install --no-deps -e .
 
       - name: Validate PostgreSQL migrations
         run: |

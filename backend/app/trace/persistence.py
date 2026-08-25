@@ -6,11 +6,11 @@ from app.models.events import (
     RuntimeEventLevel,
     RuntimeEventSource,
 )
-from app.persistence.repository import PostgresEvidenceStore
+from app.persistence.project import ProjectAwarePostgresEvidenceStore
 from app.persistence.types import PersistenceEvidenceKind
 
 
-class TraceAwarePostgresEvidenceStore(PostgresEvidenceStore):
+class TraceAwarePostgresEvidenceStore(ProjectAwarePostgresEvidenceStore):
     """Use the accepted evidence transaction path with one diagnostic event-source extension."""
 
     @classmethod
@@ -29,21 +29,22 @@ class TraceAwarePostgresEvidenceStore(PostgresEvidenceStore):
             if task is not None and task.lease_generation
             else None
         )
+        dispatch_id = task.lease_dispatch_id if task is not None else None
         return RuntimeEventDraft(
             event_key=f"evidence:{row.id}",
             kind=RuntimeEventKind.EVIDENCE_RECORDED,
             source=RuntimeEventSource.AGENT,
             level=RuntimeEventLevel.INFO,
             task_id=row.task_id,
-            dispatch_id=task.lease_dispatch_id if task is not None else None,
+            dispatch_id=dispatch_id,
             generation=generation,
-            message="Accepted TRACE_BATCH diagnostic evidence.",
+            message="Diagnostic trace batch recorded.",
             attributes={
                 "evidence_id": row.id,
                 "evidence_key": row.evidence_key,
-                "evidence_kind": kind.value,
+                "kind": kind.value,
                 "stage": row.stage,
-                "evidence_sequence": row.sequence,
+                "sequence": row.sequence,
                 "payload_sha256": row.payload_sha256,
                 "diagnostic_only": True,
                 "privacy_mode": "METADATA_ONLY",
