@@ -86,9 +86,7 @@ class RuntimeEventDraft(BaseModel):
         except (TypeError, ValueError) as exc:
             raise ValueError("runtime event attributes must be JSON serializable") from exc
         if len(encoded) > _MAX_ATTRIBUTES_BYTES:
-            raise ValueError(
-                f"runtime event attributes exceed {_MAX_ATTRIBUTES_BYTES} UTF-8 bytes"
-            )
+            raise ValueError(f"runtime event attributes exceed {_MAX_ATTRIBUTES_BYTES} UTF-8 bytes")
         return self
 
     @classmethod

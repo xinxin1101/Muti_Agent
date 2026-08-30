@@ -74,21 +74,15 @@ def test_builder_uses_imported_symbol_regions_before_unrelated_readonly_file(
         "src/service.py",
         "app/models/user.py",
     ]
-    service_text = "\n".join(
-        snippet.content for snippet in packet.selected_files[0].snippets
-    )
-    model_text = "\n".join(
-        snippet.content for snippet in packet.selected_files[1].snippets
-    )
+    service_text = "\n".join(snippet.content for snippet in packet.selected_files[0].snippets)
+    model_text = "\n".join(snippet.content for snippet in packet.selected_files[1].snippets)
     assert "from app.models.user import User" in service_text
     assert "def create_user" in service_text
     assert "unrelated_helper" not in service_text
     assert "class User" in model_text
     assert "AuditRecord" not in model_text
     assert packet.selection_strategy.startswith("python_ast_import_relevance_v1")
-    assert packet.snippet_strategy == (
-        "python_ast_symbol_regions_v1+deterministic_prefix_fallback"
-    )
+    assert packet.snippet_strategy == ("python_ast_symbol_regions_v1+deterministic_prefix_fallback")
     assert packet.usage.omitted_files == 1
     assert packet.truncations[-1].reason is ContextTruncationReason.FILE_COUNT_LIMIT
 
@@ -152,10 +146,7 @@ def test_import_target_outside_task_visible_scope_is_not_added(tmp_path: Path) -
     (root / "src").mkdir(parents=True)
     (root / "private").mkdir()
     (root / "src" / "service.py").write_text(
-        "from private.secret import Secret\n"
-        "\n"
-        "def create_user():\n"
-        "    return Secret()\n",
+        "from private.secret import Secret\n\ndef create_user():\n    return Secret()\n",
         encoding="utf-8",
     )
     (root / "private" / "secret.py").write_text(

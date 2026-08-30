@@ -117,8 +117,7 @@ def test_local_import_dependency_is_ranked_above_unrelated_readable_file() -> No
         if evidence.startswith("local_import_from=")
     )
     assert any(
-        region.symbol == "User"
-        and "import_terms=user" in region.evidence
+        region.symbol == "User" and "import_terms=user" in region.evidence
         for region in model_selection.regions
     )
     assert all(region.symbol != "AuditRecord" for region in model_selection.regions)
@@ -127,10 +126,7 @@ def test_local_import_dependency_is_ranked_above_unrelated_readable_file() -> No
 def test_relative_import_resolves_to_visible_local_module() -> None:
     sources = {
         "pkg/service.py": (
-            "from .models import User\n"
-            "\n"
-            "def create_user(name):\n"
-            "    return User(name)\n"
+            "from .models import User\n\ndef create_user(name):\n    return User(name)\n"
         ),
         "pkg/models.py": "class User:\n    pass\n",
     }
@@ -166,12 +162,7 @@ def test_relative_import_resolves_to_visible_local_module() -> None:
 
 def test_ambiguous_import_suffix_does_not_guess_dependency() -> None:
     sources = {
-        "src/service.py": (
-            "import user\n"
-            "\n"
-            "def create_user():\n"
-            "    return user.User()\n"
-        ),
+        "src/service.py": ("import user\n\ndef create_user():\n    return user.User()\n"),
         "pkg/user.py": "class User:\n    pass\n",
         "other/user.py": "class User:\n    pass\n",
     }
@@ -199,10 +190,7 @@ def test_ambiguous_import_suffix_does_not_guess_dependency() -> None:
 
     assert service.local_dependencies == ()
     for selection in selections:
-        assert all(
-            not evidence.startswith("local_import_from=")
-            for evidence in selection.evidence
-        )
+        assert all(not evidence.startswith("local_import_from=") for evidence in selection.evidence)
 
 
 def test_invalid_python_and_non_python_files_fall_back_without_ast_regions() -> None:

@@ -7,7 +7,7 @@ import pytest
 
 from app import agents, models
 from app.runtime import FailureClassifier
-from app.verification import DeterministicVerifier
+from app.verification import DeterministicVerifier, LocalProcessVerificationRunner
 from app.workspace import LocalGitWorkspace
 
 
@@ -179,20 +179,31 @@ def test_repair_agent_uses_repair_role_targeted_evidence_and_same_tools(
     assert {tool.name for tool in request.tools} == {
         "list_files",
         "read_file",
+        "read_files",
         "search_code",
+        "search_code_many",
         "write_file",
         "apply_patch",
     }
     assert "stderr=expected VALUE = 2" in request.messages[1].content
     assert "attempt 1 of 2" in request.messages[1].content
     assert "not a success verdict" in request.messages[0].content
+    assert request.max_output_tokens == 1_000
+    assert "Prefer tool calls over prose" in request.messages[0].content
+    assert "exactly three concise items" in request.messages[0].content
 
 
 def test_first_verification_failure_is_targeted_repaired_then_passes(tmp_path: Path) -> None:
     root = _repository(tmp_path)
     workspace = LocalGitWorkspace(root)
     task = _task()
-    verifier = DeterministicVerifier(command_timeout_seconds=10)
+    # This unit test exercises repair classification and tool application, not Docker sandbox
+    # capability.  Use the explicit local runner so its result is independent of the host's
+    # Docker Desktop availability.
+    verifier = DeterministicVerifier(
+        command_timeout_seconds=10,
+        command_runner=LocalProcessVerificationRunner(),
+    )
 
     first = verifier.verify(task, workspace=workspace)
     failures = FailureClassifier.repairable(FailureClassifier.from_verification(first))
@@ -219,9 +230,7 @@ def test_first_verification_failure_is_targeted_repaired_then_passes(tmp_path: P
     )
     repair = agents.RepairAgent(driver=driver, model="test/repair")
 
-    repair_result = asyncio.run(
-        repair.repair(task, failures, attempt=1, workspace=workspace)
-    )
+    repair_result = asyncio.run(repair.repair(task, failures, attempt=1, workspace=workspace))
     second = verifier.verify(task, workspace=workspace)
 
     assert repair_result.stop_reason is models.RepairStopReason.MODEL_STOP

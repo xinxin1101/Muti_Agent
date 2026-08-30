@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { getGitHubPublication, publishGitHubDraft } from "../api/product";
+import { labelFor } from "../i18n";
 import type { ProductRun } from "../types/product";
 
 export function GitHubPublication({
@@ -32,14 +33,14 @@ export function GitHubPublication({
     return (
       <section
         className="rounded-xl border border-slate-800 bg-slate-900/50 p-5"
-        aria-label="GitHub publication"
+        aria-label="GitHub 发布"
       >
-        <h2 className="text-xl font-semibold text-white">GitHub publication</h2>
+        <h2 className="text-xl font-semibold text-white">GitHub 发布</h2>
         <p className="mt-2 text-sm text-slate-400">
-          Draft PR publication becomes eligible only after persisted Run status is SUCCEEDED.
+          仅当已持久化的运行状态为“已成功”后，才可发布草稿 PR。
         </p>
         <p className="mt-2 text-xs text-slate-500">
-          GitHub state never promotes or overrides the Run status.
+          GitHub 状态不会提升或覆盖运行状态。
         </p>
       </section>
     );
@@ -48,7 +49,7 @@ export function GitHubPublication({
   if (publication.isLoading) {
     return (
       <p className="rounded-xl border border-slate-800 bg-slate-950/60 p-5 text-sm text-slate-500">
-        Loading GitHub publication eligibility…
+        正在加载 GitHub 发布资格…
       </p>
     );
   }
@@ -57,12 +58,12 @@ export function GitHubPublication({
     return (
       <section
         className="rounded-xl border border-amber-400/20 bg-amber-400/5 p-5"
-        aria-label="GitHub publication"
+        aria-label="GitHub 发布"
       >
-        <h2 className="font-semibold text-amber-100">GitHub publication unavailable</h2>
+        <h2 className="font-semibold text-amber-100">GitHub 发布不可用</h2>
         <p className="mt-2 text-sm text-amber-200/80">
           {publication.error?.message ??
-            "Accepted runtime evidence does not define a publishable source."}
+            "已接受的运行时证据未定义可发布的来源。"}
         </p>
       </section>
     );
@@ -73,25 +74,24 @@ export function GitHubPublication({
   return (
     <section
       className="space-y-4 rounded-xl border border-slate-800 bg-slate-900/50 p-5"
-      aria-label="GitHub publication"
+      aria-label="GitHub 发布"
     >
       <div>
-        <h2 className="text-xl font-semibold text-white">GitHub publication</h2>
+        <h2 className="text-xl font-semibold text-white">GitHub 发布</h2>
         <p className="mt-1 text-sm text-slate-500">
-          Publishes the backend-selected accepted commit to a DevFlow-owned branch and Draft PR.
-          GitHub remains non-authoritative for Run success.
+          将后端选定的已接受提交发布到 DevFlow 管理的分支与草稿 PR。GitHub 不参与运行成功判定。
         </p>
       </div>
 
       <dl className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <Fact label="State" value={item.state} />
-        <Fact label="Source basis" value={item.source_basis} />
-        <Fact label="Source commit" value={item.source_commit.slice(0, 12)} mono />
-        <Fact label="Evidence" value={`#${item.source_evidence_id}`} mono />
-        <Fact label="Repository" value={item.repository_slug} />
-        <Fact label="Base branch" value={item.base_branch} mono />
-        <Fact label="DevFlow branch" value={item.branch_name} mono />
-        <Fact label="Attempts" value={String(item.attempt_count)} />
+        <Fact label="状态" value={labelFor(item.state)} />
+        <Fact label="来源依据" value={labelFor(item.source_basis)} />
+        <Fact label="来源提交" value={item.source_commit.slice(0, 12)} mono />
+        <Fact label="证据" value={`#${item.source_evidence_id}`} mono />
+        <Fact label="仓库" value={item.repository_slug} />
+        <Fact label="基线分支" value={item.base_branch} mono />
+        <Fact label="DevFlow 分支" value={item.branch_name} mono />
+        <Fact label="尝试次数" value={String(item.attempt_count)} />
       </dl>
 
       {item.last_error_message ? (
@@ -113,7 +113,7 @@ export function GitHubPublication({
           rel="noreferrer"
           className="inline-flex rounded-lg border border-cyan-400/30 px-4 py-2 text-sm font-medium text-cyan-200 hover:bg-cyan-400/10"
         >
-          Open Draft PR #{item.pull_request_number}
+          打开草稿 PR #{item.pull_request_number}
         </a>
       ) : (
         <button
@@ -123,24 +123,22 @@ export function GitHubPublication({
           className="rounded-lg bg-cyan-300 px-4 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {publish.isPending
-            ? "Publishing…"
+            ? "正在发布…"
             : publishing
-              ? "Retry publication"
-              : "Create Draft PR"}
+              ? "重试发布"
+              : "创建草稿 PR"}
         </button>
       )}
 
       {publishing ? (
         <p className="text-xs text-slate-500">
-          A backend publication claim exists. Retrying is safe: the backend rejects a still-live
-          claim and takes over only after its PostgreSQL expiry.
+          后端发布声明已存在。重试是安全的：后端会拒绝仍有效的声明，仅在 PostgreSQL 声明过期后接管。
         </p>
       ) : null}
       {!item.publisher_configured && !item.pull_request_url ? (
         <p className="text-xs text-amber-200/70">
-          Backend GitHub publication credential is not loaded. Configure
-          DEVFLOW_GITHUB_PUBLICATION_TOKEN in the repository-root .env, restart devflow-api, then
-          refresh this page. No credential is accepted from the browser.
+          后端未加载 GitHub 发布凭据。请在仓库根目录 .env 配置
+          DEVFLOW_GITHUB_PUBLICATION_TOKEN，或重新注册该项目并填写发布令牌。项目令牌会加密保存于本机 PostgreSQL 数据卷；浏览器不会保存任何凭据。
         </p>
       ) : null}
     </section>

@@ -4,6 +4,7 @@ from time import perf_counter
 from uuid import UUID, uuid4
 
 from app.models.agent import AgentResponse, AgentRole
+from app.models.context import ContextUsage
 from app.models.tools import ToolExecutionResult
 from app.models.trace import (
     TaskTraceBatch,
@@ -57,6 +58,8 @@ class TaskTraceCollector:
         iteration: int,
         response: AgentResponse,
         name: str | None = None,
+        context_usage: ContextUsage | None = None,
+        enable_thinking: bool = False,
     ) -> UUID:
         span_id = uuid4()
         self._spans.append(
@@ -75,6 +78,14 @@ class TaskTraceCollector:
                 total_tokens=response.usage.total_tokens,
                 finish_reason=response.finish_reason,
                 tool_call_count=len(response.tool_calls),
+                enable_thinking=enable_thinking,
+                context_estimated_tokens=(
+                    context_usage.prompt_estimated_tokens if context_usage is not None else 0
+                ),
+                context_reused_files=context_usage.reused_files if context_usage is not None else 0,
+                context_trimmed_files=(
+                    context_usage.trimmed_files if context_usage is not None else 0
+                ),
             )
         )
         return span_id

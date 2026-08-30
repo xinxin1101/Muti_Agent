@@ -13,6 +13,8 @@ from app.models.run_reconciliation import (
     DAGTaskReconciliationRecord,
     TaskExecutionBase,
 )
+from app.models.work_package import PlanningComplexity
+from app.models.workflow import WorkflowExecutionMode
 from app.persistence.dag import PersistedDAGSnapshot
 from app.persistence.errors import PersistenceCorruptionError
 from app.persistence.types import PersistedRunSnapshot, PersistedRunStatus
@@ -34,6 +36,10 @@ class DAGRunLeaseReader(Protocol):
 
 class DAGRunTaskReconciler(Protocol):
     async def reconcile(self, *, run_id: UUID, task_id: str): ...
+
+
+class DAGRunInterfaceContractGate(Protocol):
+    async def gate_for_task(self, *, run_id: UUID, task_id: str): ...
 
 
 class DAGRunExecutionBaseResolver(Protocol):
@@ -243,7 +249,11 @@ class DAGRunReconciler:
         execution_base_resolver: DAGRunExecutionBaseResolver,
         classifier: RecoveryStateClassifier | None = None,
         planner: DAGRunReconciliationPlanner | None = None,
+        max_concurrent_tasks: int | None = None,
+        interface_contract_registry: DAGRunInterfaceContractGate | None = None,
     ) -> None:
+        if max_concurrent_tasks is not None and max_concurrent_tasks < 1:
+            raise ValueError("max_concurrent_tasks must be at least one when configured")
         self._run_reader = run_reader
         self._dag_reader = dag_reader
         self._lease_reader = lease_reader
@@ -251,6 +261,8 @@ class DAGRunReconciler:
         self._execution_base_resolver = execution_base_resolver
         self._classifier = classifier or RecoveryStateClassifier()
         self._planner = planner or DAGRunReconciliationPlanner()
+        self._max_concurrent_tasks = max_concurrent_tasks
+        self._interface_contract_registry = interface_contract_registry
 
     async def reconcile_run(self, run_id: UUID) -> DAGRunReconciliationOutcome:
         snapshot = await self._run_reader.load_run(run_id)
@@ -264,9 +276,65 @@ class DAGRunReconciler:
             execution_base_resolver=self._execution_base_resolver,
         )
 
-        outcomes = []
-        for task_id in plan.reconcile_task_ids:
-            outcomes.append(
-                await self._task_reconciler.reconcile(run_id=run_id, task_id=task_id)
+        active_tasks = sum(lease.state is TaskLeaseState.ACTIVE for lease in leases)
+        available_slots = (
+            len(plan.reconcile_task_ids)
+            if self._max_concurrent_tasks is None
+            else max(0, self._max_concurrent_tasks - active_tasks)
+        )
+        # Keep the full legal frontier in the plan while admitting only a resource-bounded prefix.
+        # A worker completion re-reconciles the Run and admits the next independent task.
+        candidates = list(plan.reconcile_task_ids)
+        # Deterministic work and small packages clear the frontier first.  HIGH packages
+        # retain a single active slot so two large contexts cannot reserve the Run budget at
+        # once simply because they are graph-independent.
+        complexity_rank = {
+            PlanningComplexity.LOW: 1,
+            PlanningComplexity.MEDIUM: 2,
+            PlanningComplexity.HIGH: 3,
+            None: 2,
+        }
+        candidates.sort(
+            key=lambda task_id: (
+                0
+                if persisted_dag.dag.node(task_id).execution_mode is WorkflowExecutionMode.WORKFLOW
+                else complexity_rank[persisted_dag.dag.node(task_id).complexity],
+                persisted_dag.dag.topological_order().index(task_id),
             )
+        )
+        active_high = any(
+            lease.state is TaskLeaseState.ACTIVE
+            and persisted_dag.dag.node(lease.task_id).complexity is PlanningComplexity.HIGH
+            for lease in leases
+        )
+        if active_high:
+            candidates = [
+                task_id
+                for task_id in candidates
+                if persisted_dag.dag.node(task_id).complexity is not PlanningComplexity.HIGH
+            ]
+        else:
+            high_seen = False
+            limited: list[str] = []
+            for task_id in candidates:
+                if persisted_dag.dag.node(task_id).complexity is PlanningComplexity.HIGH:
+                    if high_seen:
+                        continue
+                    high_seen = True
+                limited.append(task_id)
+            candidates = limited
+        if self._interface_contract_registry is not None:
+            admitted: list[str] = []
+            for task_id in candidates:
+                gate = await self._interface_contract_registry.gate_for_task(
+                    run_id=run_id, task_id=task_id
+                )
+                # A denied contract gate is deliberately not handed to the broker.  Its
+                # durable registry state is later surfaced as BLOCKED_BY_CONTRACT.
+                if gate.allowed:
+                    admitted.append(task_id)
+            candidates = admitted
+        outcomes = []
+        for task_id in candidates[:available_slots]:
+            outcomes.append(await self._task_reconciler.reconcile(run_id=run_id, task_id=task_id))
         return DAGRunReconciliationOutcome(plan=plan, task_outcomes=tuple(outcomes))

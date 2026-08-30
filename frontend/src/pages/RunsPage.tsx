@@ -17,22 +17,22 @@ export function RunsPage() {
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <p className="text-sm font-semibold uppercase tracking-[0.2em] text-cyan-300">
-            Step 4.2
+            运行管理
           </p>
-          <h1 className="mt-2 text-4xl font-semibold text-white">Runs</h1>
+          <h1 className="mt-2 text-4xl font-semibold text-white">运行记录</h1>
           <p className="mt-3 text-slate-400">
-            Persisted run status is read from backend truth, not inferred from browser state.
+            已持久化的运行状态来自后端事实，不会由浏览器状态推断。
           </p>
         </div>
         <Link
           to={projectId ? `/runs/new?projectId=${projectId}` : "/runs/new"}
           className="rounded-md bg-cyan-300 px-4 py-2 font-semibold text-slate-950"
         >
-          New run
+          新建运行
         </Link>
       </div>
 
-      {runs.isLoading ? <p className="text-slate-400">Loading runs…</p> : null}
+      {runs.isLoading ? <p className="text-slate-400">正在加载运行记录…</p> : null}
       {runs.error ? <p className="text-rose-300">{runs.error.message}</p> : null}
       <div className="grid gap-4">
         {runs.data?.map((run) => (
@@ -47,7 +47,7 @@ export function RunsPage() {
                   {run.run_id}
                 </p>
                 <p className="mt-2 text-sm text-slate-500">
-                  {run.task_count} task · base {run.base_commit.slice(0, 12)}
+                  {run.task_count} 个任务 · 基线 {run.base_commit.slice(0, 12)}
                 </p>
               </div>
               <StatusBadge status={run.status} />

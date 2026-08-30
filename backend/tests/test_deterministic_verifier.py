@@ -2,7 +2,9 @@ import subprocess
 from pathlib import Path
 
 from app.models import FailureType, TaskContract
+from app.models.verification import VerificationBackend
 from app.verification import DeterministicVerifier, LocalProcessVerificationRunner
+from app.verification.sandbox import VerificationExecution
 from app.workspace import LocalGitWorkspace
 
 
@@ -63,6 +65,62 @@ def _local_verifier(**kwargs) -> DeterministicVerifier:
     )
 
 
+class _SandboxedFailingRunner:
+    @property
+    def is_sandboxed(self) -> bool:
+        return True
+
+    def run(self, argv, *, workspace, timeout_seconds):
+        del argv, workspace, timeout_seconds
+        return VerificationExecution(
+            exit_code=1,
+            stdout="",
+            stderr="AssertionError: Board API does not meet the contract",
+            duration_ms=1,
+            backend=VerificationBackend.DOCKER,
+            details=("rootfs=readonly",),
+        )
+
+
+class _PythonOutputRunner:
+    @property
+    def is_sandboxed(self) -> bool:
+        return True
+
+    def run(self, argv, *, workspace, timeout_seconds):
+        del workspace, timeout_seconds
+        assert argv == ["python3", "hello.py"]
+        return VerificationExecution(
+            exit_code=0,
+            stdout="hello world\n",
+            stderr="",
+            duration_ms=1,
+            backend=VerificationBackend.DOCKER,
+            details=("rootfs=readonly",),
+        )
+
+
+class _StageRecordingRunner:
+    def __init__(self) -> None:
+        self.commands: list[list[str]] = []
+
+    @property
+    def is_sandboxed(self) -> bool:
+        return True
+
+    def run(self, argv, *, workspace, timeout_seconds):
+        del workspace, timeout_seconds
+        command = list(argv)
+        self.commands.append(command)
+        return VerificationExecution(
+            exit_code=1 if "tests/test_module.py" in command else 0,
+            stdout="",
+            stderr="targeted failure",
+            duration_ms=1,
+            backend=VerificationBackend.DOCKER,
+        )
+
+
 def test_passing_project_returns_hard_gate_pass(tmp_path: Path) -> None:
     root = _make_repository(tmp_path, test_body=_file_content_test("VALUE = 2"))
     (root / "module.py").write_text("VALUE = 2\n", encoding="utf-8")
@@ -96,6 +154,50 @@ def test_failing_test_is_classified_as_test_failure(tmp_path: Path) -> None:
     assert reports[0].failure_type is FailureType.TEST_FAILURE
     assert reports[0].retryable is True
     assert any("VALUE = 3" in item for item in reports[0].evidence)
+
+
+def test_targeted_verification_runs_before_and_short_circuits_broad_checks(tmp_path: Path) -> None:
+    root = _make_repository(tmp_path, test_body="def test_ok():\n    assert True\n")
+    runner = _StageRecordingRunner()
+    result = DeterministicVerifier(command_runner=runner).verify(
+        _task("pytest -q", "pytest tests/test_module.py -q", "ruff check ."),
+        workspace=LocalGitWorkspace(root),
+    )
+
+    assert result.passed is False
+    assert runner.commands == [
+        ["python", "-m", "pytest", "-p", "no:cacheprovider", "tests/test_module.py", "-q"]
+    ]
+    assert result.checks[-1].execution_details[-1] == "verification_stage=fast"
+
+
+def test_failing_custom_sandbox_check_is_repairable_test_failure(tmp_path: Path) -> None:
+    root = _make_repository(tmp_path, test_body="def test_ok():\n    assert True\n")
+    (root / "module.py").write_text("VALUE = 2\n", encoding="utf-8")
+    verifier = DeterministicVerifier(command_runner=_SandboxedFailingRunner())
+
+    result = verifier.verify(
+        _task("python -c \"assert False, 'contract mismatch'\""),
+        workspace=LocalGitWorkspace(root),
+    )
+    reports = verifier.failure_reports(result)
+
+    assert result.checks[1].failure_type is FailureType.TEST_FAILURE
+    assert reports[0].retryable is True
+    assert reports[0].message == "Deterministic custom verification failed."
+
+
+def test_python_stdout_shell_style_assertion_is_compiled_without_a_shell(tmp_path: Path) -> None:
+    root = _make_repository(tmp_path, test_body="def test_ok():\n    assert True\n")
+    verifier = DeterministicVerifier(command_runner=_PythonOutputRunner())
+
+    result = verifier.verify(
+        _task('test "$(python3 hello.py)" = "hello world"'),
+        workspace=LocalGitWorkspace(root),
+    )
+
+    assert result.passed is True
+    assert result.checks[1].name == "python_stdout"
 
 
 def test_lint_failure_is_distinguishable_from_test_failure(tmp_path: Path) -> None:
@@ -159,12 +261,7 @@ def test_custom_command_is_rejected_on_explicit_host_runner(tmp_path: Path) -> N
 def test_verification_command_timeout_is_bounded(tmp_path: Path) -> None:
     root = _make_repository(
         tmp_path,
-        test_body=(
-            "import time\n\n\n"
-            "def test_slow():\n"
-            "    time.sleep(1.0)\n"
-            "    assert True\n"
-        ),
+        test_body=("import time\n\n\ndef test_slow():\n    time.sleep(1.0)\n    assert True\n"),
     )
     (root / "module.py").write_text("VALUE = 2\n", encoding="utf-8")
 

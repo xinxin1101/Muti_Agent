@@ -1,5 +1,6 @@
 import subprocess
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
@@ -7,6 +8,8 @@ from pydantic import ValidationError
 from app.context import ContextPacketBuilder
 from app.models import (
     ContextBudget,
+    ContextContinuationState,
+    ContextFileDigest,
     ContextPacket,
     ContextScopeKind,
     ContextSelectionReason,
@@ -66,6 +69,7 @@ def test_builder_orders_changed_writable_readonly_readable_and_records_provenanc
 
     assert packet.repository_head == workspace.head_commit()
     assert packet.changed_files == ["src/b.py"]
+    assert packet.repository_map == ["src/a.py", "src/b.py", "tests/test_b.py"]
     assert [item.path for item in packet.selected_files] == [
         "src/b.py",
         "tests/test_b.py",
@@ -111,6 +115,58 @@ def test_same_state_and_budget_produce_same_fingerprint_content_change_changes_i
 
     assert changed.fingerprint != first.fingerprint
     assert changed.changed_files == ["src/a.py"]
+
+
+def test_resumed_packet_reuses_unchanged_files_and_keeps_checkpoint_changes(
+    tmp_path: Path,
+) -> None:
+    root = _repository(tmp_path)
+    workspace = LocalGitWorkspace(root)
+    builder = ContextPacketBuilder()
+    first = builder.build(_task(), workspace=workspace)
+    resume = ContextContinuationState(
+        summary_version=first.repository_summary_version,
+        repository_head=first.repository_head,
+        read_files=tuple(
+            ContextFileDigest(path=item.path, source_sha256=item.source_sha256)
+            for item in first.selected_files
+        ),
+        changed_files=("src/b.py",),
+        completed_summary="棋盘逻辑已经实现。",
+        remaining_summary="继续完成界面层。",
+        verification_summary="尚未验证。",
+    )
+
+    resumed = builder.build(_task(), workspace=workspace, resume=resume)
+
+    assert resumed.resume == resume
+    assert resumed.changed_files == ["src/b.py"]
+    assert [item.path for item in resumed.selected_files] == ["src/b.py"]
+    assert resumed.usage.reused_files == 2
+    assert resumed.usage.prompt_estimated_tokens >= resumed.usage.estimated_tokens
+    assert "repository_head=" in resumed.repository_summary
+
+
+def test_planning_summary_is_cached_by_project_commit_and_version(tmp_path: Path) -> None:
+    from app.api.repository_context import RepositoryPlanningContextBuilder
+
+    root = _repository(tmp_path)
+    workspace = LocalGitWorkspace(root)
+    builder = RepositoryPlanningContextBuilder()
+    arguments = {
+        "base_commit": workspace.head_commit(),
+        "requirement": "Update the Python module.",
+        "repository_url": "https://github.com/acme/context",
+        "default_branch": "main",
+        "project_id": uuid4(),
+    }
+
+    first = builder.build(workspace, **arguments)
+    second = builder.build(workspace, **arguments)
+
+    assert first == second
+    assert builder.cached_summary_count == 1
+    assert "repository_summary_version=repository_summary_v1" in first
 
 
 def test_packet_rejects_tampered_payload_or_detached_fingerprint(tmp_path: Path) -> None:
@@ -178,8 +234,7 @@ def test_utf8_byte_estimator_enforces_conservative_token_budget(tmp_path: Path) 
     assert selected.estimated_tokens == 99
     assert selected.snippets[0].content == "中" * 33
     assert any(
-        item.reason is ContextTruncationReason.TOKEN_BUDGET
-        and item.path == "src/b.py"
+        item.reason is ContextTruncationReason.TOKEN_BUDGET and item.path == "src/b.py"
         for item in packet.truncations
     )
 

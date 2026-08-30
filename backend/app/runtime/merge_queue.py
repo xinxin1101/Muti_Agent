@@ -283,9 +283,7 @@ class TopologicalMergeQueue:
             label=f"task branch for {result.task_id}",
         )
         if branch_commit != result.commit_sha:
-            raise MergeQueueError(
-                f"task branch moved after worker finalization: {result.task_id}"
-            )
+            raise MergeQueueError(f"task branch moved after worker finalization: {result.task_id}")
 
         parents = self._commit_parents(result.commit_sha)
         if parents != (result.base_commit,):

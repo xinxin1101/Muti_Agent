@@ -402,21 +402,25 @@ class PostgresTaskReconciliationStore:
         dict[UUID, dict[WorkerDispatchPhase, int]],
     ]:
         rows = (
-            await session.execute(
-                select(EvidenceRow)
-                .where(
-                    EvidenceRow.run_id == run_id,
-                    EvidenceRow.task_id == task_id,
-                    EvidenceRow.kind.in_(
-                        (
-                            PersistenceEvidenceKind.WORKER_EXECUTION.value,
-                            PersistenceEvidenceKind.DISPATCH_EVENT.value,
-                        )
-                    ),
+            (
+                await session.execute(
+                    select(EvidenceRow)
+                    .where(
+                        EvidenceRow.run_id == run_id,
+                        EvidenceRow.task_id == task_id,
+                        EvidenceRow.kind.in_(
+                            (
+                                PersistenceEvidenceKind.WORKER_EXECUTION.value,
+                                PersistenceEvidenceKind.DISPATCH_EVENT.value,
+                            )
+                        ),
+                    )
+                    .order_by(EvidenceRow.id)
                 )
-                .order_by(EvidenceRow.id)
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         known_dispatches = {attempt.dispatch_id for attempt in attempts}
         workers: dict[UUID, tuple[int, WorkerExecutionEvidence]] = {}
         dispatches: dict[UUID, dict[WorkerDispatchPhase, int]] = {}
@@ -518,16 +522,20 @@ class PostgresTaskReconciliationStore:
         task_id: str,
     ) -> tuple[DispatchAttemptRow, ...]:
         rows = (
-            await session.execute(
-                select(DispatchAttemptRow)
-                .where(
-                    DispatchAttemptRow.run_id == run_id,
-                    DispatchAttemptRow.task_id == task_id,
+            (
+                await session.execute(
+                    select(DispatchAttemptRow)
+                    .where(
+                        DispatchAttemptRow.run_id == run_id,
+                        DispatchAttemptRow.task_id == task_id,
+                    )
+                    .order_by(DispatchAttemptRow.attempt_number)
+                    .with_for_update()
                 )
-                .order_by(DispatchAttemptRow.attempt_number)
-                .with_for_update()
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return tuple(rows)
 
     async def _locked_attempts(
@@ -603,17 +611,20 @@ class PostgresTaskReconciliationStore:
     @staticmethod
     def _validate_task_lease_shape(task: TaskRow) -> None:
         if task.lease_owner is None:
-            if any(
-                value is not None
-                for value in (
-                    task.lease_dispatch_id,
-                    task.run_token,
-                    task.lease_acquired_at,
-                    task.heartbeat_at,
-                    task.lease_until,
-                    task.lease_released_at,
+            if (
+                any(
+                    value is not None
+                    for value in (
+                        task.lease_dispatch_id,
+                        task.run_token,
+                        task.lease_acquired_at,
+                        task.heartbeat_at,
+                        task.lease_until,
+                        task.lease_released_at,
+                    )
                 )
-            ) or task.lease_generation != 0:
+                or task.lease_generation != 0
+            ):
                 raise PersistenceCorruptionError("UNOWNED task row has impossible lease fields")
             return
         if (

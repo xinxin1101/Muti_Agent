@@ -279,9 +279,7 @@ class BenchmarkApiClient:
                 run_status=terminal_status,
                 terminal_duration_ms=metrics.terminal_duration_ms,
                 evidence_kinds=evidence_kinds,
-                evidence=BenchmarkEvidenceObservation(
-                    **metrics.evidence.model_dump(mode="python")
-                ),
+                evidence=BenchmarkEvidenceObservation(**metrics.evidence.model_dump(mode="python")),
                 runtime_events=BenchmarkRuntimeEventObservation(
                     **metrics.runtime_events.model_dump(mode="python")
                 ),

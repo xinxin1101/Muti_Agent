@@ -66,6 +66,29 @@ def test_planning_context_reads_the_frozen_commit_not_current_checkout() -> None
         assert "context_is_partial=" in context
 
 
+def test_planning_context_replaces_non_utf8_blob_bytes_without_failing() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        _git(root, "init", "-b", "main")
+        _git(root, "config", "user.email", "devflow@example.invalid")
+        _git(root, "config", "user.name", "DevFlow Test")
+        # 0x94 is invalid in UTF-8 and previously crashed `subprocess.run(text=True)` on
+        # Windows installations whose default process encoding is GBK.
+        (root / "README.md").write_bytes(b"repository note: \x94\n")
+        commit = _commit(root, "non-utf8 readme")
+
+        context = RepositoryPlanningContextBuilder().build(
+            LocalGitWorkspace(root),
+            base_commit=commit,
+            requirement="update the readme",
+            repository_url="https://github.com/acme/demo",
+            default_branch="main",
+        )
+
+        assert "repository note:" in context
+        assert "\ufffd" in context
+
+
 def test_strong_readiness_rejects_origin_or_branch_identity_mismatch() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         project_id = uuid4()

@@ -87,10 +87,10 @@ describe("OperatorRecoveryPanel", () => {
     renderPanel();
 
     expect(
-      await screen.findByRole("region", { name: "Operator recovery" }),
+      await screen.findByRole("region", { name: "运维恢复" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("RECONCILE_CANDIDATE")).toBeInTheDocument();
-    expect(screen.getByText(/Causal trace can explain/)).toBeInTheDocument();
+    expect(screen.getByText("可重新核对")).toBeInTheDocument();
+    expect(screen.getByText(/因果追踪可解释运行/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Advance from durable facts" }));
 
@@ -106,7 +106,7 @@ describe("OperatorRecoveryPanel", () => {
     renderPanel();
 
     expect(
-      await screen.findByText(/No operator mutation is currently advertised by the server/),
+      await screen.findByText(/服务端当前未公布可执行的运维变更/),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });

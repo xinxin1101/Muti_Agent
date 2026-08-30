@@ -80,8 +80,7 @@ class CommitDiffSnapshot(BaseModel):
         if self.changed_file_count != len(self.files) + self.omitted_file_count:
             raise ValueError("diff file counts must match rendered plus omitted files")
         if self.truncated != (
-            self.omitted_file_count > 0
-            or any(item.patch_truncated for item in self.files)
+            self.omitted_file_count > 0 or any(item.patch_truncated for item in self.files)
         ):
             raise ValueError("diff truncated flag must match bounded output")
         return self

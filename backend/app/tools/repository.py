@@ -29,6 +29,23 @@ class ReadFileArgs(BaseModel):
     max_chars: int = Field(default=20_000, ge=1, le=20_000)
 
 
+class ReadFilesArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    paths: list[str] = Field(min_length=1, max_length=8)
+    max_chars_per_file: int = Field(default=12_000, ge=1, le=20_000)
+
+    @field_validator("paths")
+    @classmethod
+    def reject_duplicate_paths(cls, values: list[str]) -> list[str]:
+        normalized = [value.strip() for value in values]
+        if any(not value for value in normalized):
+            raise ValueError("paths must not contain empty values")
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("paths must not contain duplicates")
+        return normalized
+
+
 class SearchCodeArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -42,6 +59,22 @@ class SearchCodeArgs(BaseModel):
         normalized = value.strip()
         if not normalized:
             raise ValueError("query must not be empty")
+        return normalized
+
+
+class SearchCodeManyArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    queries: list[str] = Field(min_length=1, max_length=6)
+    directory: str = Field(default="", max_length=500)
+    max_results_per_query: int = Field(default=10, ge=1, le=20)
+
+    @field_validator("queries")
+    @classmethod
+    def normalize_queries(cls, values: list[str]) -> list[str]:
+        normalized = [SearchCodeArgs.normalize_query(value) for value in values]
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("queries must not contain duplicates")
         return normalized
 
 
@@ -87,7 +120,9 @@ class RepositoryToolbox:
         self._handlers: dict[str, Callable[[dict], str]] = {
             "list_files": self._list_files,
             "read_file": self._read_file,
+            "read_files": self._read_files,
             "search_code": self._search_code,
+            "search_code_many": self._search_code_many,
             "write_file": self._write_file,
             "apply_patch": self._apply_patch,
         }
@@ -112,12 +147,28 @@ class RepositoryToolbox:
                 parameters=ReadFileArgs.model_json_schema(),
             ),
             ToolDefinition(
+                name="read_files",
+                description=(
+                    "Read multiple visible UTF-8 repository files in one call. Prefer this "
+                    "for initial exploration of related files to reduce model round trips."
+                ),
+                parameters=ReadFilesArgs.model_json_schema(),
+            ),
+            ToolDefinition(
                 name="search_code",
                 description=(
                     "Search visible UTF-8 repository files for an exact text query. "
                     "Returns matching path, line number, and a short line preview."
                 ),
                 parameters=SearchCodeArgs.model_json_schema(),
+            ),
+            ToolDefinition(
+                name="search_code_many",
+                description=(
+                    "Search visible UTF-8 repository files for multiple exact text queries in "
+                    "one repository scan. Prefer this when locating several related symbols."
+                ),
+                parameters=SearchCodeManyArgs.model_json_schema(),
             ),
             ToolDefinition(
                 name="write_file",
@@ -167,7 +218,29 @@ class RepositoryToolbox:
 
     def _list_files(self, arguments: dict) -> str:
         args = ListFilesArgs.model_validate(arguments)
-        base = self._resolve_directory(args.directory)
+        normalized_directory = args.directory.strip()
+        if normalized_directory in {"", "."}:
+            base = self.workspace.root
+        else:
+            self._assert_not_internal(normalized_directory)
+            base = self.workspace.resolve_path(normalized_directory)
+            # A missing directory is normal while implementing the first files of an empty
+            # repository. Returning an explicit empty listing lets the agent create the
+            # task-authorized path instead of spending a turn recovering from NOT_FOUND.
+            if not base.exists():
+                return json.dumps(
+                    {
+                        "files": [],
+                        "truncated": False,
+                        "directory_exists": False,
+                    },
+                    ensure_ascii=False,
+                )
+            if not base.is_dir():
+                raise RepositoryToolError(
+                    ToolErrorCode.INVALID_ARGUMENTS,
+                    f"Path is not a directory: {normalized_directory}",
+                )
         files: list[str] = []
 
         for path in self._iter_files(base):
@@ -178,7 +251,11 @@ class RepositoryToolbox:
                 break
 
         return json.dumps(
-            {"files": files, "truncated": len(files) >= _MAX_LIST_ENTRIES},
+            {
+                "files": files,
+                "truncated": len(files) >= _MAX_LIST_ENTRIES,
+                "directory_exists": True,
+            },
             ensure_ascii=False,
         )
 
@@ -192,6 +269,21 @@ class RepositoryToolbox:
             {"path": relative, "content": content, "truncated": truncated},
             ensure_ascii=False,
         )
+
+    def _read_files(self, arguments: dict) -> str:
+        args = ReadFilesArgs.model_validate(arguments)
+        files: list[dict[str, object]] = []
+        for requested_path in args.paths:
+            relative, path = self._resolve_file_for_read(requested_path)
+            text = self._read_text_file(path)
+            files.append(
+                {
+                    "path": relative,
+                    "content": text[: args.max_chars_per_file],
+                    "truncated": len(text) > args.max_chars_per_file,
+                }
+            )
+        return json.dumps({"files": files}, ensure_ascii=False)
 
     def _search_code(self, arguments: dict) -> str:
         args = SearchCodeArgs.model_validate(arguments)
@@ -226,6 +318,44 @@ class RepositoryToolbox:
                     )
 
         return json.dumps({"matches": matches, "truncated": False}, ensure_ascii=False)
+
+    def _search_code_many(self, arguments: dict) -> str:
+        args = SearchCodeManyArgs.model_validate(arguments)
+        base = self._resolve_directory(args.directory)
+        matches_by_query: dict[str, list[dict[str, object]]] = {query: [] for query in args.queries}
+        truncated_queries: set[str] = set()
+
+        for path in self._iter_files(base):
+            relative = path.relative_to(self.workspace.root).as_posix()
+            if not self._can_read(relative) or path.stat().st_size > _MAX_FILE_BYTES:
+                continue
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except UnicodeDecodeError:
+                continue
+            for line_number, line in enumerate(lines, start=1):
+                for query in args.queries:
+                    matches = matches_by_query[query]
+                    if query not in line:
+                        continue
+                    if len(matches) >= args.max_results_per_query:
+                        truncated_queries.add(query)
+                        continue
+                    matches.append({"path": relative, "line": line_number, "text": line[:300]})
+
+        return json.dumps(
+            {
+                "results": [
+                    {
+                        "query": query,
+                        "matches": matches_by_query[query],
+                        "truncated": query in truncated_queries,
+                    }
+                    for query in args.queries
+                ]
+            },
+            ensure_ascii=False,
+        )
 
     def _write_file(self, arguments: dict) -> str:
         args = WriteFileArgs.model_validate(arguments)

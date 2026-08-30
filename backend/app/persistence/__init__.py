@@ -1,3 +1,8 @@
+from app.persistence.credentials import (
+    PostgresProjectCredentialStore,
+    ProjectCredentialConfigurationError,
+    ProjectCredentialDecryptionError,
+)
 from app.persistence.dag import (
     PersistedDAGSnapshot,
     PersistedDAGSource,
@@ -15,13 +20,20 @@ from app.persistence.errors import (
     TaskLeaseConflictError,
     TaskLeaseExpiredError,
 )
+from app.persistence.failure_explanations import PostgresFailureExplanationStore
+from app.persistence.interface_contracts import PostgresInterfaceContractRegistry
 from app.persistence.leases import PostgresTaskLeaseStore
+from app.persistence.planning_budget import (
+    PlanningTokenBudgetReservationError,
+    PostgresPlanningTokenBudgetStore,
+)
 from app.persistence.project import ProjectAwarePostgresEvidenceStore
 from app.persistence.publication import PostgresGitHubPublicationStore
 from app.persistence.reconciliation import (
     PostgresTaskReconciliationStore,
     PreparedDispatchPublication,
 )
+from app.persistence.token_budget import PostgresRunTokenBudgetStore, TokenBudgetReservationError
 from app.persistence.types import (
     ContextFingerprintReference,
     PersistedEvidence,
@@ -52,14 +64,23 @@ __all__ = [
     "PersistedTask",
     "PostgresDAGStore",
     "PostgresDispatchAttemptStore",
+    "PostgresFailureExplanationStore",
     "PostgresEvidenceStore",
     "PostgresGitHubPublicationStore",
+    "PostgresInterfaceContractRegistry",
+    "PostgresProjectCredentialStore",
+    "ProjectCredentialConfigurationError",
+    "ProjectCredentialDecryptionError",
     "PostgresTaskLeaseStore",
+    "PostgresRunTokenBudgetStore",
+    "PostgresPlanningTokenBudgetStore",
     "PostgresTaskReconciliationStore",
     "PreparedDispatchPublication",
     "StaleRunTokenError",
     "TaskLeaseConflictError",
     "TaskLeaseExpiredError",
+    "TokenBudgetReservationError",
+    "PlanningTokenBudgetReservationError",
     "create_postgres_engine",
     "create_session_factory",
 ]

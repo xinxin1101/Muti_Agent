@@ -69,9 +69,30 @@ async def run_single_task(*, workspace_path: Path, task_path: Path):
     settings = get_settings()
     driver = SiliconFlowDriver.from_settings(settings)
 
-    developer = DeveloperAgent(driver=driver, model=settings.developer_model)
-    reviewer = ReviewerAgent(driver=driver, model=settings.reviewer_model)
-    repair = RepairAgent(driver=driver, model=settings.repair_model)
+    developer = DeveloperAgent(
+        driver=driver,
+        model=settings.developer_model,
+        max_iterations=settings.developer_max_iterations,
+        max_duration_seconds=settings.developer_max_duration_seconds,
+        max_model_turn_seconds=settings.developer_max_model_turn_seconds,
+        max_output_tokens=settings.developer_max_output_tokens,
+        enable_thinking=settings.developer_enable_thinking,
+    )
+    reviewer = ReviewerAgent(
+        driver=driver,
+        model=settings.reviewer_model,
+        max_output_tokens=settings.reviewer_max_output_tokens,
+        enable_thinking=settings.reviewer_enable_thinking,
+    )
+    repair = RepairAgent(
+        driver=driver,
+        model=settings.repair_model,
+        max_iterations=settings.repair_max_iterations,
+        max_duration_seconds=settings.repair_max_duration_seconds,
+        max_model_turn_seconds=settings.repair_max_model_turn_seconds,
+        max_output_tokens=settings.repair_max_output_tokens,
+        enable_thinking=settings.repair_enable_thinking,
+    )
     verifier = build_verifier(settings)
     orchestrator = SingleTaskOrchestrator(
         developer=developer,
@@ -81,6 +102,7 @@ async def run_single_task(*, workspace_path: Path, task_path: Path):
         developer_model=settings.developer_model,
         reviewer_model=settings.reviewer_model,
         repair_model=settings.repair_model,
+        minimum_repair_attempts=settings.minimum_repair_attempts,
     )
     return await orchestrator.run(task, workspace=workspace)
 

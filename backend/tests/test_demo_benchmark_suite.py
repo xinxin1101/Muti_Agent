@@ -22,9 +22,7 @@ def test_versioned_demo_suite_is_valid_and_pinned_to_fixture_branch() -> None:
         "json-contract",
     }
     for case in suite.cases:
-        assert str(case.repository_url).rstrip("/") == (
-            "https://github.com/xinxin1101/Muti_Agent"
-        )
+        assert str(case.repository_url).rstrip("/") == ("https://github.com/xinxin1101/Muti_Agent")
         assert case.default_branch == "benchmark-fixtures/v1-base"
         assert case.expected_base_commit == FIXTURE_BASE
         assert case.task.max_retries == 2
@@ -33,9 +31,7 @@ def test_versioned_demo_suite_is_valid_and_pinned_to_fixture_branch() -> None:
 
 def test_demo_suite_contains_no_runtime_or_provider_credentials() -> None:
     repository_root = Path(__file__).resolve().parents[2]
-    text = (repository_root / "benchmarks/v1/demo-suite.json").read_text(
-        encoding="utf-8"
-    ).lower()
+    text = (repository_root / "benchmarks/v1/demo-suite.json").read_text(encoding="utf-8").lower()
 
     for forbidden in (
         "run_token",

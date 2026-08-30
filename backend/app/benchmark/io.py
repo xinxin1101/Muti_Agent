@@ -50,12 +50,15 @@ def load_observations(path: Path) -> BenchmarkObservationBundle:
 
 def write_model(path: Path, value: BaseModel) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(
-        value.model_dump(mode="json"),
-        ensure_ascii=False,
-        sort_keys=True,
-        indent=2,
-    ) + "\n"
+    payload = (
+        json.dumps(
+            value.model_dump(mode="json"),
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+        )
+        + "\n"
+    )
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     temporary.write_text(payload, encoding="utf-8")
     temporary.replace(path)

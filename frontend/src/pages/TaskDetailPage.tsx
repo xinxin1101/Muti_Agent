@@ -6,6 +6,7 @@ import { getTask, getTaskDiff } from "../api/product";
 import { DiffViewer } from "../components/DiffViewer";
 import { StatusBadge } from "../components/StatusBadge";
 import type { ProductDiffKind } from "../types/product";
+import { formatDateTime, labelFor, translateTaskObjective } from "../i18n";
 
 export function TaskDetailPage() {
   const { runId = "", taskId = "" } = useParams();
@@ -23,10 +24,10 @@ export function TaskDetailPage() {
   });
 
   if (task.isLoading) {
-    return <p className="text-slate-400">Loading task…</p>;
+    return <p className="text-slate-400">正在加载任务…</p>;
   }
   if (task.error || !task.data) {
-    return <p className="text-rose-300">{task.error?.message ?? "Task not found."}</p>;
+    return <p className="text-rose-300">{task.error?.message ?? "未找到任务。"}</p>;
   }
 
   const contract = task.data.task;
@@ -35,35 +36,37 @@ export function TaskDetailPage() {
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <Link to={`/runs/${runId}`} className="text-sm text-cyan-300">
-            ← Run dashboard
+            ← 返回运行看板
           </Link>
           <h1 className="mt-3 font-mono text-3xl font-semibold text-white">
             {contract.task_id}
           </h1>
-          <p className="mt-3 max-w-3xl text-slate-300">{contract.objective}</p>
+          <p className="mt-3 max-w-3xl text-slate-300">
+            {translateTaskObjective(contract.objective)}
+          </p>
         </div>
         <StatusBadge status={task.data.run_status} />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <ContractList title="Writable scope" items={contract.writable_files} />
-        <ContractList title="Read-only scope" items={contract.readonly_files} />
-        <ContractList title="Readable scope" items={contract.readable_files} />
+        <ContractList title="可写范围" items={contract.writable_files} />
+        <ContractList title="只读范围" items={contract.readonly_files} />
+        <ContractList title="可读取范围" items={contract.readable_files} />
         <ContractList
-          title="Acceptance criteria"
+          title="验收标准"
           items={contract.acceptance_criteria}
         />
         <ContractList
-          title="Verification commands"
+          title="验证命令"
           items={contract.verification_commands}
         />
         <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-5">
-          <h2 className="font-semibold text-white">Contract evidence</h2>
+          <h2 className="font-semibold text-white">契约证据</h2>
           <p className="mt-3 break-all font-mono text-xs text-slate-400">
             SHA-256 {task.data.contract_sha256}
           </p>
           <p className="mt-3 text-sm text-slate-400">
-            Max retries: {contract.max_retries}
+            最大重试次数：{contract.max_retries}
           </p>
         </div>
       </div>
@@ -72,13 +75,13 @@ export function TaskDetailPage() {
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
             <h2 id="diff-viewer-heading" className="text-xl font-semibold text-white">
-              Read-only code changes
+              只读代码变更
             </h2>
             <p className="mt-1 text-sm text-slate-400">
-              Commit pairs are resolved from persisted backend evidence; the browser never supplies Git SHAs.
+              提交对由后端持久化证据解析；浏览器不会提供 Git SHA。
             </p>
           </div>
-          <div className="flex gap-2" aria-label="Diff evidence kind">
+          <div className="flex gap-2" aria-label="差异证据类型">
             {(["TASK", "INTEGRATION"] as const).map((kind) => (
               <button
                 key={kind}
@@ -91,13 +94,13 @@ export function TaskDetailPage() {
                     : "border-slate-700 text-slate-400"
                 }`}
               >
-                {kind === "TASK" ? "Task changes" : "Integration changes"}
+                {kind === "TASK" ? "任务变更" : "集成变更"}
               </button>
             ))}
           </div>
         </div>
 
-        {diff.isLoading ? <p className="text-slate-500">Loading validated diff…</p> : null}
+        {diff.isLoading ? <p className="text-slate-500">正在加载已验证的差异…</p> : null}
         {diff.error ? (
           <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4 text-sm text-slate-400">
             {diff.error.message}
@@ -107,9 +110,9 @@ export function TaskDetailPage() {
       </section>
 
       <div className="space-y-3">
-        <h2 className="text-xl font-semibold text-white">Evidence records</h2>
+        <h2 className="text-xl font-semibold text-white">证据记录</h2>
         {task.data.evidence.length === 0 ? (
-          <p className="text-slate-500">No task evidence has been persisted yet.</p>
+          <p className="text-slate-500">尚未持久化任务证据。</p>
         ) : null}
         {task.data.evidence.map((evidence) => (
           <article
@@ -118,14 +121,14 @@ export function TaskDetailPage() {
           >
             <div className="flex flex-wrap justify-between gap-3">
               <div>
-                <p className="font-semibold text-slate-200">{evidence.kind}</p>
+                <p className="font-semibold text-slate-200">{labelFor(evidence.kind)}</p>
                 <p className="mt-1 text-sm text-slate-500">
-                  {evidence.stage ?? "no stage"} · sequence{" "}
+                  {evidence.stage ?? "无阶段"} · 序列{" "}
                   {evidence.sequence ?? "—"}
                 </p>
               </div>
               <time className="text-xs text-slate-500">
-                {new Date(evidence.created_at).toLocaleString()}
+                {formatDateTime(evidence.created_at)}
               </time>
             </div>
           </article>
@@ -145,7 +148,7 @@ function ContractList({ title, items }: ContractListProps) {
     <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-5">
       <h2 className="font-semibold text-white">{title}</h2>
       {items.length === 0 ? (
-        <p className="mt-3 text-sm text-slate-500">None</p>
+        <p className="mt-3 text-sm text-slate-500">无</p>
       ) : (
         <ul className="mt-3 space-y-2 font-mono text-xs text-slate-300">
           {items.map((item) => (

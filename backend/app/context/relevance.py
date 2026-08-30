@@ -138,8 +138,7 @@ class RelevantCodeExtractor:
         candidate_by_path = {candidate.path: candidate for candidate in candidates}
         module_paths = self._module_path_index(candidate_by_path)
         base_scores = {
-            candidate.path: self._base_score(candidate, task_terms)
-            for candidate in candidates
+            candidate.path: self._base_score(candidate, task_terms) for candidate in candidates
         }
 
         indexes = self._initial_indexes(
@@ -277,16 +276,10 @@ class RelevantCodeExtractor:
                 scores[dependency_path],
                 max(0, strongest_parent - 1_500),
             )
-            file_evidence[dependency_path].append(
-                f"local_import_from={','.join(sorted(parents))}"
-            )
-            names = sorted(
-                name for name in dependency_symbols[dependency_path] if name != "*"
-            )
+            file_evidence[dependency_path].append(f"local_import_from={','.join(sorted(parents))}")
+            names = sorted(name for name in dependency_symbols[dependency_path] if name != "*")
             if names:
-                file_evidence[dependency_path].append(
-                    f"imported_symbols={','.join(names)}"
-                )
+                file_evidence[dependency_path].append(f"imported_symbols={','.join(names)}")
 
     def _regions_for_index(
         self,
@@ -310,9 +303,7 @@ class RelevantCodeExtractor:
             )
 
         imported_terms = {
-            term
-            for name in imported_symbols
-            for term in self._identifier_terms(name)
+            term for name in imported_symbols for term in self._identifier_terms(name)
         }
         scored_symbols: list[tuple[int, _Symbol, tuple[str, ...]]] = []
         for symbol in index.symbols:
@@ -337,13 +328,9 @@ class RelevantCodeExtractor:
             for symbol in [item for item in index.symbols if item.top_level][
                 : self._max_regions_per_file
             ]:
-                scored_symbols.append(
-                    (40, symbol, ("writable_or_changed_top_level_fallback",))
-                )
+                scored_symbols.append((40, symbol, ("writable_or_changed_top_level_fallback",)))
 
-        scored_symbols.sort(
-            key=lambda item: (-item[0], item[1].start_line, item[1].qualname)
-        )
+        scored_symbols.sort(key=lambda item: (-item[0], item[1].start_line, item[1].qualname))
         selected_symbols: list[tuple[int, _Symbol, tuple[str, ...]]] = []
         for item in scored_symbols:
             _, symbol, _ = item
@@ -371,9 +358,7 @@ class RelevantCodeExtractor:
 
     @staticmethod
     def _ranges_overlap(left: _Symbol, right: _Symbol) -> bool:
-        return not (
-            left.end_line < right.start_line or right.end_line < left.start_line
-        )
+        return not (left.end_line < right.start_line or right.end_line < left.start_line)
 
     @staticmethod
     def _merge_adjacent_regions(
@@ -431,8 +416,7 @@ class RelevantCodeExtractor:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 imports.extend(
-                    _ImportRef(module=alias.name, names=(), level=0)
-                    for alias in node.names
+                    _ImportRef(module=alias.name, names=(), level=0) for alias in node.names
                 )
             elif isinstance(node, ast.ImportFrom):
                 imports.append(
@@ -509,11 +493,7 @@ class RelevantCodeExtractor:
             return import_ref.module
 
         current_parts = index.module_name.split(".") if index.module_name else []
-        package_parts = (
-            current_parts
-            if index.path.endswith("/__init__.py")
-            else current_parts[:-1]
-        )
+        package_parts = current_parts if index.path.endswith("/__init__.py") else current_parts[:-1]
         levels_up = max(import_ref.level - 1, 0)
         if levels_up > len(package_parts):
             return ""
@@ -532,9 +512,7 @@ class RelevantCodeExtractor:
                 continue
             for alias in self._module_suffixes(self._canonical_module(path)):
                 paths_by_module[alias].add(path)
-        return {
-            module: tuple(sorted(paths)) for module, paths in paths_by_module.items()
-        }
+        return {module: tuple(sorted(paths)) for module, paths in paths_by_module.items()}
 
     @staticmethod
     def _canonical_module(path: str) -> str:
@@ -553,9 +531,7 @@ class RelevantCodeExtractor:
         terms = set(self._text_terms(text))
         for pattern in [*task.writable_files, *task.readable_files, *task.readonly_files]:
             terms.update(self._text_terms(pattern))
-        return frozenset(
-            term for term in terms if term not in _STOP_WORDS and len(term) > 1
-        )
+        return frozenset(term for term in terms if term not in _STOP_WORDS and len(term) > 1)
 
     def _base_score(
         self,
@@ -613,9 +589,5 @@ class RelevantCodeExtractor:
         terms: set[str] = set()
         for token in _TOKEN_RE.findall(value):
             for camel_piece in _CAMEL_BOUNDARY_RE.sub(" ", token).split():
-                terms.update(
-                    part.lower()
-                    for part in re.split(r"_+", camel_piece)
-                    if part
-                )
+                terms.update(part.lower() for part in re.split(r"_+", camel_piece) if part)
         return terms

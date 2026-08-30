@@ -101,8 +101,7 @@ async def _released_generation_without_terminal_evidence_advertises_no_operator_
 
         assert plan.actions == ()
         assert (
-            plan.reconciliation.tasks[0].frontier_state
-            is DAGTaskFrontierState.BLOCKED_RECOVERY_GAP
+            plan.reconciliation.tasks[0].frontier_state is DAGTaskFrontierState.BLOCKED_RECOVERY_GAP
         )
         assert "released" in plan.reconciliation.tasks[0].reason.lower()
     finally:

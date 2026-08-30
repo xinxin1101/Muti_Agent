@@ -64,6 +64,11 @@ def test_docker_run_command_contains_non_optional_security_boundaries(tmp_path: 
     assert command[command.index("--shm-size") + 1] == "32m"
     assert command[command.index("--pull") + 1] == "never"
     assert command[command.index("--entrypoint") + 1] == ""
+    assert command[command.index("--env") + 1] == "PYTHONDONTWRITEBYTECODE=1"
+    pycache_env_index = command.index("PYTHONPYCACHEPREFIX=/tmp/pycache")
+    assert command[pycache_env_index - 1] == "--env"
+    ruff_cache_env_index = command.index("RUFF_CACHE_DIR=/tmp/ruff-cache")
+    assert command[ruff_cache_env_index - 1] == "--env"
     mount = command[command.index("--mount") + 1]
     assert f"src={workspace.resolve()}" in mount
     assert "dst=/workspace" in mount
@@ -71,6 +76,43 @@ def test_docker_run_command_contains_non_optional_security_boundaries(tmp_path: 
     assert "trusted-verifier:test" not in command
     image_index = command.index(_IMAGE_ID)
     assert command[image_index + 1 :] == ["python", "-c", "print('ok')"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="EXE002 is specific to Docker Desktop bind mounts")
+def test_windows_ruff_command_ignores_bind_mount_executable_bit_artifact(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runner = DockerSandboxRunner(DockerSandboxPolicy(image="trusted-verifier:test"))
+
+    command = runner._docker_run_command(
+        argv=["ruff", "check", "."],
+        workspace=workspace.resolve(),
+        container_name="devflow-verify-test",
+        image_reference=_IMAGE_ID,
+        container_user="65532:65532",
+    )
+
+    image_index = command.index(_IMAGE_ID)
+    assert command[image_index + 1 :] == ["ruff", "check", "--ignore", "EXE002", "."]
+
+    command = runner._docker_run_command(
+        argv=["python", "-m", "ruff", "check", "--no-cache", "."],
+        workspace=workspace.resolve(),
+        container_name="devflow-verify-test",
+        image_reference=_IMAGE_ID,
+        container_user="65532:65532",
+    )
+    image_index = command.index(_IMAGE_ID)
+    assert command[image_index + 1 :] == [
+        "python",
+        "-m",
+        "ruff",
+        "check",
+        "--ignore",
+        "EXE002",
+        "--no-cache",
+        ".",
+    ]
 
 
 def test_preflight_resolves_configured_tag_to_immutable_image_id(
@@ -190,6 +232,35 @@ def test_missing_docker_fails_closed_without_host_fallback(
     assert result.failure_type is FailureType.TOOL_FAILURE
     assert result.exit_code is None
     assert "Docker executable is unavailable" in result.stderr
+
+
+def test_windows_fallback_is_used_when_docker_is_missing_from_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    runner = DockerSandboxRunner()
+    fallback = tmp_path / "Docker Desktop" / "docker.exe"
+    fallback.parent.mkdir()
+    fallback.touch()
+    attempted: list[str] = []
+
+    def fake_run(command, **kwargs):
+        del kwargs
+        attempted.append(command[0])
+        if command[0] == "docker":
+            raise FileNotFoundError("docker is absent from PATH")
+        return subprocess.CompletedProcess(command, 0, '["name=seccomp"]|systemd\n', "")
+
+    monkeypatch.setattr(runner, "_windows_docker_fallback", lambda: str(fallback))
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = runner._control_command(["info"], timeout_seconds=1.0)
+
+    assert not isinstance(result, str)
+    assert attempted == ["docker", str(fallback)]
+    assert runner._docker_executable == str(fallback)
 
 
 def test_docker_start_failure_is_not_misclassified_as_project_failure(

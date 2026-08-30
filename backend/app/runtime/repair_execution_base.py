@@ -15,9 +15,7 @@ from app.runtime.execution_base import (
 from app.workspace import LocalGitWorkspace, ReadOnlyCommitDiffReader
 
 
-class RepairAwareEvidenceBoundTaskExecutionBaseResolver(
-    EvidenceBoundTaskExecutionBaseResolver
-):
+class RepairAwareEvidenceBoundTaskExecutionBaseResolver(EvidenceBoundTaskExecutionBaseResolver):
     """Step 5.4 resolver extended only for accepted REPAIRED integration evidence."""
 
     @classmethod
@@ -167,9 +165,7 @@ class RepairAwareEvidenceBoundTaskExecutionBaseResolver(
                     or attempt.conflict_evidence_fingerprint is None
                 ):
                     raise PersistenceCorruptionError("repaired merge attempt lacks repair identity")
-                repair = repairs.get(
-                    (attempt.task_id, attempt.conflict_evidence_fingerprint)
-                )
+                repair = repairs.get((attempt.task_id, attempt.conflict_evidence_fingerprint))
                 if repair is None:
                     raise PersistenceCorruptionError(
                         "repaired merge attempt lacks matching typed integration-repair evidence"

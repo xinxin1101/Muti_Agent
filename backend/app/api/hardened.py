@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-from uuid import UUID
+from collections.abc import Awaitable, Callable
+from uuid import UUID, uuid4
+
+from pydantic import SecretStr
 
 from app.api.autonomous import (
     InitialTaskDispatch,
@@ -34,10 +37,14 @@ class HardenedOperatorAwareAutonomousProductRuntimeService(
         self,
         *,
         planning_context_builder: RepositoryPlanningContextBuilder,
+        project_publication_token_recorder: (
+            Callable[[UUID, SecretStr | None], Awaitable[None]] | None
+        ) = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
         self._planning_context_builder = planning_context_builder
+        self._project_publication_token_recorder = project_publication_token_recorder
 
     async def list_projects(self) -> tuple[ProductProject, ...]:
         projects = await self._catalog.list_projects()
@@ -51,6 +58,11 @@ class HardenedOperatorAwareAutonomousProductRuntimeService(
             repository_url=str(request.repository_url),
             default_branch=request.default_branch,
         )
+        if self._project_publication_token_recorder is not None:
+            await self._project_publication_token_recorder(
+                project_id,
+                request.github_publication_token,
+            )
         await self._project_store_call("mark_project_provisioning", project_id)
         try:
             await asyncio.to_thread(
@@ -84,11 +96,26 @@ class HardenedOperatorAwareAutonomousProductRuntimeService(
     async def create_run(self, request: RunCreateRequest) -> RunLaunchResponse:
         project = await self._catalog.get_project(request.project_id)
         base_commit = await self._synchronize_project(project)
+        workspace = self._workspace_resolver.resolve(request.project_id)
+        dependency_preflight = await self._preflight_workspace(
+            workspace,
+            verification_commands=tuple(request.task.verification_commands),
+        )
         dag = TaskDAG(tasks=(TaskNode(task=request.task, depends_on=()),))
+        matches = await self._match_workflows(
+            tasks=(request.task,),
+            workspace=workspace,
+        )
+        dag = self._with_workflow_execution_modes(dag, matches)
         run_id = await self._dag_store.start_run(
             project_id=request.project_id,
             dag=dag,
             base_commit=base_commit,
+        )
+        await self._initialize_run_token_budget(run_id, dag)
+        await self._record_workflow_matches(
+            run_id=run_id,
+            matches=matches,
         )
         try:
             receipt = await self._dispatcher.dispatch(
@@ -103,6 +130,7 @@ class HardenedOperatorAwareAutonomousProductRuntimeService(
                 base_commit=base_commit,
                 dispatch_status=DispatchStatus.BROKER_UNAVAILABLE,
                 detail=str(exc),
+                dependency_preflight=dependency_preflight,
             )
         return RunLaunchResponse(
             run_id=run_id,
@@ -113,49 +141,93 @@ class HardenedOperatorAwareAutonomousProductRuntimeService(
             dispatch_id=receipt.dispatch_id,
             broker_message_id=receipt.broker_message_id,
             queue_name=receipt.queue_name,
+            dependency_preflight=dependency_preflight,
         )
 
     async def create_requirement_run(
         self,
         request: RequirementRunCreateRequest,
     ) -> RequirementRunLaunchResponse:
-        if self._requirement_planner is None:
-            raise ProductPlannerUnavailableError(
-                "natural-language planning is unavailable because the Planner provider is not "
-                "configured"
-            )
         project = await self._catalog.get_project(request.project_id)
         base_commit = await self._synchronize_project(project)
         try:
             workspace = self._workspace_resolver.resolve(request.project_id)
-            repository_context = await asyncio.to_thread(
-                self._planning_context_builder.build,
-                workspace,
-                base_commit=base_commit,
-                requirement=request.requirement,
-                repository_url=project.repository_url,
-                default_branch=project.default_branch,
-            )
+            dependency_preflight = await self._preflight_workspace(workspace)
         except (ValueError, WorkspaceGitError) as exc:
             raise ProjectProvisionError(
                 "frozen repository planning context is unavailable",
                 code="PLANNING_CONTEXT_UNAVAILABLE",
             ) from exc
 
-        dag = await self._requirement_planner.plan(
+        tracked_files = await asyncio.to_thread(workspace.tracked_files)
+        dag = self._requirement_workflow_matcher.match(
             request.requirement,
-            repository_context=repository_context,
+            repository_files=tracked_files,
         )
+        launch_id = None
+        planner = None
+        if dag is None:
+            if self._requirement_planner is None:
+                raise ProductPlannerUnavailableError(
+                    "natural-language planning is unavailable because the Planner provider is "
+                    "not configured"
+                )
+            try:
+                repository_context = await asyncio.to_thread(
+                    self._planning_context_builder.build,
+                    workspace,
+                    base_commit=base_commit,
+                    requirement=request.requirement,
+                    repository_url=project.repository_url,
+                    default_branch=project.default_branch,
+                    project_id=request.project_id,
+                )
+            except (ValueError, WorkspaceGitError) as exc:
+                raise ProjectProvisionError(
+                    "frozen repository planning context is unavailable",
+                    code="PLANNING_CONTEXT_UNAVAILABLE",
+                ) from exc
+            launch_id = uuid4()
+            planner = await self._budgeted_requirement_planner(
+                launch_id=launch_id,
+                project_id=request.project_id,
+            )
+            dag = await planner.plan(
+                request.requirement,
+                repository_context=repository_context,
+            )
         dag = TaskDAG.model_validate(dag.model_dump(mode="python"))
+        # Dependency preparation is checked before planning so unavailable registries fail
+        # cheaply.  Runtime requirements are only known after the planner emits its immutable
+        # task contracts, so validate those capabilities here—still before any Developer Agent
+        # is dispatched or consumes a development slice.
+        dependency_preflight = await self._preflight_workspace(
+            workspace,
+            verification_commands=self._dag_verification_commands(dag),
+        )
+        matches = await self._match_workflows(
+            tasks=tuple(node.task for node in dag.tasks),
+            workspace=workspace,
+        )
+        dag = self._with_workflow_execution_modes(dag, matches)
         run_id = await self._dag_store.start_run(
             project_id=request.project_id,
             dag=dag,
             base_commit=base_commit,
         )
-        persisted_dag = await self._dag_store.load_dag(run_id)
-        initial_ready = tuple(
-            dag.ready_task_ids(completed_task_ids=set(), failed_task_ids=set())
+        await self._initialize_run_token_budget(run_id, dag)
+        if launch_id is not None and planner is not None:
+            await self._transfer_planner_usage(
+                launch_id=launch_id,
+                run_id=run_id,
+                planner=planner,
+            )
+        await self._record_workflow_matches(
+            run_id=run_id,
+            matches=matches,
         )
+        persisted_dag = await self._dag_store.load_dag(run_id)
+        initial_ready = tuple(dag.ready_task_ids(completed_task_ids=set(), failed_task_ids=set()))
         if not initial_ready:
             raise RuntimeError("validated TaskDAG unexpectedly has no initial READY task")
 
@@ -178,7 +250,13 @@ class HardenedOperatorAwareAutonomousProductRuntimeService(
             initial_ready_task_ids=initial_ready,
             launch_state=launch_state,
             dispatches=tuple(dispatches),
+            dependency_preflight=dependency_preflight,
         )
+
+    async def _retry_base_commit(self, project: ProductProject) -> str:
+        """Retries use a freshly synchronized managed repository baseline."""
+
+        return await self._synchronize_project(project)
 
     async def _synchronize_project(self, project: ProductProject) -> str:
         state = await asyncio.to_thread(

@@ -92,9 +92,7 @@ def test_same_coordinator_rejects_overlapping_ready_wave_calls(tmp_path: Path) -
     async def scenario() -> None:
         base = _repository(tmp_path)
         task = _task("TASK-A")
-        scheduler = DAGScheduler(
-            models.TaskDAG(tasks=(models.TaskNode(task=task, depends_on=()),))
-        )
+        scheduler = DAGScheduler(models.TaskDAG(tasks=(models.TaskNode(task=task, depends_on=()),)))
         manager = workspace.TaskWorktreeManager(base, tmp_path / "worktrees")
         reached = asyncio.Event()
         release = asyncio.Event()
@@ -183,9 +181,7 @@ def test_external_descendant_base_can_enable_a_later_dependent_wave(tmp_path: Pa
             scheduler=scheduler,
             worktrees=manager,
             runner_factory=lambda task: ImmediateRunner(),
-            task_base_resolver=lambda task_id: (
-                integrated_commit if task_id == "TASK-B" else None
-            ),
+            task_base_resolver=lambda task_id: integrated_commit if task_id == "TASK-B" else None,
         )
         second_wave = await second.run_ready_wave()
 

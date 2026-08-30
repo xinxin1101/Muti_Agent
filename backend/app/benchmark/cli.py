@@ -94,11 +94,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _report_exit_code(report) -> int:
-    return (
-        0
-        if all(item.verdict is BenchmarkCaseVerdict.MATCHED for item in report.cases)
-        else 1
-    )
+    return 0 if all(item.verdict is BenchmarkCaseVerdict.MATCHED for item in report.cases) else 1
 
 
 async def _run_live(args: argparse.Namespace) -> int:
@@ -134,9 +130,7 @@ async def _run_live(args: argparse.Namespace) -> int:
                 "mismatched_cases": report.summary.mismatched_cases,
                 "not_evaluated_cases": report.summary.not_evaluated_cases,
                 "task_success_rate": report.summary.aggregates.task_success_rate,
-                "first_pass_success_rate": (
-                    report.summary.aggregates.first_pass_success_rate
-                ),
+                "first_pass_success_rate": (report.summary.aggregates.first_pass_success_rate),
                 "repaired_success_rate": report.summary.aggregates.repaired_success_rate,
                 "output": str(args.output),
             },

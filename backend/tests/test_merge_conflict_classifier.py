@@ -56,9 +56,7 @@ def _task(task_id: str, *writable_files: str) -> models.TaskContract:
 
 
 def _dag(*tasks: models.TaskContract) -> models.TaskDAG:
-    return models.TaskDAG(
-        tasks=tuple(models.TaskNode(task=task, depends_on=()) for task in tasks)
-    )
+    return models.TaskDAG(tasks=tuple(models.TaskNode(task=task, depends_on=()) for task in tasks))
 
 
 def _run_result(task: models.TaskContract, changed_files: list[str]) -> SingleTaskRunResult:

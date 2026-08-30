@@ -14,6 +14,9 @@ from app.api.models import (
     ProductDAGNode,
     ProductDAGNodeState,
     ProductDAGStateBasis,
+    ProductDependencyCacheCleanup,
+    ProductDependencyEnvironmentMetrics,
+    ProductDependencyEnvironmentStatus,
     ProductDiffEvidenceBasis,
     ProductDiffFile,
     ProductDiffFileStatus,
@@ -106,6 +109,39 @@ class FakeProductService:
             dispatch_id=uuid4(),
             broker_message_id="message-1",
             queue_name="devflow_tasks",
+        )
+
+    async def get_dependency_environment(self, project_id: UUID):
+        if project_id != self.project_id:
+            raise ValueError("unknown project")
+        return ProductDependencyEnvironmentStatus(
+            dependency_fingerprint="d" * 64,
+            profile_kind="PYTHON_PINNED_REQUIREMENTS",
+            package_manager="PYTHON",
+            cache_state="HIT",
+            artifact_bytes=1024,
+            build_duration_ms=12,
+            log_tail="stage=python-offline-install",
+        )
+
+    async def rebuild_dependency_environment(self, project_id: UUID):
+        return await self.get_dependency_environment(project_id)
+
+    async def dependency_environment_metrics(self):
+        return ProductDependencyEnvironmentMetrics(
+            cache_hits=3,
+            builds=1,
+            failures=0,
+            hit_rate=0.75,
+            average_build_duration_ms=12,
+            cache_bytes=1024,
+        )
+
+    async def cleanup_dependency_environments(self):
+        return ProductDependencyCacheCleanup(
+            removed_fingerprints=("d" * 64,),
+            reclaimed_bytes=1024,
+            retained_bytes=0,
         )
 
     async def get_run(self, run_id: UUID):
@@ -213,10 +249,15 @@ async def _request(method: str, path: str, *, service: FakeProductService, json=
 def test_product_routes_expose_typed_browser_contracts() -> None:
     service = FakeProductService()
 
-    assert asyncio.run(_request("GET", "/healthz", service=service)).json() == {"status": "ok"}
+    assert asyncio.run(_request("GET", "/healthz", service=service)).json() == {
+        "status": "ok",
+        "runtime_fingerprint": "unknown",
+    }
     projects = asyncio.run(_request("GET", "/api/v1/projects", service=service))
     assert projects.status_code == 200
     assert projects.json()[0]["workspace_ready"] is True
+    assert projects.json()[0]["provision_status"] == "READY"
+    assert projects.json()[0]["provision_error_code"] is None
 
     runs = asyncio.run(
         _request("GET", f"/api/v1/runs?project_id={service.project_id}", service=service)
@@ -228,9 +269,7 @@ def test_product_routes_expose_typed_browser_contracts() -> None:
     assert dashboard.status_code == 200
     assert dashboard.json()["tasks"][0]["task_id"] == "api-task"
 
-    dag = asyncio.run(
-        _request("GET", f"/api/v1/runs/{service.run_id}/dag", service=service)
-    )
+    dag = asyncio.run(_request("GET", f"/api/v1/runs/{service.run_id}/dag", service=service))
     assert dag.status_code == 200
     assert dag.json()["nodes"][0]["presentation_state"] == "READY"
     assert dag.json()["edges"] == []
@@ -251,6 +290,34 @@ def test_product_routes_expose_typed_browser_contracts() -> None:
     assert diff.status_code == 200
     assert diff.json()["diff_kind"] == "TASK"
     assert diff.json()["evidence_basis"] == "WORKER_EXECUTION"
+
+    environment = asyncio.run(
+        _request(
+            "GET",
+            f"/api/v1/projects/{service.project_id}/dependency-environment",
+            service=service,
+        )
+    )
+    assert environment.status_code == 200
+    assert environment.json()["cache_state"] == "HIT"
+    assert "offline-install" in environment.json()["log_tail"]
+
+    rebuilt = asyncio.run(
+        _request(
+            "POST",
+            f"/api/v1/projects/{service.project_id}/dependency-environment/rebuild",
+            service=service,
+        )
+    )
+    assert rebuilt.status_code == 200
+    metrics = asyncio.run(
+        _request("GET", "/api/v1/dependency-environment/metrics", service=service)
+    )
+    cleanup = asyncio.run(
+        _request("POST", "/api/v1/dependency-environment/cleanup", service=service)
+    )
+    assert metrics.json()["cache_hits"] == 3
+    assert cleanup.json()["reclaimed_bytes"] == 1024
 
 
 def test_diff_route_allows_only_the_evidence_kind_selector() -> None:
@@ -335,9 +402,7 @@ def test_unknown_product_resources_map_to_404() -> None:
     missing = asyncio.run(_request("GET", f"/api/v1/runs/{uuid4()}", service=service))
     assert missing.status_code == 404
 
-    missing_dag = asyncio.run(
-        _request("GET", f"/api/v1/runs/{uuid4()}/dag", service=service)
-    )
+    missing_dag = asyncio.run(_request("GET", f"/api/v1/runs/{uuid4()}/dag", service=service))
     assert missing_dag.status_code == 404
 
     missing_task = asyncio.run(

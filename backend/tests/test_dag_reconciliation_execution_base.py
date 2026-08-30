@@ -116,7 +116,9 @@ def test_multi_task_worker_fails_closed_without_execution_base_resolver() -> Non
         asyncio.run(worker.execute(envelope, run_token=uuid4()))
 
     assert backend.calls == 0
-    assert store.appended == 0
+    # The boundary error is re-raised to fail closed, while the worker still leaves a durable
+    # terminal execution record and a completed dispatch event before the lease is released.
+    assert store.appended == 2
 
 
 def _git(root: Path, *arguments: str) -> str:

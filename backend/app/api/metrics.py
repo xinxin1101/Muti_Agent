@@ -6,10 +6,19 @@ from uuid import UUID
 
 from app.api.models import (
     ProductEvidenceMetrics,
+    ProductPlanningTokenBudget,
+    ProductRoleTokenUsage,
     ProductRunMetrics,
     ProductRuntimeEventMetrics,
+    ProductRunTokenBudget,
+    ProductStagePerformanceMetrics,
+    ProductStageTokenBudget,
+    ProductWorkflowMetrics,
+    ProductWorkPackageTokenBudget,
 )
+from app.models.agent import AgentRole
 from app.models.developer import DeveloperRunResult
+from app.models.dispatch import WorkerExecutionEvidence
 from app.models.events import (
     PersistedRuntimeEvent,
     RuntimeEventAggregate,
@@ -19,6 +28,13 @@ from app.models.events import (
 from app.models.failure import FailureReport, FailureType
 from app.models.repair import RepairRunResult
 from app.models.review import ReviewDecision, ReviewOutcome
+from app.models.token_budget import PlanningTokenBudget, RunTokenBudget
+from app.models.trace import TaskTraceBatch, TraceSpanKind
+from app.models.workflow import (
+    WorkflowActivationMode,
+    WorkflowExecutionMode,
+    WorkflowExecutionRecord,
+)
 from app.persistence.errors import PersistenceCorruptionError
 from app.persistence.serialization import decode_evidence
 from app.persistence.types import PersistedRunSnapshot, PersistenceEvidenceKind
@@ -81,9 +97,7 @@ def aggregate_runtime_events(
 
 def _validate_token_usage(prompt: int, completion: int, total: int, *, label: str) -> None:
     if prompt + completion != total:
-        raise PersistenceCorruptionError(
-            f"{label} token usage is internally inconsistent"
-        )
+        raise PersistenceCorruptionError(f"{label} token usage is internally inconsistent")
 
 
 def _typed_evidence_metrics(snapshot: PersistedRunSnapshot) -> dict[str, int]:
@@ -147,21 +161,125 @@ def _typed_evidence_metrics(snapshot: PersistedRunSnapshot) -> dict[str, int]:
     }
 
 
+def _stage_performance_metrics(snapshot: PersistedRunSnapshot) -> ProductStagePerformanceMetrics:
+    """Reduce persisted trace sidecars without making them execution authority."""
+
+    developer_model_latency_ms = 0
+    repair_model_latency_ms = 0
+    repository_tool_latency_ms = 0
+    verification_latency_ms = 0
+    context_estimated_tokens = 0
+    context_reused_files = 0
+    context_trimmed_files = 0
+
+    for item in snapshot.evidence:
+        if item.kind is PersistenceEvidenceKind.TRACE_BATCH:
+            decoded = decode_evidence(item.kind, item.payload)
+            if not isinstance(decoded, TaskTraceBatch):
+                raise PersistenceCorruptionError("TRACE_BATCH decoded to an unexpected model")
+            for span in decoded.spans:
+                if span.kind is TraceSpanKind.AGENT_TURN:
+                    context_estimated_tokens += span.context_estimated_tokens
+                    context_reused_files += span.context_reused_files
+                    context_trimmed_files += span.context_trimmed_files
+                    if span.agent_role is AgentRole.DEVELOPER:
+                        developer_model_latency_ms += span.duration_ms
+                    elif span.agent_role is AgentRole.REPAIR:
+                        repair_model_latency_ms += span.duration_ms
+                elif span.kind is TraceSpanKind.TOOL_CALL:
+                    repository_tool_latency_ms += span.duration_ms
+                elif span.kind is TraceSpanKind.VERIFICATION:
+                    verification_latency_ms += span.duration_ms
+
+    return ProductStagePerformanceMetrics(
+        developer_model_latency_ms=developer_model_latency_ms,
+        repair_model_latency_ms=repair_model_latency_ms,
+        repository_tool_latency_ms=repository_tool_latency_ms,
+        verification_latency_ms=verification_latency_ms,
+        context_estimated_tokens=context_estimated_tokens,
+        context_reused_files=context_reused_files,
+        context_trimmed_files=context_trimmed_files,
+    )
+
+
+def _workflow_metrics(
+    snapshot: PersistedRunSnapshot,
+    token_budget: RunTokenBudget,
+    *,
+    activation_mode: WorkflowActivationMode,
+) -> ProductWorkflowMetrics:
+    """Reduce persisted execution routes; estimates never replace actual token accounting."""
+
+    latest_records: dict[str, WorkflowExecutionRecord] = {}
+    for item in snapshot.evidence:
+        if item.kind is PersistenceEvidenceKind.WORKFLOW_EXECUTION:
+            decoded = decode_evidence(item.kind, item.payload)
+            if not isinstance(decoded, WorkflowExecutionRecord):
+                raise PersistenceCorruptionError(
+                    "WORKFLOW_EXECUTION decoded to an unexpected model"
+                )
+            latest_records[decoded.task_id] = decoded
+    # Historical metrics fixtures and legacy Runs can contain partial Worker evidence. Only
+    # decode it when it contributes duration to a persisted Workflow route; the execution record
+    # itself remains the source of route truth.
+    worker_durations: dict[str, int] = {}
+    for item in snapshot.evidence:
+        if item.kind is PersistenceEvidenceKind.WORKER_EXECUTION and item.task_id in latest_records:
+            decoded = decode_evidence(item.kind, item.payload)
+            if not isinstance(decoded, WorkerExecutionEvidence):
+                raise PersistenceCorruptionError("WORKER_EXECUTION decoded to an unexpected model")
+            if decoded.run_result is not None and decoded.run_result.workflow_execution is not None:
+                worker_durations[decoded.task_id] = decoded.duration_ms
+
+    counts = Counter(record.mode for record in latest_records.values())
+    agent_calls = sum(
+        role.call_count
+        for role in token_budget.roles
+        if role.role in {AgentRole.DEVELOPER, AgentRole.REPAIR, AgentRole.REVIEWER}
+    )
+    workflow_records = [
+        record
+        for record in latest_records.values()
+        if record.mode is WorkflowExecutionMode.WORKFLOW
+    ]
+    return ProductWorkflowMetrics(
+        activation_mode=activation_mode,
+        workflow_tasks=counts[WorkflowExecutionMode.WORKFLOW],
+        agent_tasks=counts[WorkflowExecutionMode.AGENT],
+        hybrid_tasks=counts[WorkflowExecutionMode.HYBRID],
+        workflow_calls=sum(max(1, record.attempts) for record in workflow_records),
+        agent_calls=agent_calls,
+        workflow_duration_ms=sum(
+            worker_durations.get(record.task_id, 0) for record in workflow_records
+        ),
+        estimated_tokens_saved=sum(record.estimated_tokens_saved for record in workflow_records),
+        agent_escalations=sum(
+            record.mode is WorkflowExecutionMode.HYBRID
+            and bool(record.fallback_reason)
+            and "escalated" in record.fallback_reason.lower()
+            for record in latest_records.values()
+        ),
+    )
+
+
 def build_run_metrics(
     snapshot: PersistedRunSnapshot,
     runtime_events: RuntimeEventAggregate,
+    token_budget: RunTokenBudget | None = None,
+    planning_budget: PlanningTokenBudget | None = None,
+    *,
+    workflow_activation_mode: WorkflowActivationMode = WorkflowActivationMode.WORKFLOW_FIRST,
 ) -> ProductRunMetrics:
     """Summarize accepted facts without deriving or authorizing Run success."""
 
+    token_budget = token_budget or RunTokenBudget(total_budget_tokens=30_000)
     counts = Counter(item.kind for item in snapshot.evidence)
     typed = _typed_evidence_metrics(snapshot)
     terminal_duration_ms: int | None = None
     if snapshot.finished_at is not None:
         elapsed = snapshot.finished_at - snapshot.started_at
         if elapsed < timedelta(0):
-            raise PersistenceCorruptionError(
-                "persisted Run finished_at cannot precede started_at"
-            )
+            raise PersistenceCorruptionError("persisted Run finished_at cannot precede started_at")
         terminal_duration_ms = int(elapsed / timedelta(milliseconds=1))
 
     return ProductRunMetrics(
@@ -204,5 +322,75 @@ def build_run_metrics(
             lease_takeovers=runtime_events.lease_takeovers,
             lease_releases=runtime_events.lease_releases,
             latest_sequence=runtime_events.latest_sequence,
+        ),
+        token_budget=ProductRunTokenBudget(
+            total_budget_tokens=token_budget.total_budget_tokens,
+            used_prompt_tokens=token_budget.used_prompt_tokens,
+            used_completion_tokens=token_budget.used_completion_tokens,
+            used_total_tokens=token_budget.used_total_tokens,
+            reserved_tokens=token_budget.reserved_tokens,
+            status=token_budget.status,
+            roles=tuple(
+                ProductRoleTokenUsage(
+                    role=item.role.value,
+                    prompt_tokens=item.prompt_tokens,
+                    completion_tokens=item.completion_tokens,
+                    total_tokens=item.total_tokens,
+                    call_count=item.call_count,
+                )
+                for item in token_budget.roles
+            ),
+            stages=tuple(
+                ProductStageTokenBudget(
+                    stage=item.stage.value,
+                    total_budget_tokens=item.total_budget_tokens,
+                    used_tokens=item.used_tokens,
+                    reserved_tokens=item.reserved_tokens,
+                )
+                for item in token_budget.stages
+            ),
+            work_packages=tuple(
+                ProductWorkPackageTokenBudget(
+                    task_id=item.task_id,
+                    complexity=item.complexity,
+                    total_budget_tokens=item.total_budget_tokens,
+                    developer_budget_tokens=item.developer_budget_tokens,
+                    repair_budget_tokens=item.repair_budget_tokens,
+                    developer_used_tokens=item.developer_used_tokens,
+                    repair_used_tokens=item.repair_used_tokens,
+                    developer_reserved_tokens=item.developer_reserved_tokens,
+                    repair_reserved_tokens=item.repair_reserved_tokens,
+                    developer_borrowed_tokens=item.developer_borrowed_tokens,
+                    repair_borrowed_tokens=item.repair_borrowed_tokens,
+                    developer_reclaimed_tokens=item.developer_reclaimed_tokens,
+                    repair_reclaimed_tokens=item.repair_reclaimed_tokens,
+                    borrow_count=item.borrow_count,
+                    last_required_tokens=item.last_required_tokens,
+                    last_available_tokens=item.last_available_tokens,
+                    last_flex_available_tokens=item.last_flex_available_tokens,
+                    last_borrowed_tokens=item.last_borrowed_tokens,
+                    last_budget_decision=item.last_budget_decision,
+                    status=item.status.value,
+                )
+                for item in token_budget.work_packages
+            ),
+        ),
+        planning_budget=(
+            ProductPlanningTokenBudget(
+                total_budget_tokens=planning_budget.total_budget_tokens,
+                used_total_tokens=planning_budget.used_total_tokens,
+                attempt_count=planning_budget.attempt_count,
+                max_attempts=planning_budget.max_attempts,
+                enable_thinking=planning_budget.enable_thinking,
+                status=planning_budget.status,
+            )
+            if planning_budget is not None
+            else None
+        ),
+        performance=_stage_performance_metrics(snapshot),
+        workflow=_workflow_metrics(
+            snapshot,
+            token_budget,
+            activation_mode=workflow_activation_mode,
         ),
     )

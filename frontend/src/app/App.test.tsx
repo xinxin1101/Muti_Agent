@@ -15,6 +15,9 @@ const project = {
   created_at: "2026-08-19T00:00:00Z",
   run_count: 1,
   workspace_ready: true,
+  provision_status: "READY",
+  provision_error_code: null,
+  provision_error_message: null,
 } as const;
 
 const run = {
@@ -90,6 +93,35 @@ beforeEach(() => {
       lease_takeovers: 0,
       lease_releases: 0,
       latest_sequence: 1,
+    },
+    token_budget: {
+      total_budget_tokens: 30000,
+      used_prompt_tokens: 0,
+      used_completion_tokens: 0,
+      used_total_tokens: 0,
+      reserved_tokens: 0,
+      status: "NORMAL",
+      roles: [],
+    },
+    performance: {
+      developer_model_latency_ms: 0,
+      repair_model_latency_ms: 0,
+      repository_tool_latency_ms: 0,
+      verification_latency_ms: 0,
+      context_estimated_tokens: 0,
+      context_reused_files: 0,
+      context_trimmed_files: 0,
+    },
+    workflow: {
+      activation_mode: "workflow_first",
+      workflow_tasks: 0,
+      agent_tasks: 0,
+      hybrid_tasks: 1,
+      workflow_calls: 0,
+      agent_calls: 1,
+      workflow_duration_ms: 0,
+      estimated_tokens_saved: 0,
+      agent_escalations: 0,
     },
   });
   vi.mocked(productApi.getRunDAG).mockResolvedValue({
@@ -174,7 +206,7 @@ describe("App", () => {
   it("keeps the Step 4.1 foundation route available", () => {
     renderApp("/");
     expect(
-      screen.getByRole("heading", { name: "DevFlow product foundation" }),
+      screen.getByRole("heading", { name: "DevFlow 产品概览" }),
     ).toBeInTheDocument();
   });
 
@@ -183,13 +215,50 @@ describe("App", () => {
     expect(
       await screen.findByText("https://github.com/example/repo"),
     ).toBeInTheDocument();
-    expect(screen.getByText(/workspace ready/)).toBeInTheDocument();
+    expect(screen.getByText(/工作区已就绪/)).toBeInTheDocument();
+  });
+
+  it("explains a failed repository registration in Chinese", async () => {
+    vi.mocked(productApi.listProjects).mockResolvedValue([
+      {
+        ...project,
+        workspace_ready: false,
+        provision_status: "FAILED",
+        provision_error_code: "GIT_COMMAND_FAILED",
+        provision_error_message: "safe diagnostic",
+      },
+    ]);
+
+    renderApp("/projects");
+
+    expect(
+      await screen.findByText(/无法从 GitHub 获取仓库/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/该项目上一次注册失败/)).toBeInTheDocument();
+    expect(screen.getByText("诊断代码：GIT_COMMAND_FAILED")).toBeInTheDocument();
+  });
+
+  it("confirms the current repository registration succeeded", async () => {
+    vi.mocked(productApi.createProject).mockResolvedValue(project);
+    renderApp("/projects");
+
+    fireEvent.change(await screen.findByLabelText("HTTPS 仓库地址"), {
+      target: { value: project.repository_url },
+    });
+    fireEvent.change(screen.getByLabelText("GitHub 发布令牌"), {
+      target: { value: "test-token" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "注册项目" }));
+
+    expect(
+      await screen.findByText(new RegExp(`项目注册成功：${project.repository_url}`)),
+    ).toBeInTheDocument();
   });
 
   it("renders the Phase 6 requirement-only New Run form", async () => {
     renderApp(`/runs/new?projectId=${project.project_id}`);
-    expect(await screen.findByRole("heading", { name: "New Run" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Requirement")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "新建运行" })).toBeInTheDocument();
+    expect(screen.getByLabelText("需求描述")).toBeInTheDocument();
     expect(screen.queryByLabelText("Task ID")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Base commit")).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/Writable files/)).not.toBeInTheDocument();
@@ -217,11 +286,11 @@ describe("App", () => {
     });
 
     renderApp(`/runs/new?projectId=${project.project_id}`);
-    fireEvent.change(await screen.findByLabelText("Requirement"), {
+    fireEvent.change(await screen.findByLabelText("需求描述"), {
       target: { value: "Add JWT login and refresh tokens with deterministic tests." },
     });
     await screen.findByRole("option", { name: project.repository_url });
-    fireEvent.click(screen.getByRole("button", { name: "Start Multi-Agent run" }));
+    fireEvent.click(screen.getByRole("button", { name: "启动多智能体运行" }));
 
     await waitFor(() =>
       expect(productApi.createRequirementRun).toHaveBeenCalledTimes(1),
@@ -238,14 +307,14 @@ describe("App", () => {
   it("renders the Run Dashboard from backend status", async () => {
     renderApp(`/runs/${run.run_id}`);
     expect(
-      await screen.findByRole("heading", { name: "Run Dashboard" }),
+      await screen.findByRole("heading", { name: "运行看板" }),
     ).toBeInTheDocument();
-    expect(screen.getAllByText("RUNNING").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("运行中").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Build the product page.").length).toBeGreaterThan(0);
     expect(
-      screen.getByRole("img", { name: "Validated task dependency DAG" }),
+      screen.getByRole("img", { name: "已验证的任务依赖 DAG" }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "Run metrics" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "运行指标" })).toBeInTheDocument();
   });
 
   it("renders Task Detail contract, diff, and evidence metadata", async () => {
@@ -255,13 +324,13 @@ describe("App", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("VERIFICATION_RESULT")).toBeInTheDocument();
     expect(screen.getByText("frontend/src/pages/**")).toBeInTheDocument();
-    expect(await screen.findByLabelText("Read-only Git diff")).toBeInTheDocument();
+    expect(await screen.findByLabelText("只读 Git 差异")).toBeInTheDocument();
   });
 
   it("renders a bounded not-found state", () => {
     renderApp("/outside-step-4-2");
     expect(
-      screen.getByRole("heading", { name: "Page not found" }),
+      screen.getByRole("heading", { name: "未找到页面" }),
     ).toBeInTheDocument();
   });
 });

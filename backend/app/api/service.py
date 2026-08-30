@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from app.api.metrics import (
     MAX_METRIC_EVENT_SCAN,
@@ -20,6 +20,10 @@ from app.api.models import (
     ProductDAGNode,
     ProductDAGNodeState,
     ProductDAGStateBasis,
+    ProductDependencyCacheCleanup,
+    ProductDependencyEnvironmentMetrics,
+    ProductDependencyEnvironmentStatus,
+    ProductDependencyPreflight,
     ProductDiffEvidenceBasis,
     ProductDiffFile,
     ProductDiffFileStatus,
@@ -28,8 +32,10 @@ from app.api.models import (
     ProductEvidenceSummary,
     ProductProject,
     ProductRun,
+    ProductRunCheckpoint,
     ProductRunDAG,
     ProductRunDetail,
+    ProductRunFailure,
     ProductRunMetrics,
     ProductTaskDetail,
     ProductTaskDiff,
@@ -39,6 +45,7 @@ from app.api.models import (
     RunLaunchResponse,
 )
 from app.dispatch.errors import TaskDispatchBrokerError
+from app.models.agent import AgentRole, TokenUsage
 from app.models.dag import TaskDAG, TaskNode
 from app.models.dispatch import (
     TaskDispatchReceipt,
@@ -46,14 +53,30 @@ from app.models.dispatch import (
     WorkerExecutionStatus,
 )
 from app.models.events import PersistedRuntimeEvent
+from app.models.failure import FailureReport
 from app.models.merge import MergeAttemptOutcome, MergeQueueSnapshot
 from app.models.run import RunEvent, TaskRunState
+from app.models.task import TaskContract
+from app.models.verification import VerificationResult
+from app.models.work_package import WorkPackageActivationMode
+from app.models.workflow import (
+    WorkflowActivationMode,
+    WorkflowExecutionMode,
+    WorkflowExecutionRecord,
+    WorkflowMatch,
+)
 from app.persistence.dag import PersistedDAGSnapshot
 from app.persistence.errors import PersistenceCorruptionError
+from app.persistence.interface_contracts import PostgresInterfaceContractRegistry
+from app.persistence.serialization import decode_evidence
+from app.persistence.token_budget import PostgresRunTokenBudgetStore
 from app.persistence.types import (
     PersistedRunSnapshot,
     PersistenceEvidenceKind,
 )
+from app.verification import DeterministicVerifier
+from app.verification.dependency_preflight import DependencyEnvironmentPreflight
+from app.workflows import WorkflowMatcher, WorkflowRegistry
 from app.workspace import (
     CommitDiffError,
     LocalGitWorkspace,
@@ -64,6 +87,10 @@ from app.workspace import (
 
 class ProductWorkspaceNotReadyError(RuntimeError):
     """Raised when a persisted Project has no trustworthy managed Git workspace."""
+
+
+class ProductDependencyEnvironmentUnavailableError(RuntimeError):
+    """Raised when runtime composition did not configure dependency environment controls."""
 
 
 class ProductDiffUnavailableError(RuntimeError):
@@ -102,6 +129,16 @@ class ProductEvidenceStore(Protocol):
         after_sequence: int = 0,
         limit: int = 200,
     ) -> tuple[PersistedRuntimeEvent, ...]: ...
+    async def append_evidence(
+        self,
+        *,
+        run_id: UUID,
+        evidence_key: str,
+        kind: PersistenceEvidenceKind,
+        payload_model: BaseModel,
+        task_id: str | None = None,
+        stage: str | None = None,
+    ) -> int: ...
     async def dispose(self) -> None: ...
 
 
@@ -153,6 +190,14 @@ class ProductRuntimeService:
         provisioner: ProductProvisioner,
         workspace_resolver: ProductWorkspaceResolver,
         dispatcher: ProductDispatcher,
+        dependency_preflight: DependencyEnvironmentPreflight | None = None,
+        token_budget_store: PostgresRunTokenBudgetStore | None = None,
+        interface_contract_registry: PostgresInterfaceContractRegistry | None = None,
+        developer_max_output_tokens: int = 1_400,
+        workflow_activation_mode: WorkflowActivationMode = WorkflowActivationMode.WORKFLOW_FIRST,
+        work_package_activation_mode: WorkPackageActivationMode = (
+            WorkPackageActivationMode.WORK_PACKAGE_FIRST
+        ),
     ) -> None:
         self._catalog = catalog
         self._evidence_store = evidence_store
@@ -160,17 +205,127 @@ class ProductRuntimeService:
         self._provisioner = provisioner
         self._workspace_resolver = workspace_resolver
         self._dispatcher = dispatcher
+        self._dependency_preflight = dependency_preflight
+        self._token_budget_store = token_budget_store
+        self._interface_contract_registry = interface_contract_registry
+        self._developer_max_output_tokens = developer_max_output_tokens
+        self._workflow_activation_mode = workflow_activation_mode
+        self._work_package_activation_mode = work_package_activation_mode
+        self._workflow_matcher = WorkflowMatcher(WorkflowRegistry.default())
 
     async def dispose(self) -> None:
         await self._catalog.dispose()
         await self._evidence_store.dispose()
         await self._dag_store.dispose()
+        if self._token_budget_store is not None:
+            await self._token_budget_store.dispose()
+        if self._interface_contract_registry is not None:
+            await self._interface_contract_registry.dispose()
+
+    async def _initialize_run_token_budget(self, run_id: UUID, dag: TaskDAG | None = None) -> None:
+        """Persist the budget before dispatch so queued runs have an observable budget."""
+
+        if self._token_budget_store is not None:
+            await self._token_budget_store.initialize(run_id)
+            if (
+                dag is not None
+                and self._work_package_activation_mode is not WorkPackageActivationMode.LEGACY_DAG
+            ):
+                await self._token_budget_store.initialize_hierarchy(
+                    run_id=run_id,
+                    dag=dag,
+                    developer_max_output_tokens=self._developer_max_output_tokens,
+                )
+        if (
+            self._interface_contract_registry is not None
+            and dag is not None
+            and self._work_package_activation_mode is WorkPackageActivationMode.CONTRACT_GATED
+        ):
+            await self._interface_contract_registry.declare_for_dag(run_id=run_id, dag=dag)
+
+    def _validate_run_token_budget_plan(self, dag: TaskDAG) -> None:
+        """Fail before persistence/dispatch when package minimums cannot be funded."""
+
+        if (
+            self._token_budget_store is not None
+            and self._work_package_activation_mode is not WorkPackageActivationMode.LEGACY_DAG
+        ):
+            self._token_budget_store.validate_hierarchy_plan(
+                dag=dag,
+                developer_max_output_tokens=self._developer_max_output_tokens,
+            )
+
+    async def _record_planner_usage(self, run_id: UUID, planner: object) -> None:
+        if self._token_budget_store is None:
+            return
+        usage = getattr(planner, "last_usage", None)
+        if isinstance(usage, TokenUsage) and usage.total_tokens:
+            await self._token_budget_store.record_usage(
+                run_id=run_id,
+                role=AgentRole.PLANNER,
+                usage=usage,
+            )
+
+    async def _match_workflows(
+        self,
+        *,
+        tasks: tuple[TaskContract, ...],
+        workspace: LocalGitWorkspace,
+    ) -> tuple[WorkflowMatch, ...]:
+        """Select the pure-rule runtime route before the immutable DAG is persisted."""
+
+        tracked_files = getattr(workspace, "tracked_files", None)
+        repository_files = await asyncio.to_thread(tracked_files) if callable(tracked_files) else ()
+        matches = self._workflow_matcher.match_tasks(
+            tasks,
+            repository_files=repository_files,
+        )
+        return tuple(self._apply_workflow_activation(match) for match in matches)
+
+    def _apply_workflow_activation(self, match: WorkflowMatch) -> WorkflowMatch:
+        if self._workflow_activation_mode is WorkflowActivationMode.AGENT_ONLY:
+            return match.model_copy(update={"execution_mode": WorkflowExecutionMode.AGENT})
+        return match
+
+    async def _record_workflow_matches(
+        self,
+        *,
+        run_id: UUID,
+        matches: tuple[WorkflowMatch, ...],
+    ) -> None:
+        """Persist deterministic match evidence after the Run identity exists."""
+
+        append_evidence = getattr(self._evidence_store, "append_evidence", None)
+        if not callable(append_evidence):
+            return
+        for match in matches:
+            await append_evidence(
+                run_id=run_id,
+                evidence_key=f"workflow-match:{match.task_id}",
+                kind=PersistenceEvidenceKind.WORKFLOW_MATCH,
+                payload_model=match,
+                task_id=match.task_id,
+                stage="workflow-match",
+            )
+
+    @staticmethod
+    def _with_workflow_execution_modes(
+        dag: TaskDAG,
+        matches: tuple[WorkflowMatch, ...],
+    ) -> TaskDAG:
+        modes = {match.task_id: match.execution_mode for match in matches}
+        if set(modes) != set(dag.task_ids):
+            raise ValueError("workflow matches must cover every persisted DAG task")
+        return TaskDAG(
+            tasks=tuple(
+                node.model_copy(update={"execution_mode": modes[node.task.task_id]})
+                for node in dag.tasks
+            )
+        )
 
     async def list_projects(self) -> tuple[ProductProject, ...]:
         projects = await self._catalog.list_projects()
-        return tuple(
-            await asyncio.gather(*(self._with_workspace_state(item) for item in projects))
-        )
+        return tuple(await asyncio.gather(*(self._with_workspace_state(item) for item in projects)))
 
     async def create_project(self, request: ProjectCreateRequest) -> ProductProject:
         project_id = await self._evidence_store.ensure_project(
@@ -208,12 +363,27 @@ class ProductRuntimeService:
             raise ProductWorkspaceNotReadyError(
                 f"managed workspace is not trustworthy for project {request.project_id}"
             ) from exc
+        dependency_preflight = await self._preflight_workspace(
+            workspace,
+            verification_commands=tuple(request.task.verification_commands),
+        )
 
         dag = TaskDAG(tasks=(TaskNode(task=request.task, depends_on=()),))
+        matches = await self._match_workflows(
+            tasks=(request.task,),
+            workspace=workspace,
+        )
+        dag = self._with_workflow_execution_modes(dag, matches)
+        self._validate_run_token_budget_plan(dag)
         run_id = await self._dag_store.start_run(
             project_id=request.project_id,
             dag=dag,
             base_commit=base_commit,
+        )
+        await self._initialize_run_token_budget(run_id, dag)
+        await self._record_workflow_matches(
+            run_id=run_id,
+            matches=matches,
         )
         try:
             receipt = await self._dispatcher.dispatch(run_id=run_id, task_id=request.task.task_id)
@@ -225,6 +395,7 @@ class ProductRuntimeService:
                 base_commit=base_commit,
                 dispatch_status=DispatchStatus.BROKER_UNAVAILABLE,
                 detail=str(exc),
+                dependency_preflight=dependency_preflight,
             )
         return RunLaunchResponse(
             run_id=run_id,
@@ -235,7 +406,67 @@ class ProductRuntimeService:
             dispatch_id=receipt.dispatch_id,
             broker_message_id=receipt.broker_message_id,
             queue_name=receipt.queue_name,
+            dependency_preflight=dependency_preflight,
         )
+
+    async def _preflight_workspace(
+        self,
+        workspace: LocalGitWorkspace,
+        *,
+        verification_commands: tuple[str, ...] = (),
+    ) -> ProductDependencyPreflight | None:
+        if self._dependency_preflight is None:
+            return None
+        if verification_commands:
+            report = await asyncio.to_thread(
+                self._dependency_preflight.check,
+                workspace.root,
+                verification_commands=verification_commands,
+            )
+        else:
+            # Keep the established dependency-only preflight protocol for callers that do not
+            # yet have planned verification commands.
+            report = await asyncio.to_thread(self._dependency_preflight.check, workspace.root)
+        return ProductDependencyPreflight.model_validate(report.model_dump(mode="python"))
+
+    async def get_dependency_environment(
+        self,
+        project_id: UUID,
+    ) -> ProductDependencyEnvironmentStatus:
+        preflight = self._require_dependency_preflight()
+        await self._catalog.get_project(project_id)
+        workspace = self._workspace_resolver.resolve(project_id)
+        report = await asyncio.to_thread(preflight.status, workspace.root)
+        return ProductDependencyEnvironmentStatus.model_validate(report.model_dump(mode="python"))
+
+    async def rebuild_dependency_environment(
+        self,
+        project_id: UUID,
+    ) -> ProductDependencyEnvironmentStatus:
+        preflight = self._require_dependency_preflight()
+        await self._catalog.get_project(project_id)
+        workspace = self._workspace_resolver.resolve(project_id)
+        report = await asyncio.to_thread(preflight.rebuild, workspace.root)
+        return ProductDependencyEnvironmentStatus.model_validate(report.model_dump(mode="python"))
+
+    async def dependency_environment_metrics(self) -> ProductDependencyEnvironmentMetrics:
+        report = await asyncio.to_thread(self._require_dependency_preflight().metrics)
+        return ProductDependencyEnvironmentMetrics.model_validate(report.model_dump(mode="python"))
+
+    async def cleanup_dependency_environments(self) -> ProductDependencyCacheCleanup:
+        report = await asyncio.to_thread(self._require_dependency_preflight().cleanup)
+        return ProductDependencyCacheCleanup(
+            removed_fingerprints=report.removed_fingerprints,
+            reclaimed_bytes=report.reclaimed_bytes,
+            retained_bytes=report.retained_bytes,
+        )
+
+    def _require_dependency_preflight(self) -> DependencyEnvironmentPreflight:
+        if self._dependency_preflight is None:
+            raise ProductDependencyEnvironmentUnavailableError(
+                "dependency environment controls are not configured"
+            )
+        return self._dependency_preflight
 
     async def get_run(self, run_id: UUID) -> ProductRunDetail:
         snapshot = await self._evidence_store.load_run(run_id)
@@ -262,7 +493,144 @@ class ProductRuntimeService:
             started_at=snapshot.started_at,
             finished_at=snapshot.finished_at,
             tasks=tasks,
+            failures=self._failure_summaries(snapshot),
+            checkpoint=self._checkpoint_summary(snapshot),
         )
+
+    @staticmethod
+    def _checkpoint_summary(snapshot: PersistedRunSnapshot) -> ProductRunCheckpoint | None:
+        """Expose a continuation point only when no successful sibling makes it ambiguous."""
+
+        if snapshot.status.value != "FAILED":
+            return None
+        executions: list[WorkerExecutionEvidence] = []
+        for evidence in snapshot.evidence:
+            if evidence.kind is not PersistenceEvidenceKind.WORKER_EXECUTION:
+                continue
+            try:
+                executions.append(WorkerExecutionEvidence.model_validate(evidence.payload))
+            except ValidationError as exc:
+                raise PersistenceCorruptionError(
+                    "persisted worker execution evidence failed schema validation"
+                ) from exc
+        checkpoints = [item.checkpoint for item in executions if item.checkpoint is not None]
+        if len(checkpoints) != 1 or any(
+            item.status is WorkerExecutionStatus.SUCCEEDED for item in executions
+        ):
+            return None
+        checkpoint = checkpoints[0]
+        assert checkpoint is not None
+        if checkpoint.base_commit != snapshot.base_commit:
+            raise PersistenceCorruptionError(
+                "checkpoint does not descend from the persisted run base"
+            )
+        return ProductRunCheckpoint(
+            task_id=checkpoint.task_id,
+            commit_sha=checkpoint.commit_sha,
+            changed_files=checkpoint.changed_files,
+            reason=checkpoint.reason,
+            summary=checkpoint.summary,
+            remaining_budget_tokens=checkpoint.remaining_budget_tokens,
+        )
+
+    @staticmethod
+    def _failure_summaries(snapshot: PersistedRunSnapshot) -> tuple[ProductRunFailure, ...]:
+        """Project durable failure records without exposing full agent/tool transcripts."""
+
+        reports: list[tuple[str | None, FailureReport]] = []
+        for evidence in snapshot.evidence:
+            if evidence.kind is not PersistenceEvidenceKind.WORKER_EXECUTION:
+                continue
+            try:
+                execution = WorkerExecutionEvidence.model_validate(evidence.payload)
+            except ValidationError as exc:
+                raise PersistenceCorruptionError(
+                    "persisted worker execution evidence failed schema validation"
+                ) from exc
+            if execution.run_id != snapshot.run_id or execution.task_id != evidence.task_id:
+                raise PersistenceCorruptionError(
+                    "persisted worker execution evidence has mismatched Run/Task identity"
+                )
+            reports.extend((execution.task_id, report) for report in execution.failures)
+
+        # A terminal worker report can describe a later runtime stop (for example an old Repair
+        # Agent iteration limit). Include its preceding deterministic failure as well, so the UI
+        # and optional AI explanation retain the actionable root cause rather than only the
+        # downstream symptom.
+        for evidence in snapshot.evidence:
+            if evidence.kind is not PersistenceEvidenceKind.VERIFICATION_RESULT:
+                continue
+            try:
+                verification = VerificationResult.model_validate(evidence.payload)
+            except ValidationError as exc:
+                raise PersistenceCorruptionError(
+                    "persisted verification evidence failed schema validation"
+                ) from exc
+            reports.extend(
+                (evidence.task_id, report)
+                for report in DeterministicVerifier.failure_reports(verification)
+            )
+
+        # An interrupted worker can persist a standalone report before terminal execution.
+        for evidence in snapshot.evidence:
+            if evidence.kind is not PersistenceEvidenceKind.FAILURE_REPORT:
+                continue
+            try:
+                reports.append((evidence.task_id, FailureReport.model_validate(evidence.payload)))
+            except ValidationError as exc:
+                raise PersistenceCorruptionError(
+                    "persisted failure report evidence failed schema validation"
+                ) from exc
+
+        summaries: list[ProductRunFailure] = []
+        seen: set[tuple[str | None, str, str, tuple[str, ...]]] = set()
+        for task_id, report in reports:
+            public_evidence = [
+                item
+                for evidence in report.evidence
+                if (item := ProductRuntimeService._public_failure_evidence(evidence)) is not None
+            ]
+            identity = (
+                task_id,
+                report.failure_type.value,
+                report.message,
+                tuple(public_evidence),
+            )
+            if identity in seen:
+                continue
+            seen.add(identity)
+            summaries.append(
+                ProductRunFailure(
+                    task_id=task_id,
+                    failure_type=report.failure_type,
+                    source=report.source,
+                    message=report.message[:512],
+                    retryable=report.retryable,
+                    evidence=tuple(public_evidence[:8]),
+                )
+            )
+            if len(summaries) == 8:
+                break
+        return tuple(summaries)
+
+    @staticmethod
+    def _public_failure_evidence(value: str) -> str | None:
+        """Allow only concise diagnostic keys useful in the product UI."""
+
+        key, separator, detail = value.partition("=")
+        if not separator or key not in {
+            "attempt",
+            "check",
+            "command",
+            "exit_code",
+            "stderr",
+            "stop_reason",
+            "target_failures",
+            "repair_attempts_exhausted",
+            "execution_backend",
+        }:
+            return None
+        return f"{key}={detail[:480]}"
 
     async def get_run_metrics(self, run_id: UUID) -> ProductRunMetrics:
         """Return bounded descriptive metrics without deriving Run success."""
@@ -298,7 +666,15 @@ class ProductRuntimeService:
                 )
 
         aggregate = aggregate_runtime_events(run_id, tuple(events))
-        return build_run_metrics(snapshot, aggregate)
+        if self._token_budget_store is None:
+            raise ProductMetricsUnavailableError("Run token budget store is not configured")
+        token_budget = await self._token_budget_store.snapshot(run_id)
+        return build_run_metrics(
+            snapshot,
+            aggregate,
+            token_budget,
+            workflow_activation_mode=self._workflow_activation_mode,
+        )
 
     async def get_run_dag(self, run_id: UUID) -> ProductRunDAG:
         """Project immutable DAG topology plus evidence-backed presentation state."""
@@ -311,14 +687,10 @@ class ProductRuntimeService:
         order = dag.topological_order()
         latest_states = self._latest_task_states(snapshot)
         completed = {
-            task_id
-            for task_id, state in latest_states.items()
-            if state is TaskRunState.SUCCEEDED
+            task_id for task_id, state in latest_states.items() if state is TaskRunState.SUCCEEDED
         }
         failed = {
-            task_id
-            for task_id, state in latest_states.items()
-            if state is TaskRunState.FAILED
+            task_id for task_id, state in latest_states.items() if state is TaskRunState.FAILED
         }
         try:
             blocked = set(dag.blocked_task_ids(failed_task_ids=failed))
@@ -345,6 +717,11 @@ class ProductRuntimeService:
             )
 
         layers = self._dag_layers(dag, order)
+        workflow_records = self._latest_workflow_records(snapshot)
+        package_budgets = {}
+        if self._token_budget_store is not None:
+            token_budget = await self._token_budget_store.snapshot(run_id)
+            package_budgets = {item.task_id: item for item in token_budget.work_packages}
         node_items: list[ProductDAGNode] = []
         for index, task_id in enumerate(order):
             presentation_state, state_basis = self._presentation_state(
@@ -353,6 +730,21 @@ class ProductRuntimeService:
                 ready=ready,
                 blocked=blocked,
             )
+            contract_block_reason = None
+            if (
+                presentation_state in {ProductDAGNodeState.READY, ProductDAGNodeState.BLOCKED}
+                and self._interface_contract_registry is not None
+                and self._work_package_activation_mode is WorkPackageActivationMode.CONTRACT_GATED
+            ):
+                gate = await self._interface_contract_registry.gate_for_task(
+                    run_id=run_id,
+                    task_id=task_id,
+                )
+                if not gate.allowed:
+                    presentation_state = ProductDAGNodeState.BLOCKED_BY_CONTRACT
+                    state_basis = ProductDAGStateBasis.DERIVED_DAG
+                    contract_block_reason = gate.reason
+            workflow = workflow_records.get(task_id)
             node_items.append(
                 ProductDAGNode(
                     task_id=task_id,
@@ -362,6 +754,42 @@ class ProductRuntimeService:
                     layer=layers[task_id],
                     presentation_state=presentation_state,
                     state_basis=state_basis,
+                    execution_mode=(
+                        workflow.mode if workflow is not None else dag.node(task_id).execution_mode
+                    ),
+                    workflow_id=workflow.workflow_id if workflow is not None else None,
+                    workflow_step=(
+                        workflow.steps[-1].name
+                        if workflow is not None and workflow.steps
+                        else self._workflow_step_for_state(
+                            latest_states.get(task_id),
+                            execution_mode=dag.node(task_id).execution_mode,
+                        )
+                    ),
+                    agent_escalation_reason=(
+                        workflow.fallback_reason if workflow is not None else None
+                    ),
+                    contract_block_reason=contract_block_reason,
+                    owned_paths=tuple(dag.node(task_id).task.writable_files),
+                    consumes=dag.node(task_id).consumes,
+                    produces=dag.node(task_id).produces,
+                    verification_commands=tuple(dag.node(task_id).task.verification_commands),
+                    complexity=(
+                        dag.node(task_id).complexity.value
+                        if dag.node(task_id).complexity is not None
+                        else None
+                    ),
+                    package_budget_tokens=(
+                        package_budgets[task_id].total_budget_tokens
+                        if task_id in package_budgets
+                        else None
+                    ),
+                    package_used_tokens=(
+                        package_budgets[task_id].developer_used_tokens
+                        + package_budgets[task_id].repair_used_tokens
+                        if task_id in package_budgets
+                        else None
+                    ),
                 )
             )
         nodes = tuple(node_items)
@@ -383,6 +811,41 @@ class ProductRuntimeService:
             nodes=nodes,
             edges=edges,
         )
+
+    @staticmethod
+    def _workflow_step_for_state(
+        state: TaskRunState | None,
+        *,
+        execution_mode: WorkflowExecutionMode,
+    ) -> str | None:
+        """Offer a bounded live Workflow stage before its terminal record is persisted."""
+
+        if execution_mode is not WorkflowExecutionMode.WORKFLOW:
+            return None
+        return {
+            None: "等待执行",
+            TaskRunState.PENDING: "等待执行",
+            TaskRunState.RUNNING: "创建文件",
+            TaskRunState.VERIFYING: "验证",
+            TaskRunState.REPAIRING: "确定性重试",
+            TaskRunState.REVIEWING: "检查模板契约",
+        }.get(state)
+
+    @staticmethod
+    def _latest_workflow_records(
+        snapshot: PersistedRunSnapshot,
+    ) -> dict[str, WorkflowExecutionRecord]:
+        records: dict[str, WorkflowExecutionRecord] = {}
+        for item in snapshot.evidence:
+            if item.kind is not PersistenceEvidenceKind.WORKFLOW_EXECUTION:
+                continue
+            decoded = decode_evidence(item.kind, item.payload)
+            if not isinstance(decoded, WorkflowExecutionRecord):
+                raise PersistenceCorruptionError(
+                    "WORKFLOW_EXECUTION decoded to an unexpected model"
+                )
+            records[decoded.task_id] = decoded
+        return records
 
     async def get_task_diff(
         self,

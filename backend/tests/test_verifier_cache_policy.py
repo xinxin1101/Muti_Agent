@@ -54,9 +54,9 @@ def test_ruff_verification_disables_workspace_cache(tmp_path: Path) -> None:
         max_retries=1,
     )
 
-    result = DeterministicVerifier(
-        command_runner=LocalProcessVerificationRunner()
-    ).verify(task, workspace=LocalGitWorkspace(root))
+    result = DeterministicVerifier(command_runner=LocalProcessVerificationRunner()).verify(
+        task, workspace=LocalGitWorkspace(root)
+    )
 
     assert result.passed is True
     assert (root / ".ruff_cache").exists() is False

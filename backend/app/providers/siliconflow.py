@@ -1,6 +1,7 @@
 from time import perf_counter
 from typing import Any
 
+import httpx
 from openai import AsyncOpenAI
 from pydantic import SecretStr
 
@@ -22,6 +23,7 @@ class SiliconFlowDriver:
         base_url: str = "https://api.siliconflow.cn/v1",
         timeout_seconds: float = 60.0,
         max_retries: int = 0,
+        proxy_url: str | None = None,
         client: Any | None = None,
     ) -> None:
         if timeout_seconds <= 0:
@@ -32,6 +34,7 @@ class SiliconFlowDriver:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
         self.max_retries = max_retries
+        self.proxy_url = proxy_url.rstrip("/") if proxy_url else None
         self._owns_client = client is None
 
         if client is not None:
@@ -42,12 +45,17 @@ class SiliconFlowDriver:
         if not normalized_key:
             raise ValueError("SiliconFlow API key is required when no client is injected")
 
-        self._client = AsyncOpenAI(
-            api_key=normalized_key,
-            base_url=self.base_url,
-            timeout=timeout_seconds,
-            max_retries=max_retries,
-        )
+        client_options: dict[str, Any] = {
+            "api_key": normalized_key,
+            "base_url": self.base_url,
+            "timeout": timeout_seconds,
+            "max_retries": max_retries,
+        }
+        if self.proxy_url is not None:
+            # Keep proxy routing inside the provider client. It must not leak into Agent tools or
+            # disconnected verification containers.
+            client_options["http_client"] = httpx.AsyncClient(proxy=self.proxy_url)
+        self._client = AsyncOpenAI(**client_options)
 
     @classmethod
     def from_settings(cls, settings: Settings, *, client: Any | None = None) -> "SiliconFlowDriver":
@@ -56,6 +64,7 @@ class SiliconFlowDriver:
             base_url=settings.siliconflow_base_url,
             timeout_seconds=settings.siliconflow_timeout_seconds,
             max_retries=settings.siliconflow_max_retries,
+            proxy_url=settings.siliconflow_proxy_url,
             client=client,
         )
 
@@ -102,10 +111,15 @@ class SiliconFlowDriver:
             "model": request.model,
             "messages": [self._serialize_message(message) for message in request.messages],
             "temperature": request.temperature,
+            "max_tokens": request.max_output_tokens,
             "stream": False,
         }
         if request.tools:
             payload["tools"] = [self._serialize_tool(tool) for tool in request.tools]
+        # DashScope Qwen mixed-thinking models default to reasoning on. Keep the control
+        # provider-specific so other OpenAI-compatible services do not receive an unknown field.
+        if "dashscope.aliyuncs.com" in self.base_url:
+            payload["extra_body"] = {"enable_thinking": request.enable_thinking}
 
         try:
             completion = await self._client.chat.completions.create(**payload)

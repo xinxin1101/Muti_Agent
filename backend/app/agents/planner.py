@@ -1,9 +1,7 @@
-import json
-
 from pydantic import ValidationError
 
 from app.agents.errors import InvalidPlannerOutputError
-from app.models.agent import AgentMessage, AgentRequest, AgentRole, MessageRole
+from app.models.agent import AgentMessage, AgentRequest, AgentRole, MessageRole, TokenUsage
 from app.models.failure import FailureReport, FailureSource, FailureType
 from app.models.task import TaskContract
 from app.providers.base import AgentDriver
@@ -19,6 +17,8 @@ class PlannerAgent:
         model: str,
         max_schema_repair_attempts: int = 1,
         temperature: float = 0.1,
+        max_output_tokens: int = 1_200,
+        enable_thinking: bool = False,
     ) -> None:
         normalized_model = model.strip()
         if not normalized_model:
@@ -27,16 +27,16 @@ class PlannerAgent:
             raise ValueError("max_schema_repair_attempts must be between 0 and 3")
         if not 0.0 <= temperature <= 2.0:
             raise ValueError("temperature must be between 0.0 and 2.0")
+        if not 64 <= max_output_tokens <= 32_768:
+            raise ValueError("max_output_tokens must be between 64 and 32768")
 
         self._driver = driver
         self._model = normalized_model
         self._max_schema_repair_attempts = max_schema_repair_attempts
         self._temperature = temperature
-        self._schema_json = json.dumps(
-            TaskContract.model_json_schema(),
-            ensure_ascii=False,
-            sort_keys=True,
-        )
+        self._max_output_tokens = max_output_tokens
+        self._enable_thinking = enable_thinking
+        self.last_usage = TokenUsage()
 
     async def plan(
         self,
@@ -51,9 +51,11 @@ class PlannerAgent:
             raise ValueError("requirement must not be empty")
 
         normalized_context = repository_context.strip() if repository_context else None
+        self.last_usage = TokenUsage()
         response = await self._driver.complete(
             self._build_initial_request(normalized_requirement, normalized_context)
         )
+        self._add_usage(response.usage)
 
         last_output = response.content
         last_error = self._validation_error(last_output)
@@ -70,13 +72,19 @@ class PlannerAgent:
                     repair_attempt=repair_attempt,
                 )
             )
+            self._add_usage(response.usage)
             last_output = response.content
             last_error = self._validation_error(last_output)
             if last_error is None:
                 return TaskContract.model_validate_json(last_output)
 
-        raise InvalidPlannerOutputError(
-            self._build_invalid_output_failure(last_output, last_error)
+        raise InvalidPlannerOutputError(self._build_invalid_output_failure(last_output, last_error))
+
+    def _add_usage(self, usage: TokenUsage) -> None:
+        self.last_usage = TokenUsage(
+            prompt_tokens=self.last_usage.prompt_tokens + usage.prompt_tokens,
+            completion_tokens=self.last_usage.completion_tokens + usage.completion_tokens,
+            total_tokens=self.last_usage.total_tokens + usage.total_tokens,
         )
 
     def _build_initial_request(
@@ -89,6 +97,8 @@ class PlannerAgent:
             role=AgentRole.PLANNER,
             model=self._model,
             temperature=self._temperature,
+            max_output_tokens=self._max_output_tokens,
+            enable_thinking=self._enable_thinking,
             messages=[
                 AgentMessage(
                     role=MessageRole.SYSTEM,
@@ -120,6 +130,8 @@ class PlannerAgent:
             role=AgentRole.PLANNER,
             model=self._model,
             temperature=0.0,
+            max_output_tokens=self._max_output_tokens,
+            enable_thinking=self._enable_thinking,
             messages=[
                 AgentMessage(
                     role=MessageRole.SYSTEM,
@@ -147,8 +159,11 @@ class PlannerAgent:
             "You are the DevFlow Planner Agent. Convert the user's development requirement into "
             "exactly one execution contract for the V0.1 single-task runtime. Your response is "
             "machine-consumed. Return one JSON object only: no Markdown fences, commentary, prose, "
-            "or extra keys. The JSON object must validate against the TaskContract JSON Schema "
-            "below.\n\n"
+            "or extra keys. It must use exactly this compact shape:\n"
+            '{"task_id":"ascii-id","objective":"...","readable_files":["..."],'
+            '"writable_files":["..."],"readonly_files":["..."],'
+            '"acceptance_criteria":["..."],"verification_commands":["..."],'
+            '"max_retries":0}\n\n'
             "Planning rules:\n"
             "1. Preserve the user's requested development goal.\n"
             "2. Use a stable task_id containing only letters, digits, '.', '_', or '-'.\n"
@@ -160,8 +175,7 @@ class PlannerAgent:
             "7. verification_commands must contain deterministic commands, not natural-language "
             "checks.\n"
             "8. Never place the same exact path in writable_files and readonly_files.\n"
-            "9. Do not claim the task is complete; only define the execution contract.\n\n"
-            f"TaskContract JSON Schema:\n{self._schema_json}"
+            "9. Do not claim the task is complete; only define the execution contract."
         )
 
     @staticmethod

@@ -82,8 +82,7 @@ def _evaluate_terminal_case(
     if observation.diff is None:
         code_delta = _not_evaluated(
             expected=(
-                f"{expectations.changed_files_mode.value}:"
-                + ",".join(expectations.changed_files)
+                f"{expectations.changed_files_mode.value}:" + ",".join(expectations.changed_files)
             ),
             observed="diff unavailable",
         )
@@ -91,8 +90,7 @@ def _evaluate_terminal_case(
     elif not observation.diff.complete:
         code_delta = _not_evaluated(
             expected=(
-                f"{expectations.changed_files_mode.value}:"
-                + ",".join(expectations.changed_files)
+                f"{expectations.changed_files_mode.value}:" + ",".join(expectations.changed_files)
             ),
             observed=(
                 "bounded diff incomplete; "
@@ -112,8 +110,7 @@ def _evaluate_terminal_case(
         code_delta = _result(
             BenchmarkDimensionStatus.MATCH if code_match else BenchmarkDimensionStatus.MISMATCH,
             expected=(
-                f"{expectations.changed_files_mode.value}:"
-                + ",".join(sorted(expected_files))
+                f"{expectations.changed_files_mode.value}:" + ",".join(sorted(expected_files))
             ),
             observed="changed=" + ",".join(sorted(observed_files)),
         )
@@ -149,12 +146,8 @@ def _evaluate_terminal_case(
                 if reliability_match
                 else BenchmarkDimensionStatus.MISMATCH
             ),
-            expected="; ".join(
-                f"{name} {expected}" for name, _, expected, _ in reliability_checks
-            ),
-            observed="; ".join(
-                f"{name}={observed}" for name, _, _, observed in reliability_checks
-            ),
+            expected="; ".join(f"{name} {expected}" for name, _, expected, _ in reliability_checks),
+            observed="; ".join(f"{name}={observed}" for name, _, _, observed in reliability_checks),
         )
         if not reliability_match:
             failure_modes.append("RELIABILITY_BUDGET_MISMATCH")
@@ -189,10 +182,7 @@ def _evaluate_terminal_case(
     all_dimensions = (*required_dimensions, *optional_dimensions)
     if any(item.status is BenchmarkDimensionStatus.MISMATCH for item in all_dimensions):
         verdict = BenchmarkCaseVerdict.MISMATCHED
-    elif any(
-        item.status is BenchmarkDimensionStatus.NOT_EVALUATED
-        for item in required_dimensions
-    ):
+    elif any(item.status is BenchmarkDimensionStatus.NOT_EVALUATED for item in required_dimensions):
         verdict = BenchmarkCaseVerdict.NOT_EVALUATED
     else:
         verdict = BenchmarkCaseVerdict.MATCHED
@@ -217,9 +207,7 @@ def _evaluate_non_terminal_case(
     observation: BenchmarkObservation,
 ) -> BenchmarkCaseEvaluation:
     failure_code = (
-        observation.failure.code
-        if observation.failure is not None
-        else observation.state.value
+        observation.failure.code if observation.failure is not None else observation.state.value
     )
     observed = f"{observation.state.value}:{failure_code}"
     return BenchmarkCaseEvaluation(
@@ -262,14 +250,8 @@ def _ratio(numerator: int, denominator: int) -> float | None:
 def _aggregate_observations(
     observations: tuple[BenchmarkObservation, ...],
 ) -> BenchmarkAggregateMetrics:
-    terminal = [
-        item
-        for item in observations
-        if item.state is BenchmarkObservationState.TERMINAL
-    ]
-    successful = [
-        item for item in terminal if item.run_status is PersistedRunStatus.SUCCEEDED
-    ]
+    terminal = [item for item in observations if item.state is BenchmarkObservationState.TERMINAL]
+    successful = [item for item in terminal if item.run_status is PersistedRunStatus.SUCCEEDED]
     first_pass = [
         item
         for item in successful
@@ -281,29 +263,19 @@ def _aggregate_observations(
         if item.evidence is not None and item.evidence.repair_attempts > 0
     ]
     total_repairs = sum(
-        item.evidence.repair_attempts
-        for item in terminal
-        if item.evidence is not None
+        item.evidence.repair_attempts for item in terminal if item.evidence is not None
     )
     review_decisions = sum(
-        item.evidence.review_decisions
-        for item in terminal
-        if item.evidence is not None
+        item.evidence.review_decisions for item in terminal if item.evidence is not None
     )
     reviewer_rejections = sum(
-        item.evidence.reviewer_rejections
-        for item in terminal
-        if item.evidence is not None
+        item.evidence.reviewer_rejections for item in terminal if item.evidence is not None
     )
     scope_violations = sum(
-        item.evidence.scope_violations
-        for item in terminal
-        if item.evidence is not None
+        item.evidence.scope_violations for item in terminal if item.evidence is not None
     )
     durations = [
-        item.terminal_duration_ms
-        for item in terminal
-        if item.terminal_duration_ms is not None
+        item.terminal_duration_ms for item in terminal if item.terminal_duration_ms is not None
     ]
     prompt_tokens = sum(
         item.evidence.developer_prompt_tokens + item.evidence.repair_prompt_tokens
@@ -311,8 +283,7 @@ def _aggregate_observations(
         if item.evidence is not None
     )
     completion_tokens = sum(
-        item.evidence.developer_completion_tokens
-        + item.evidence.repair_completion_tokens
+        item.evidence.developer_completion_tokens + item.evidence.repair_completion_tokens
         for item in terminal
         if item.evidence is not None
     )
@@ -384,9 +355,7 @@ def evaluate_suite(
 
     summary = BenchmarkSummary(
         total_cases=len(evaluations),
-        matched_cases=sum(
-            item.verdict is BenchmarkCaseVerdict.MATCHED for item in evaluations
-        ),
+        matched_cases=sum(item.verdict is BenchmarkCaseVerdict.MATCHED for item in evaluations),
         mismatched_cases=sum(
             item.verdict is BenchmarkCaseVerdict.MISMATCHED for item in evaluations
         ),
@@ -394,24 +363,19 @@ def evaluate_suite(
             item.verdict is BenchmarkCaseVerdict.NOT_EVALUATED for item in evaluations
         ),
         completion_matches=sum(
-            item.completion.status is BenchmarkDimensionStatus.MATCH
-            for item in evaluations
+            item.completion.status is BenchmarkDimensionStatus.MATCH for item in evaluations
         ),
         evidence_matches=sum(
-            item.evidence.status is BenchmarkDimensionStatus.MATCH
-            for item in evaluations
+            item.evidence.status is BenchmarkDimensionStatus.MATCH for item in evaluations
         ),
         code_delta_matches=sum(
-            item.code_delta.status is BenchmarkDimensionStatus.MATCH
-            for item in evaluations
+            item.code_delta.status is BenchmarkDimensionStatus.MATCH for item in evaluations
         ),
         reliability_matches=sum(
-            item.reliability.status is BenchmarkDimensionStatus.MATCH
-            for item in evaluations
+            item.reliability.status is BenchmarkDimensionStatus.MATCH for item in evaluations
         ),
         latency_matches=sum(
-            item.latency.status is BenchmarkDimensionStatus.MATCH
-            for item in evaluations
+            item.latency.status is BenchmarkDimensionStatus.MATCH for item in evaluations
         ),
         aggregates=_aggregate_observations(bundle.observations),
         cost_data=BenchmarkDataAvailability.NOT_AVAILABLE,

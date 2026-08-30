@@ -96,8 +96,7 @@ class PostgresGitHubPublicationStore:
                     state=GitHubPublicationState.PUBLISHING.value,
                     attempt_count=1,
                     attempt_token=attempt_token,
-                    attempt_expires_at=observed_at
-                    + timedelta(seconds=_PUBLICATION_CLAIM_SECONDS),
+                    attempt_expires_at=observed_at + timedelta(seconds=_PUBLICATION_CLAIM_SECONDS),
                     updated_at=observed_at,
                 )
                 session.add(row)
@@ -125,9 +124,7 @@ class PostgresGitHubPublicationStore:
             row.state = GitHubPublicationState.PUBLISHING.value
             row.attempt_count += 1
             row.attempt_token = attempt_token
-            row.attempt_expires_at = observed_at + timedelta(
-                seconds=_PUBLICATION_CLAIM_SECONDS
-            )
+            row.attempt_expires_at = observed_at + timedelta(seconds=_PUBLICATION_CLAIM_SECONDS)
             row.pull_request_number = None
             row.pull_request_url = None
             row.pull_request_state = None

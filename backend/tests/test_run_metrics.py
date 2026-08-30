@@ -12,6 +12,7 @@ from app.api.app import create_app
 from app.api.metrics import aggregate_runtime_events, build_run_metrics
 from app.api.models import ProductRunMetrics
 from app.api.service import ProductMetricsUnavailableError, ProductRuntimeService
+from app.models.agent import AgentRole
 from app.models.events import (
     PersistedRuntimeEvent,
     RuntimeEventKind,
@@ -19,7 +20,15 @@ from app.models.events import (
     RuntimeEventSource,
 )
 from app.models.task import TaskContract
+from app.models.token_budget import RoleTokenUsage, RunTokenBudget
+from app.models.workflow import (
+    WorkflowActivationMode,
+    WorkflowExecutionMode,
+    WorkflowExecutionRecord,
+    WorkflowId,
+)
 from app.persistence.errors import PersistenceCorruptionError
+from app.persistence.serialization import canonical_payload
 from app.persistence.types import (
     PersistedEvidence,
     PersistedRunSnapshot,
@@ -145,8 +154,7 @@ def _snapshot(*, terminal: bool = False) -> PersistedRunSnapshot:
         status=PersistedRunStatus.FAILED if terminal else PersistedRunStatus.RUNNING,
         tasks=(_task(),),
         evidence=tuple(
-            _evidence(index, kind)
-            for index, kind in enumerate(evidence_kinds, start=1)
+            _evidence(index, kind) for index, kind in enumerate(evidence_kinds, start=1)
         ),
         terminal_result={"status": "FAILED"} if terminal else None,
         terminal_result_sha256="d" * 64 if terminal else None,
@@ -217,6 +225,10 @@ def test_metrics_count_work_without_deriving_success() -> None:
     assert metrics.runtime_events.lease_acquisitions == 1
     assert metrics.runtime_events.lease_takeovers == 1
     assert metrics.runtime_events.lease_releases == 1
+    assert metrics.performance.developer_model_latency_ms == 0
+    assert metrics.performance.repair_model_latency_ms == 0
+    assert metrics.performance.repository_tool_latency_ms == 0
+    assert metrics.performance.verification_latency_ms == 0
     assert "success_rate" not in payload
     assert "pass_rate" not in payload
     assert "approval_rate" not in payload
@@ -255,6 +267,68 @@ def test_terminal_duration_uses_only_persisted_timestamps() -> None:
     assert metrics.terminal_duration_ms == 12_345
 
 
+def test_metrics_expose_workflow_path_and_keep_saved_tokens_an_estimate() -> None:
+    record = WorkflowExecutionRecord(
+        task_id="task-1",
+        mode=WorkflowExecutionMode.WORKFLOW,
+        workflow_id=WorkflowId.PYTHON_SCRIPT,
+        attempts=1,
+        estimated_tokens_saved=1400,
+    )
+    payload, payload_sha256 = canonical_payload(record)
+    workflow_evidence = PersistedEvidence(
+        id=99,
+        run_id=RUN_ID,
+        task_id="task-1",
+        evidence_key="workflow:task-1",
+        kind=PersistenceEvidenceKind.WORKFLOW_EXECUTION,
+        stage="workflow",
+        schema_version=1,
+        payload=payload,
+        payload_sha256=payload_sha256,
+        created_at=STARTED,
+    )
+    base_snapshot = _snapshot()
+    snapshot = base_snapshot.model_copy(
+        update={
+            "evidence": tuple(
+                item
+                for item in base_snapshot.evidence
+                if item.kind is not PersistenceEvidenceKind.WORKER_EXECUTION
+            )
+            + (workflow_evidence,)
+        }
+    )
+    budget = RunTokenBudget(
+        total_budget_tokens=30_000,
+        used_prompt_tokens=100,
+        used_completion_tokens=50,
+        used_total_tokens=150,
+        roles=(
+            RoleTokenUsage(
+                role=AgentRole.DEVELOPER,
+                prompt_tokens=100,
+                completion_tokens=50,
+                total_tokens=150,
+                call_count=1,
+            ),
+        ),
+    )
+
+    metrics = build_run_metrics(
+        snapshot,
+        aggregate_runtime_events(RUN_ID, ()),
+        budget,
+        workflow_activation_mode=WorkflowActivationMode.WORKFLOW_FIRST,
+    )
+
+    assert metrics.workflow.activation_mode is WorkflowActivationMode.WORKFLOW_FIRST
+    assert metrics.workflow.workflow_tasks == 1
+    assert metrics.workflow.workflow_calls == 1
+    assert metrics.workflow.agent_calls == 1
+    assert metrics.workflow.estimated_tokens_saved == 1400
+
+
 def test_runtime_event_gap_or_cross_run_fails_closed() -> None:
     with pytest.raises(PersistenceCorruptionError, match="contiguous"):
         aggregate_runtime_events(RUN_ID, (_event(1), _event(3)))
@@ -284,9 +358,7 @@ class FakeStore:
         limit: int = 200,
     ) -> tuple[PersistedRuntimeEvent, ...]:
         assert run_id == RUN_ID
-        return tuple(
-            event for event in self.events if event.sequence > after_sequence
-        )[:limit]
+        return tuple(event for event in self.events if event.sequence > after_sequence)[:limit]
 
     async def dispose(self) -> None:
         return None
@@ -350,9 +422,7 @@ def test_metrics_api_is_get_only_and_rejects_browser_selectors() -> None:
     assert response.json()["evidence"]["reviewer_rejections"] == 1
     assert response.json()["evidence"]["scope_violations"] == 1
 
-    injected = asyncio.run(
-        _api_request("GET", f"/api/v1/runs/{RUN_ID}/metrics?success_rate=1")
-    )
+    injected = asyncio.run(_api_request("GET", f"/api/v1/runs/{RUN_ID}/metrics?success_rate=1"))
     assert injected.status_code == 400
     assert "does not accept browser-authored selectors" in injected.json()["detail"]
 

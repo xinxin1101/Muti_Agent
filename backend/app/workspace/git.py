@@ -2,12 +2,30 @@ from __future__ import annotations
 
 import subprocess
 from collections.abc import Sequence
+from dataclasses import dataclass
 from difflib import unified_diff
+from hashlib import sha256
 from pathlib import Path, PurePosixPath
 
 
 class WorkspaceGitError(RuntimeError):
     """Raised when the managed local repository cannot provide trustworthy Git state."""
+
+
+@dataclass(frozen=True)
+class WorkspaceChangeSnapshot:
+    """One deterministic HEAD-to-workspace state used to assess a repair patch."""
+
+    changed_files: tuple[str, ...]
+    patch_hash: str
+    file_hashes: tuple[tuple[str, str], ...]
+
+    def files_changed_since(self, before: WorkspaceChangeSnapshot) -> list[str]:
+        previous = dict(before.file_hashes)
+        current = dict(self.file_hashes)
+        return sorted(
+            path for path in set(previous) | set(current) if previous.get(path) != current.get(path)
+        )
 
 
 class LocalGitWorkspace:
@@ -145,6 +163,24 @@ class LocalGitWorkspace:
 
         return "\n".join(section.rstrip("\n") for section in sections if section) + (
             "\n" if sections else ""
+        )
+
+    def change_snapshot(self) -> WorkspaceChangeSnapshot:
+        """Capture a deterministic workspace state without trusting agent-reported changes."""
+
+        changed_files = tuple(self.changed_files())
+        file_hashes = []
+        for repository_path in changed_files:
+            path = self.resolve_path(repository_path)
+            if path.is_file():
+                file_hashes.append((repository_path, sha256(path.read_bytes()).hexdigest()))
+            else:
+                file_hashes.append((repository_path, "<missing>"))
+        patch = self.unified_diff()
+        return WorkspaceChangeSnapshot(
+            changed_files=changed_files,
+            patch_hash=sha256(patch.encode("utf-8")).hexdigest(),
+            file_hashes=tuple(file_hashes),
         )
 
     def _assert_repository(self) -> None:

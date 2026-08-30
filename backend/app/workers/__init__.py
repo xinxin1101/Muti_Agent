@@ -5,11 +5,6 @@ from app.workers.executor import (
     QueuedTaskWorker,
 )
 from app.workers.lease import LeasedQueuedTaskWorker
-from app.workers.runtime import (
-    build_single_task_runner,
-    execute_task_from_settings,
-    resolve_worker_id,
-)
 
 __all__ = [
     "ACTOR_NAME",
@@ -22,3 +17,17 @@ __all__ = [
     "execute_task_from_settings",
     "resolve_worker_id",
 ]
+
+
+def __getattr__(name: str):
+    """Load composition helpers lazily to keep trace-worker imports acyclic.
+
+    ``app.trace.worker`` imports executor types, while runtime composition imports trace-aware
+    wrappers. Importing runtime eagerly here therefore made an order-dependent circular import.
+    """
+
+    if name in {"build_single_task_runner", "execute_task_from_settings", "resolve_worker_id"}:
+        from app.workers import runtime
+
+        return getattr(runtime, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

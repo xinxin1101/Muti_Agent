@@ -6,7 +6,7 @@ from app.workspace.diff import (
     CommitDiffSnapshot,
     ReadOnlyCommitDiffReader,
 )
-from app.workspace.git import LocalGitWorkspace, WorkspaceGitError
+from app.workspace.git import LocalGitWorkspace, WorkspaceChangeSnapshot, WorkspaceGitError
 from app.workspace.provision import ManagedProjectProvisioner, ProjectProvisionError
 from app.workspace.scope import (
     ScopeCheckResult,
@@ -29,6 +29,7 @@ __all__ = [
     "CommitDiffOmissionReason",
     "CommitDiffSnapshot",
     "LocalGitWorkspace",
+    "WorkspaceChangeSnapshot",
     "ManagedProjectProvisioner",
     "ProjectProvisionError",
     "ReadOnlyCommitDiffReader",

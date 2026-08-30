@@ -7,7 +7,13 @@ from app.models import (
     MergeQueueSnapshot,
     RunEvent,
     TaskRunState,
+    WorkflowExecutionMode,
+    WorkflowExecutionRecord,
+    WorkflowId,
+    WorkflowMatch,
+    WorkflowRoute,
 )
+from app.models.developer import DeveloperRunResult, DeveloperStopReason
 from app.persistence import ContextFingerprintReference, PersistenceConfigurationError
 from app.persistence.database import reveal_database_url
 from app.persistence.serialization import canonical_payload, decode_evidence, verify_payload_hash
@@ -78,3 +84,50 @@ def test_run_level_merge_snapshot_round_trips_without_task_binding() -> None:
     payload, _ = canonical_payload(snapshot)
 
     assert decode_evidence(PersistenceEvidenceKind.MERGE_QUEUE_SNAPSHOT, payload) == snapshot
+
+
+def test_workflow_match_round_trips_as_typed_evidence() -> None:
+    match = WorkflowMatch(
+        task_id="hello-python",
+        route=WorkflowRoute.WORKFLOW_CANDIDATE,
+        workflow_id=WorkflowId.PYTHON_SCRIPT,
+        confidence=0.91,
+        matched_rules=("writable_files:python", "verification_commands:python"),
+    )
+
+    payload, _ = canonical_payload(match)
+
+    assert decode_evidence(PersistenceEvidenceKind.WORKFLOW_MATCH, payload) == match
+
+
+def test_workflow_execution_record_round_trips_as_typed_evidence() -> None:
+    record = WorkflowExecutionRecord(
+        task_id="hello-python",
+        mode=WorkflowExecutionMode.WORKFLOW,
+        workflow_id=WorkflowId.PYTHON_SCRIPT,
+        attempts=1,
+    )
+
+    payload, _ = canonical_payload(record)
+
+    assert decode_evidence(PersistenceEvidenceKind.WORKFLOW_EXECUTION, payload) == record
+
+
+def test_developer_evidence_v1_remains_readable_after_budget_schema_upgrade() -> None:
+    legacy_payload = {
+        "stop_reason": DeveloperStopReason.MODEL_STOP.value,
+        "iterations": 1,
+        "tool_calls": 0,
+        "changed_files": [],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "latency_ms": 0,
+    }
+
+    decoded = decode_evidence(
+        PersistenceEvidenceKind.DEVELOPER_RUN,
+        legacy_payload,
+        schema_version=1,
+    )
+
+    assert isinstance(decoded, DeveloperRunResult)
+    assert decoded.execution_budget is None

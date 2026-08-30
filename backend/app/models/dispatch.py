@@ -5,6 +5,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.models.checkpoint import TaskCheckpoint
+from app.models.continuation import TaskContinuationSummary
 from app.models.failure import FailureReport
 from app.models.run import SingleTaskRunResult, TaskRunState
 
@@ -73,6 +75,8 @@ class WorkerExecutionEvidence(BaseModel):
     base_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
     branch_name: str | None = Field(default=None, min_length=1, max_length=255)
     commit_sha: str | None = Field(default=None, pattern=r"^[0-9a-f]{40,64}$")
+    checkpoint: TaskCheckpoint | None = None
+    continuation: TaskContinuationSummary | None = None
     run_result: SingleTaskRunResult | None = None
     failures: tuple[FailureReport, ...] = Field(default_factory=tuple)
     duration_ms: int = Field(ge=0)
@@ -89,10 +93,16 @@ class WorkerExecutionEvidence(BaseModel):
                 raise ValueError("successful worker execution must not contain failures")
             if self.commit_sha is None:
                 raise ValueError("successful worker execution requires a task commit")
+            if self.checkpoint is not None:
+                raise ValueError(
+                    "successful worker execution must not contain a continuation checkpoint"
+                )
             return self
 
         if self.commit_sha is not None:
             raise ValueError("failed worker execution must not publish a successful task commit")
+        if self.checkpoint is not None and self.checkpoint.task_id != self.task_id:
+            raise ValueError("worker checkpoint must match the failed task")
         if not self.failures and (
             self.run_result is None or self.run_result.status is not TaskRunState.FAILED
         ):

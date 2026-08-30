@@ -12,6 +12,16 @@ class DeveloperStopReason(StrEnum):
     TOOL_CALL_LIMIT = "TOOL_CALL_LIMIT"
 
 
+class DeveloperExecutionBudget(BaseModel):
+    """The effective bounded-execution configuration for one Developer run."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    max_iterations: int = Field(ge=1, le=20)
+    max_duration_seconds: float = Field(ge=1.0, le=600.0)
+    max_model_turn_seconds: float = Field(ge=1.0, le=600.0)
+
+
 class DeveloperRunResult(BaseModel):
     """Execution evidence from Developer Agent work; this is not a success verdict."""
 
@@ -24,3 +34,6 @@ class DeveloperRunResult(BaseModel):
     changed_files: list[str] = Field(default_factory=list)
     usage: TokenUsage = Field(default_factory=TokenUsage)
     latency_ms: int = Field(default=0, ge=0)
+    # Older persisted runs predate this field. New production runs always record it so a
+    # terminal budget stop can be diagnosed against the configuration the Worker actually used.
+    execution_budget: DeveloperExecutionBudget | None = None

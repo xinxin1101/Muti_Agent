@@ -181,9 +181,7 @@ async def _dag_hash_corruption_fails_closed() -> None:
     engine = create_postgres_engine(database_url)
     session_factory = create_session_factory(engine)
     async with session_factory.begin() as session:
-        await session.execute(
-            update(RunRow).where(RunRow.id == run_id).values(dag_sha256="0" * 64)
-        )
+        await session.execute(update(RunRow).where(RunRow.id == run_id).values(dag_sha256="0" * 64))
 
     with pytest.raises(PersistenceCorruptionError, match="DAG payload hash mismatch"):
         await dag_store.load_dag(run_id)

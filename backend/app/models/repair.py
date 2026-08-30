@@ -13,6 +13,32 @@ class RepairStopReason(StrEnum):
     TOOL_CALL_LIMIT = "TOOL_CALL_LIMIT"
 
 
+class RepairProgressStatus(StrEnum):
+    """Deterministic outcome of one repair attempt, independent of agent claims."""
+
+    PATCH_PRODUCED = "PATCH_PRODUCED"
+    NO_PATCH_PRODUCED = "NO_PATCH_PRODUCED"
+    PROGRESS_MADE = "PROGRESS_MADE"
+    REPAIR_INEFFECTIVE = "REPAIR_INEFFECTIVE"
+    REPAIRED = "REPAIRED"
+
+
+class RepairProgressEvidence(BaseModel):
+    """Workspace and verification evidence captured around one Repair Agent run."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    status: RepairProgressStatus
+    has_patch: bool
+    files_changed: list[str] = Field(default_factory=list)
+    patch_hash_before: str = Field(pattern=r"^[0-9a-f]{64}$")
+    patch_hash_after: str = Field(pattern=r"^[0-9a-f]{64}$")
+    failure_signature_before: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    failure_signature_after: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    validation_executed: bool = False
+    validation_commands: list[str] = Field(default_factory=list)
+
+
 class RepairRunResult(BaseModel):
     """Evidence from one targeted repair attempt; this is not a success verdict."""
 
@@ -25,5 +51,6 @@ class RepairRunResult(BaseModel):
     tool_calls: int = Field(ge=0)
     final_message: str = ""
     changed_files: list[str] = Field(default_factory=list)
+    progress: RepairProgressEvidence | None = None
     usage: TokenUsage = Field(default_factory=TokenUsage)
     latency_ms: int = Field(default=0, ge=0)

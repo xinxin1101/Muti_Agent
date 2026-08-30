@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
+from dataclasses import replace
 from pathlib import Path
 from time import perf_counter
 from typing import Protocol
@@ -12,6 +13,10 @@ from uuid import UUID
 from pydantic import BaseModel
 
 from app.dispatch.errors import WorkerExecutionBoundaryError
+from app.models.checkpoint import CheckpointReason, TaskCheckpoint
+from app.models.context import ContextContinuationState
+from app.models.continuation import TaskContinuationSummary
+from app.models.developer import DeveloperStopReason
 from app.models.dispatch import (
     TaskDispatchEnvelope,
     WorkerDispatchEvent,
@@ -26,6 +31,7 @@ from app.models.run_reconciliation import TaskExecutionBase
 from app.models.task import TaskContract
 from app.persistence import PersistenceEvidenceKind
 from app.persistence.types import PersistedRunSnapshot, PersistedRunStatus
+from app.planning import assess_task_complexity
 from app.workspace import LocalGitWorkspace, TaskWorktreeManager, TaskWorktreeRecord
 
 
@@ -35,6 +41,7 @@ class SingleTaskRunner(Protocol):
         task: TaskContract,
         *,
         workspace: LocalGitWorkspace,
+        continuation_context: ContextContinuationState | None = None,
     ) -> SingleTaskRunResult: ...
 
 
@@ -63,6 +70,7 @@ class QueuedTaskExecutionBackend(Protocol):
         dispatch_id: UUID,
         run_token: UUID,
         base_commit: str,
+        continuation_context: ContextContinuationState | None = None,
     ) -> WorkerExecutionEvidence: ...
 
 
@@ -100,6 +108,26 @@ class QueuedTaskExecutionBaseResolver(Protocol):
     ) -> TaskExecutionBase: ...
 
 
+class QueuedTaskDAGReader(Protocol):
+    async def load_dag(self, run_id: UUID): ...
+
+
+class QueuedTaskBudgetReader(Protocol):
+    async def snapshot(self, run_id: UUID): ...
+
+
+class QueuedTaskBudgetManager(QueuedTaskBudgetReader, Protocol):
+    async def reclaim_unused_task_budget(self, *, run_id: UUID, task_id: str) -> None: ...
+
+
+class WorkerInterfaceContractRegistry(Protocol):
+    async def mark_producer_satisfied(
+        self, *, run_id: UUID, task_id: str, commit_sha: str | None
+    ) -> None: ...
+
+    async def mark_producer_unmet(self, *, run_id: UUID, task_id: str) -> None: ...
+
+
 class ManagedProjectWorkspaceResolver:
     """Resolve a project id to an already-materialized managed Git repository."""
 
@@ -126,6 +154,9 @@ class LocalQueuedTaskExecutionBackend:
         workspace_resolver: ProjectWorkspaceResolver,
         worktree_root: str | Path,
         runner_factory: Callable[[TaskContract], SingleTaskRunner],
+        runner_factory_for_execution: (
+            Callable[[TaskContract, UUID], SingleTaskRunner] | None
+        ) = None,
         git_fence: TaskGitMutationFence,
     ) -> None:
         root = Path(worktree_root).expanduser()
@@ -135,6 +166,7 @@ class LocalQueuedTaskExecutionBackend:
         self._workspace_resolver = workspace_resolver
         self._worktree_root = root.resolve()
         self._runner_factory = runner_factory
+        self._runner_factory_for_execution = runner_factory_for_execution
         self._git_fence = git_fence
 
     async def execute(
@@ -146,11 +178,17 @@ class LocalQueuedTaskExecutionBackend:
         dispatch_id: UUID,
         run_token: UUID,
         base_commit: str,
+        continuation_context: ContextContinuationState | None = None,
     ) -> WorkerExecutionEvidence:
         started_at = perf_counter()
         record: TaskWorktreeRecord | None = None
         run_result: SingleTaskRunResult | None = None
-        worktree_identity = self._worktree_identity(run_id, task.task_id, run_token)
+        worktree_identity = self._worktree_identity(
+            run_id,
+            task.task_id,
+            run_token,
+            base_commit,
+        )
         try:
             base_workspace = self._workspace_resolver.resolve(project_id)
             worktrees = TaskWorktreeManager(
@@ -170,9 +208,27 @@ class LocalQueuedTaskExecutionBackend:
                 record = await asyncio.to_thread(worktrees.create, worktree_identity)
             workspace = worktrees.open_workspace(worktree_identity)
 
-            runner = self._runner_factory(task)
-            run_result = await runner.run(task, workspace=workspace)
+            runner = (
+                self._runner_factory_for_execution(task, run_id)
+                if self._runner_factory_for_execution is not None
+                else self._runner_factory(task)
+            )
+            run_kwargs = {"workspace": workspace}
+            if continuation_context is not None:
+                run_kwargs["continuation_context"] = continuation_context
+            run_result = await runner.run(task, **run_kwargs)
             if run_result.status is TaskRunState.FAILED:
+                checkpoint = await self._checkpoint_failed_work(
+                    worktrees=worktrees,
+                    worktree_identity=worktree_identity,
+                    task=task,
+                    base_commit=base_commit,
+                    workspace=workspace,
+                    run_result=run_result,
+                    run_id=run_id,
+                    dispatch_id=dispatch_id,
+                    run_token=run_token,
+                )
                 return self._failure_evidence(
                     task=task,
                     run_id=run_id,
@@ -182,6 +238,7 @@ class LocalQueuedTaskExecutionBackend:
                     record=record,
                     run_result=run_result,
                     failures=tuple(run_result.failures),
+                    checkpoint=checkpoint,
                 )
             if run_result.status is not TaskRunState.SUCCEEDED:
                 raise RuntimeError("single-task runtime returned a non-terminal status")
@@ -224,12 +281,66 @@ class LocalQueuedTaskExecutionBackend:
                 record=record,
                 run_result=run_result,
                 failures=(failure,),
+                checkpoint=None,
             )
 
+    async def _checkpoint_failed_work(
+        self,
+        *,
+        worktrees: TaskWorktreeManager,
+        worktree_identity: str,
+        task: TaskContract,
+        base_commit: str,
+        workspace: LocalGitWorkspace,
+        run_result: SingleTaskRunResult,
+        run_id: UUID,
+        dispatch_id: UUID,
+        run_token: UUID,
+    ) -> TaskCheckpoint | None:
+        """Preserve useful, fenced edits without treating a failed task as successful."""
+
+        changed_files = tuple(workspace.changed_files())
+        if not changed_files:
+            return None
+        reason = CheckpointReason.VERIFICATION_FAILURE
+        if run_result.developer is not None:
+            reason = {
+                DeveloperStopReason.TIME_LIMIT: CheckpointReason.TIME_LIMIT,
+                DeveloperStopReason.ITERATION_LIMIT: CheckpointReason.ITERATION_LIMIT,
+                DeveloperStopReason.TOOL_CALL_LIMIT: CheckpointReason.TOOL_CALL_LIMIT,
+            }.get(run_result.developer.stop_reason, reason)
+        async with self._git_fence.guard_task_git_mutation(
+            run_id=run_id,
+            task_id=task.task_id,
+            dispatch_id=dispatch_id,
+            run_token=run_token,
+        ):
+            commit_sha = await asyncio.to_thread(
+                worktrees.commit_task_changes,
+                worktree_identity,
+            )
+        return TaskCheckpoint(
+            task_id=task.task_id,
+            base_commit=base_commit,
+            commit_sha=commit_sha,
+            changed_files=changed_files,
+            reason=reason,
+            summary=(
+                "已保存当前受控代码改动；从检查点继续时会复用仓库摘要和未变更文件哈希，"
+                "仅重新发送改动文件与未完成工作。"
+            ),
+            context_state=run_result.context_state,
+        )
+
     @staticmethod
-    def _worktree_identity(run_id: UUID, task_id: str, run_token: UUID) -> str:
+    def _worktree_identity(
+        run_id: UUID,
+        task_id: str,
+        run_token: UUID,
+        base_commit: str,
+    ) -> str:
         generation_digest = hashlib.sha256(
-            f"{task_id}:{run_token.hex}".encode()
+            f"{task_id}:{run_token.hex}:{base_commit}".encode()
         ).hexdigest()[:16]
         return f"run-{run_id.hex}-generation-{generation_digest}"
 
@@ -244,6 +355,7 @@ class LocalQueuedTaskExecutionBackend:
         record: TaskWorktreeRecord | None,
         run_result: SingleTaskRunResult | None,
         failures: tuple[FailureReport, ...],
+        checkpoint: TaskCheckpoint | None,
     ) -> WorkerExecutionEvidence:
         return WorkerExecutionEvidence(
             dispatch_id=dispatch_id,
@@ -253,6 +365,7 @@ class LocalQueuedTaskExecutionBackend:
             base_commit=base_commit,
             branch_name=record.branch_name if record is not None else None,
             commit_sha=None,
+            checkpoint=checkpoint,
             run_result=run_result,
             failures=failures,
             duration_ms=self._duration_ms(started_at),
@@ -282,10 +395,30 @@ class QueuedTaskWorker:
         store: WorkerEvidenceStore,
         backend: QueuedTaskExecutionBackend,
         execution_base_resolver: QueuedTaskExecutionBaseResolver | None = None,
+        continuation_max_slices: int = 5,
+        continuation_total_budget_seconds: float = 3_600.0,
+        continuation_max_repeated_file_slices: int = 1,
+        interface_contract_registry: WorkerInterfaceContractRegistry | None = None,
+        dag_reader: QueuedTaskDAGReader | None = None,
+        token_budget_reader: QueuedTaskBudgetReader | None = None,
+        token_budget_manager: QueuedTaskBudgetManager | None = None,
     ) -> None:
+        if not 1 <= continuation_max_slices <= 20:
+            raise ValueError("continuation_max_slices must be between 1 and 20")
+        if not 600.0 <= continuation_total_budget_seconds <= 86_400.0:
+            raise ValueError("continuation_total_budget_seconds must be between 600 and 86400")
+        if not 0 <= continuation_max_repeated_file_slices <= 5:
+            raise ValueError("continuation_max_repeated_file_slices must be between 0 and 5")
         self._store = store
         self._backend = backend
         self._execution_base_resolver = execution_base_resolver
+        self._continuation_max_slices = continuation_max_slices
+        self._continuation_total_budget_seconds = continuation_total_budget_seconds
+        self._continuation_max_repeated_file_slices = continuation_max_repeated_file_slices
+        self._interface_contract_registry = interface_contract_registry
+        self._dag_reader = dag_reader
+        self._token_budget_reader = token_budget_reader
+        self._token_budget_manager = token_budget_manager
 
     async def execute(
         self,
@@ -298,23 +431,249 @@ class QueuedTaskWorker:
             raise WorkerExecutionBoundaryError("worker may execute only persisted RUNNING runs")
 
         task = self._task_from_snapshot(snapshot, envelope.task_id)
-        execution_base = await self._resolve_execution_base(snapshot, envelope.task_id)
-        await self._record_dispatch_event(
-            envelope,
-            run_token=run_token,
-            phase=WorkerDispatchPhase.RECEIVED,
-        )
+        node = None
+        if self._dag_reader is not None:
+            node = (await self._dag_reader.load_dag(envelope.run_id)).dag.node(envelope.task_id)
+        complexity = assess_task_complexity(task)
+        if node is not None and node.complexity is not None:
+            # Planner-declared complexity is the durable scheduling contract; the heuristic is
+            # retained only for legacy DAGs that predate WorkPackage metadata.
+            complexity = replace(
+                complexity,
+                score=max(
+                    complexity.score,
+                    {"LOW": 1, "MEDIUM": 4, "HIGH": 8}[node.complexity.value],
+                ),
+            )
+        effective_max_slices = self._effective_max_slices(complexity.score)
+        try:
+            execution_base = await self._resolve_execution_base(snapshot, envelope.task_id)
+            await self._record_dispatch_event(
+                envelope,
+                run_token=run_token,
+                phase=WorkerDispatchPhase.RECEIVED,
+            )
 
-        raw_execution = await self._backend.execute(
-            task=task,
-            project_id=snapshot.project_id,
-            run_id=snapshot.run_id,
-            dispatch_id=envelope.dispatch_id,
-            run_token=run_token,
-            base_commit=execution_base,
+            continuation_started = perf_counter()
+            slice_index = 1
+            previous_changed_files: tuple[str, ...] | None = None
+            repeated_file_slices = 0
+            resumed_from_commits: list[str] = []
+            continuation_context: ContextContinuationState | None = None
+            while True:
+                execution_kwargs = {
+                    "task": task,
+                    "project_id": snapshot.project_id,
+                    "run_id": snapshot.run_id,
+                    "dispatch_id": envelope.dispatch_id,
+                    "run_token": run_token,
+                    "base_commit": execution_base,
+                }
+                if continuation_context is not None:
+                    execution_kwargs["continuation_context"] = continuation_context
+                execution = await self._backend.execute(**execution_kwargs)
+                checkpoint = self._checkpoint_with_slice_facts(
+                    execution=execution,
+                    slice_index=slice_index,
+                    elapsed_ms=self._elapsed_ms(continuation_started),
+                    resume_from_commit=(resumed_from_commits[-1] if resumed_from_commits else None),
+                    max_slices=effective_max_slices,
+                    remaining_interfaces=tuple(node.produces) if node is not None else (),
+                )
+                if checkpoint is not None:
+                    execution = execution.model_copy(update={"checkpoint": checkpoint})
+                    execution = await self._checkpoint_budget_facts(
+                        execution=execution,
+                        run_id=envelope.run_id,
+                    )
+
+                if not self._can_continue(
+                    execution=execution,
+                    slice_index=slice_index,
+                    max_slices=effective_max_slices,
+                    elapsed_ms=self._elapsed_ms(continuation_started),
+                    previous_changed_files=previous_changed_files,
+                    repeated_file_slices=repeated_file_slices,
+                ):
+                    break
+
+                assert checkpoint is not None
+                await self._persist_runtime_result(
+                    envelope,
+                    execution.run_result,
+                    run_token=run_token,
+                    slice_index=slice_index,
+                )
+                await self._store.append_evidence(
+                    run_id=envelope.run_id,
+                    task_id=envelope.task_id,
+                    evidence_key=f"dispatch:{envelope.dispatch_id}:checkpoint:slice:{slice_index:04d}",
+                    kind=PersistenceEvidenceKind.TASK_CHECKPOINT,
+                    payload_model=checkpoint,
+                    stage="checkpoint",
+                    sequence=slice_index,
+                    run_token=run_token,
+                )
+                changed_files = checkpoint.changed_files
+                repeated_file_slices = (
+                    repeated_file_slices + 1 if changed_files == previous_changed_files else 0
+                )
+                previous_changed_files = changed_files
+                resumed_from_commits.append(checkpoint.commit_sha)
+                execution_base = checkpoint.commit_sha
+                continuation_context = checkpoint.context_state
+                slice_index += 1
+
+            if slice_index > 1:
+                execution = execution.model_copy(
+                    update={
+                        "continuation": TaskContinuationSummary(
+                            slices_started=slice_index,
+                            max_slices=effective_max_slices,
+                            total_budget_seconds=self._continuation_total_budget_seconds,
+                            elapsed_ms=self._elapsed_ms(continuation_started),
+                            complexity_score=complexity.score,
+                            resumed_from_commits=tuple(resumed_from_commits),
+                            stop_reason=(
+                                execution.run_result.developer.stop_reason.value
+                                if execution.run_result is not None
+                                and execution.run_result.developer is not None
+                                else execution.status.value
+                            ),
+                        )
+                    }
+                )
+
+            await self._persist_runtime_result(
+                envelope,
+                execution.run_result,
+                run_token=run_token,
+                slice_index=slice_index if slice_index > 1 else None,
+            )
+            if execution.checkpoint is not None:
+                await self._store.append_evidence(
+                    run_id=envelope.run_id,
+                    task_id=envelope.task_id,
+                    evidence_key=(
+                        f"dispatch:{envelope.dispatch_id}:checkpoint"
+                        if slice_index == 1
+                        else f"dispatch:{envelope.dispatch_id}:checkpoint:slice:{slice_index:04d}"
+                    ),
+                    kind=PersistenceEvidenceKind.TASK_CHECKPOINT,
+                    payload_model=execution.checkpoint,
+                    stage="checkpoint",
+                    sequence=slice_index if slice_index > 1 else None,
+                    run_token=run_token,
+                )
+            await self._store.append_evidence(
+                run_id=envelope.run_id,
+                task_id=envelope.task_id,
+                evidence_key=f"dispatch:{envelope.dispatch_id}:execution",
+                kind=PersistenceEvidenceKind.WORKER_EXECUTION,
+                payload_model=execution,
+                stage="worker",
+                run_token=run_token,
+            )
+            if self._interface_contract_registry is not None:
+                if execution.status is WorkerExecutionStatus.SUCCEEDED:
+                    await self._interface_contract_registry.mark_producer_satisfied(
+                        run_id=envelope.run_id,
+                        task_id=envelope.task_id,
+                        commit_sha=execution.commit_sha,
+                    )
+                else:
+                    await self._interface_contract_registry.mark_producer_unmet(
+                        run_id=envelope.run_id,
+                        task_id=envelope.task_id,
+                    )
+            if (
+                execution.status is WorkerExecutionStatus.SUCCEEDED
+                and self._token_budget_manager is not None
+            ):
+                await self._token_budget_manager.reclaim_unused_task_budget(
+                    run_id=envelope.run_id,
+                    task_id=envelope.task_id,
+                )
+            await self._record_dispatch_event(
+                envelope,
+                run_token=run_token,
+                phase=WorkerDispatchPhase.COMPLETED,
+                outcome=execution.status,
+            )
+
+            if (
+                len(snapshot.tasks) == 1
+                and execution.run_result is not None
+                and (
+                    (
+                        execution.status is WorkerExecutionStatus.SUCCEEDED
+                        and execution.run_result.status is TaskRunState.SUCCEEDED
+                    )
+                    or (
+                        execution.status is WorkerExecutionStatus.FAILED
+                        and execution.run_result.status is TaskRunState.FAILED
+                    )
+                )
+            ):
+                await self._store.finalize_single_task_run(
+                    run_id=envelope.run_id,
+                    result=execution.run_result,
+                    run_token=run_token,
+                )
+            return execution
+        except WorkerExecutionBoundaryError as exc:
+            # A boundary violation must remain visible to the lease/actor layers so they can
+            # fail closed, but it also needs durable evidence before the lease is released.
+            await self._persist_terminal_worker_exception(
+                envelope=envelope,
+                snapshot=snapshot,
+                run_token=run_token,
+                exception=exc,
+                boundary_violation=True,
+            )
+            raise
+        except Exception as exc:
+            # Other runtime failures are converted to terminal evidence so a released lease
+            # can never masquerade as a live but invisible task.
+            return await self._persist_terminal_worker_exception(
+                envelope=envelope,
+                snapshot=snapshot,
+                run_token=run_token,
+                exception=exc,
+                boundary_violation=False,
+            )
+
+    async def _persist_terminal_worker_exception(
+        self,
+        *,
+        envelope: TaskDispatchEnvelope,
+        snapshot: PersistedRunSnapshot,
+        run_token: UUID,
+        exception: Exception,
+        boundary_violation: bool,
+    ) -> WorkerExecutionEvidence:
+        evidence = [
+            "terminalization=worker_exception",
+            f"exception_type={type(exception).__name__}",
+        ]
+        if boundary_violation:
+            evidence.append("failure_class=execution_boundary")
+        failure = FailureReport(
+            failure_type=FailureType.TOOL_FAILURE,
+            source=FailureSource.RUNTIME,
+            message="Worker 在持久化终态前遇到未处理异常。",
+            retryable=False,
+            evidence=evidence,
         )
-        execution = raw_execution
-        await self._persist_runtime_result(envelope, execution.run_result, run_token=run_token)
+        execution = WorkerExecutionEvidence(
+            dispatch_id=envelope.dispatch_id,
+            run_id=envelope.run_id,
+            task_id=envelope.task_id,
+            status=WorkerExecutionStatus.FAILED,
+            base_commit=snapshot.base_commit,
+            failures=(failure,),
+            duration_ms=0,
+        )
         await self._store.append_evidence(
             run_id=envelope.run_id,
             task_id=envelope.task_id,
@@ -328,28 +687,8 @@ class QueuedTaskWorker:
             envelope,
             run_token=run_token,
             phase=WorkerDispatchPhase.COMPLETED,
-            outcome=execution.status,
+            outcome=WorkerExecutionStatus.FAILED,
         )
-
-        if (
-            len(snapshot.tasks) == 1
-            and execution.run_result is not None
-            and (
-                (
-                    execution.status is WorkerExecutionStatus.SUCCEEDED
-                    and execution.run_result.status is TaskRunState.SUCCEEDED
-                )
-                or (
-                    execution.status is WorkerExecutionStatus.FAILED
-                    and execution.run_result.status is TaskRunState.FAILED
-                )
-            )
-        ):
-            await self._store.finalize_single_task_run(
-                run_id=envelope.run_id,
-                result=execution.run_result,
-                run_token=run_token,
-            )
         return execution
 
     async def _resolve_execution_base(
@@ -413,11 +752,14 @@ class QueuedTaskWorker:
         result: SingleTaskRunResult | None,
         *,
         run_token: UUID,
+        slice_index: int | None = None,
     ) -> None:
         if result is None:
             return
 
         prefix = f"dispatch:{envelope.dispatch_id}"
+        if slice_index is not None:
+            prefix = f"{prefix}:slice:{slice_index:04d}"
         for event in result.events:
             await self._store.append_evidence(
                 run_id=envelope.run_id,
@@ -488,3 +830,121 @@ class QueuedTaskWorker:
                 sequence=index,
                 run_token=run_token,
             )
+
+        if result.workflow_execution is not None:
+            await self._store.append_evidence(
+                run_id=envelope.run_id,
+                task_id=envelope.task_id,
+                evidence_key=f"{prefix}:workflow",
+                kind=PersistenceEvidenceKind.WORKFLOW_EXECUTION,
+                payload_model=result.workflow_execution,
+                stage="workflow",
+                run_token=run_token,
+            )
+
+    def _can_continue(
+        self,
+        *,
+        execution: WorkerExecutionEvidence,
+        slice_index: int,
+        max_slices: int,
+        elapsed_ms: int,
+        previous_changed_files: tuple[str, ...] | None,
+        repeated_file_slices: int,
+    ) -> bool:
+        checkpoint = execution.checkpoint
+        if (
+            execution.status is not WorkerExecutionStatus.FAILED
+            or checkpoint is None
+            or checkpoint.reason is not CheckpointReason.TIME_LIMIT
+        ):
+            return False
+        if slice_index >= max_slices:
+            return False
+        if elapsed_ms >= int(self._continuation_total_budget_seconds * 1_000):
+            return False
+        if checkpoint.changed_files == previous_changed_files:
+            return repeated_file_slices < self._continuation_max_repeated_file_slices
+        return True
+
+    def _checkpoint_with_slice_facts(
+        self,
+        *,
+        execution: WorkerExecutionEvidence,
+        slice_index: int,
+        elapsed_ms: int,
+        resume_from_commit: str | None,
+        max_slices: int,
+        remaining_interfaces: tuple[str, ...] = (),
+    ) -> TaskCheckpoint | None:
+        checkpoint = execution.checkpoint
+        if checkpoint is None:
+            return None
+        result = execution.run_result
+        verification_summary = (
+            "本切片尚未执行确定性验证。"
+            if result is None or not result.verifications
+            else f"本切片已执行 {len(result.verifications)} 次确定性验证。"
+        )
+        failure_summary = (
+            result.failures[0].message[:512] if result is not None and result.failures else ""
+        )
+        remaining_summary = (
+            result.developer.final_message[:512]
+            if result is not None and result.developer is not None
+            else "继续完成尚未满足的任务验收条件。"
+        )
+        return checkpoint.model_copy(
+            update={
+                "slice_index": slice_index,
+                "max_slices": max_slices,
+                "elapsed_ms": elapsed_ms,
+                "resume_from_commit": resume_from_commit,
+                "completed_summary": (
+                    f"本切片已保存 {len(checkpoint.changed_files)} 个受控文件的改动。"
+                ),
+                "remaining_summary": remaining_summary,
+                "verification_summary": verification_summary,
+                "failure_summary": failure_summary,
+                "completed_interfaces": (),
+                "remaining_interfaces": remaining_interfaces,
+            }
+        )
+
+    async def _checkpoint_budget_facts(
+        self, *, execution: WorkerExecutionEvidence, run_id: UUID
+    ) -> WorkerExecutionEvidence:
+        checkpoint = execution.checkpoint
+        if checkpoint is None:
+            return execution
+        remaining = None
+        if self._token_budget_reader is not None:
+            budget = await self._token_budget_reader.snapshot(run_id)
+            package = next(
+                (item for item in budget.work_packages if item.task_id == execution.task_id),
+                None,
+            )
+            if package is not None:
+                remaining = max(
+                    0,
+                    package.developer_budget_tokens
+                    - package.developer_used_tokens
+                    - package.developer_reserved_tokens,
+                )
+            checkpoint = checkpoint.model_copy(update={"remaining_budget_tokens": remaining})
+        return execution.model_copy(update={"checkpoint": checkpoint})
+
+    @staticmethod
+    def _elapsed_ms(started_at: float) -> int:
+        return max(0, int((perf_counter() - started_at) * 1000))
+
+    def _effective_max_slices(self, complexity_score: int) -> int:
+        """Allocate continuation capacity from the persisted task shape, never an LLM guess."""
+
+        if complexity_score <= 1:
+            requested = 2
+        elif complexity_score <= 3:
+            requested = 3
+        else:
+            requested = self._continuation_max_slices
+        return min(self._continuation_max_slices, requested)

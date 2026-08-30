@@ -120,9 +120,7 @@ def _snapshot(base: str, head: str, *, status: PersistedRunStatus) -> PersistedR
         default_branch="main",
         base_commit=base,
         status=status,
-        tasks=(
-            PersistedTask(task=_task(), contract_sha256="a" * 64, created_at=NOW),
-        ),
+        tasks=(PersistedTask(task=_task(), contract_sha256="a" * 64, created_at=NOW),),
         evidence=(
             PersistedEvidence(
                 id=1,
@@ -195,7 +193,11 @@ def test_git_push_is_non_force_and_keeps_token_out_of_arguments(
         calls.append((list(command), dict(kwargs["env"])))
         if "ls-remote" in command:
             lookup_count += 1
-            stdout = "" if lookup_count == 1 else f"{source}\trefs/heads/devflow/run-{RUN_ID}\n"
+            requested_ref = command[-1]
+            if requested_ref == "refs/heads/main":
+                stdout = f"{source}\trefs/heads/main\n"
+            else:
+                stdout = "" if lookup_count == 2 else f"{source}\trefs/heads/devflow/run-{RUN_ID}\n"
         else:
             stdout = ""
         return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
@@ -221,11 +223,13 @@ def test_existing_devflow_branch_at_different_sha_fails_without_push(
 
     def fake_run(command, **kwargs):
         commands.append(list(command))
-        stdout = (
-            f"{'c' * 40}\trefs/heads/devflow/run-{RUN_ID}\n"
-            if "ls-remote" in command
-            else ""
-        )
+        stdout = ""
+        if "ls-remote" in command:
+            requested_ref = command[-1]
+            if requested_ref == "refs/heads/main":
+                stdout = f"{'b' * 40}\trefs/heads/main\n"
+            else:
+                stdout = f"{'c' * 40}\trefs/heads/devflow/run-{RUN_ID}\n"
         return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -234,6 +238,43 @@ def test_existing_devflow_branch_at_different_sha_fails_without_push(
         gateway._publish_branch(SimpleNamespace(root=tmp_path), _intent())  # noqa: SLF001
     assert raised.value.code == "REMOTE_BRANCH_CONFLICT"
     assert not any("push" in command for command in commands)
+
+
+def test_empty_remote_is_seeded_before_publishing_the_devflow_branch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = "a" * 40
+    initial = "b" * 40
+    commands: list[list[str]] = []
+    base_lookup_count = 0
+    branch_lookup_count = 0
+
+    def fake_run(command, **kwargs):
+        nonlocal base_lookup_count, branch_lookup_count
+        commands.append(list(command))
+        stdout = ""
+        if "ls-remote" in command:
+            requested_ref = command[-1]
+            if requested_ref == "refs/heads/main":
+                base_lookup_count += 1
+                if base_lookup_count > 1:
+                    stdout = f"{initial}\trefs/heads/main\n"
+            else:
+                branch_lookup_count += 1
+                if branch_lookup_count > 1:
+                    stdout = f"{source}\trefs/heads/devflow/run-{RUN_ID}\n"
+        elif "rev-list" in command:
+            stdout = f"{initial}\n"
+        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    gateway = GitHubPublicationGateway(SecretStr("token"))
+    gateway._publish_branch(SimpleNamespace(root=tmp_path), _intent(source))  # noqa: SLF001
+
+    pushes = [command for command in commands if "push" in command]
+    assert f"{initial}:refs/heads/main" in pushes[0]
+    assert f"{source}:refs/heads/devflow/run-{RUN_ID}" in pushes[1]
 
 
 class FakePublicationApi:
@@ -294,9 +335,7 @@ def test_publication_api_rejects_browser_body_and_query_selectors() -> None:
     assert query.status_code == 400
     assert service.publish_calls == 0
 
-    accepted = asyncio.run(
-        _request("POST", f"/api/v1/runs/{RUN_ID}/github-publication", service)
-    )
+    accepted = asyncio.run(_request("POST", f"/api/v1/runs/{RUN_ID}/github-publication", service))
     assert accepted.status_code == 200
     assert service.publish_calls == 1
 

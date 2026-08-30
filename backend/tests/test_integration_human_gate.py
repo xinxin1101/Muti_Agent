@@ -58,9 +58,7 @@ def _task(task_id: str, *writable_files: str) -> models.TaskContract:
 
 
 def _dag(*tasks: models.TaskContract) -> models.TaskDAG:
-    return models.TaskDAG(
-        tasks=tuple(models.TaskNode(task=task, depends_on=()) for task in tasks)
-    )
+    return models.TaskDAG(tasks=tuple(models.TaskNode(task=task, depends_on=()) for task in tasks))
 
 
 def _run_result(task: models.TaskContract, changed_files: list[str]) -> SingleTaskRunResult:
@@ -202,14 +200,17 @@ def test_default_policy_requires_human_and_keeps_all_execution_blocked(tmp_path:
     assert gate_snapshot.repair_may_start is False
     assert gate_snapshot.integration_may_advance is False
     assert any("disabled" in reason for reason in gate_snapshot.policy.reasons)
-    assert _git(
-        base.root,
-        "show-ref",
-        "--verify",
-        "--quiet",
-        "refs/devflow/integration-decisions/gate-run",
-        check=False,
-    ) == ""
+    assert (
+        _git(
+            base.root,
+            "show-ref",
+            "--verify",
+            "--quiet",
+            "refs/devflow/integration-decisions/gate-run",
+            check=False,
+        )
+        == ""
+    )
     assert base.changed_files() == []
 
 

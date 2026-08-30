@@ -67,7 +67,11 @@ async def _trace_persistence_failure_does_not_escape_sidecar_boundary(
         ),
     )
 
-    await backend._persist_trace(collector, run_token=uuid4())
+    await backend._persist_trace(
+        collector,
+        run_token=uuid4(),
+        base_commit="a" * 40,
+    )
 
     assert trace_store.calls == 1
 

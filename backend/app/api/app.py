@@ -14,6 +14,9 @@ from app.api.github_publication import (
     ProductGitHubPublicationFailedError,
 )
 from app.api.models import (
+    ProductDependencyCacheCleanup,
+    ProductDependencyEnvironmentMetrics,
+    ProductDependencyEnvironmentStatus,
     ProductDiffKind,
     ProductGitHubPublication,
     ProductProject,
@@ -29,6 +32,7 @@ from app.api.models import (
 )
 from app.api.publication import ProductGitHubPublicationUnavailableError
 from app.api.service import (
+    ProductDependencyEnvironmentUnavailableError,
     ProductDiffUnavailableError,
     ProductMetricsUnavailableError,
     ProductRuntimeService,
@@ -46,6 +50,7 @@ from app.persistence import (
     PersistenceCorruptionError,
     PersistenceDAGUnavailableError,
 )
+from app.verification.dependency_preflight import DependencyEnvironmentPreflightError
 from app.workspace import ProjectProvisionError, WorkspaceGitError
 
 StartupCheck = Callable[[], Awaitable[None]]
@@ -82,7 +87,8 @@ def create_app(
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
-        return {"status": "ok"}
+        fingerprint = getattr(app.state, "runtime_fingerprint", "unknown")
+        return {"status": "ok", "runtime_fingerprint": fingerprint}
 
     @app.get("/api/v1/projects", response_model=list[ProductProject])
     async def list_projects() -> tuple[ProductProject, ...]:
@@ -125,12 +131,83 @@ def create_app(
     async def create_run(request: RunCreateRequest) -> RunLaunchResponse:
         try:
             return await service.create_run(request)
+        except DependencyEnvironmentPreflightError as exc:
+            raise HTTPException(status_code=424, detail=exc.public_detail) from exc
         except ProductWorkspaceNotReadyError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except WorkspaceGitError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get(
+        "/api/v1/projects/{project_id}/dependency-environment",
+        response_model=ProductDependencyEnvironmentStatus,
+    )
+    async def get_dependency_environment(project_id: UUID) -> ProductDependencyEnvironmentStatus:
+        try:
+            return await service.get_dependency_environment(project_id)
+        except ProductDependencyEnvironmentUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except DependencyEnvironmentPreflightError as exc:
+            raise HTTPException(status_code=424, detail=exc.public_detail) from exc
+        except (ProductWorkspaceNotReadyError, WorkspaceGitError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post(
+        "/api/v1/projects/{project_id}/dependency-environment/rebuild",
+        response_model=ProductDependencyEnvironmentStatus,
+    )
+    async def rebuild_dependency_environment(
+        request: Request,
+        project_id: UUID,
+    ) -> ProductDependencyEnvironmentStatus:
+        if request.query_params or (await request.body()).strip():
+            raise HTTPException(
+                status_code=400,
+                detail="dependency environment rebuild accepts no body",
+            )
+        try:
+            return await service.rebuild_dependency_environment(project_id)
+        except ProductDependencyEnvironmentUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except DependencyEnvironmentPreflightError as exc:
+            raise HTTPException(status_code=424, detail=exc.public_detail) from exc
+        except (ProductWorkspaceNotReadyError, WorkspaceGitError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get(
+        "/api/v1/dependency-environment/metrics",
+        response_model=ProductDependencyEnvironmentMetrics,
+    )
+    async def dependency_environment_metrics(
+        request: Request,
+    ) -> ProductDependencyEnvironmentMetrics:
+        if request.query_params:
+            raise HTTPException(
+                status_code=400,
+                detail="dependency environment metrics accepts no query",
+            )
+        try:
+            return await service.dependency_environment_metrics()
+        except ProductDependencyEnvironmentUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.post(
+        "/api/v1/dependency-environment/cleanup",
+        response_model=ProductDependencyCacheCleanup,
+    )
+    async def cleanup_dependency_environments(request: Request) -> ProductDependencyCacheCleanup:
+        if request.query_params or (await request.body()).strip():
+            raise HTTPException(status_code=400, detail="dependency cache cleanup accepts no body")
+        try:
+            return await service.cleanup_dependency_environments()
+        except ProductDependencyEnvironmentUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @app.get("/api/v1/runs/{run_id}", response_model=ProductRunDetail)
     async def get_run(run_id: UUID) -> ProductRunDetail:

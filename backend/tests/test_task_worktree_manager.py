@@ -50,7 +50,7 @@ def test_manager_freezes_base_commit_and_creates_locked_clean_task_worktree(
     assert _git(record.path, "symbolic-ref", "--short", "HEAD") == record.branch_name
     assert manager.open_workspace("TASK-001").changed_files() == []
     porcelain = _git(base.root, "worktree", "list", "--porcelain")
-    assert f"worktree {record.path}" in porcelain
+    assert f"worktree {record.path.as_posix()}" in porcelain
     assert f"branch refs/heads/{record.branch_name}" in porcelain
     assert "locked DevFlow task TASK-001" in porcelain
 
@@ -102,9 +102,7 @@ def test_explicit_descendant_commit_can_be_used_as_a_future_task_base(tmp_path: 
 
     assert record.base_commit == descendant
     assert _git(record.path, "rev-parse", "HEAD") == descendant
-    assert (record.path / "dependency.txt").read_text(encoding="utf-8") == (
-        "integrated-upstream\n"
-    )
+    assert (record.path / "dependency.txt").read_text(encoding="utf-8") == ("integrated-upstream\n")
 
 
 def test_task_base_must_be_a_descendant_of_the_frozen_run_base(tmp_path: Path) -> None:

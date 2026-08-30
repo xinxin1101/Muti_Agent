@@ -14,6 +14,10 @@ from pydantic import ValidationError
 
 from app.dispatch import DramatiqTaskDispatcher, TaskDispatchRejectedError
 from app.models import (
+    CheckpointReason,
+    ContextContinuationState,
+    DeveloperRunResult,
+    DeveloperStopReason,
     FailureReport,
     FailureSource,
     FailureType,
@@ -25,6 +29,7 @@ from app.models import (
     WorkerExecutionEvidence,
     WorkerExecutionStatus,
 )
+from app.models.checkpoint import TaskCheckpoint
 from app.persistence import PersistenceEvidenceKind
 from app.persistence.types import PersistedRunStatus
 from app.workers.actor import ACTOR_NAME, create_task_actor
@@ -111,6 +116,19 @@ def test_dispatcher_enqueues_valid_persisted_identity_without_executing_it() -> 
     assert receipt.broker_message_id
     assert actor.actor_name == ACTOR_NAME
     assert actor.options["max_retries"] == 0
+    assert actor.options["time_limit"] == 7_200_000
+
+
+def test_actor_accepts_an_outer_emergency_time_limit() -> None:
+    broker = StubBroker()
+    actor = create_task_actor(
+        broker=broker,
+        handler=_noop_handler,
+        queue_name="devflow_tasks",
+        task_time_limit_seconds=1_800.5,
+    )
+
+    assert actor.options["time_limit"] == 1_800_500
 
 
 def test_dispatcher_rejects_terminal_run_and_unknown_task() -> None:
@@ -394,12 +412,15 @@ def test_local_queued_backend_uses_persisted_base_after_managed_head_advances(
     assert evidence.commit_sha is not None
     parents = _git(base.root, "rev-list", "--parents", "-n", "1", evidence.commit_sha).split()
     assert parents[1:] == [persisted_base]
-    assert "later.txt" not in _git(
-        base.root,
-        "ls-tree",
-        "--name-only",
-        evidence.commit_sha,
-    ).splitlines()
+    assert (
+        "later.txt"
+        not in _git(
+            base.root,
+            "ls-tree",
+            "--name-only",
+            evidence.commit_sha,
+        ).splitlines()
+    )
     assert (base.root / "later.txt").read_text(encoding="utf-8") == "created after run start\n"
 
 
@@ -469,6 +490,84 @@ class _CommitFailureBackend:
         )
 
 
+class _ExplodingBackend:
+    async def execute(self, **_kwargs):
+        raise RuntimeError("simulated worker boundary failure")
+
+
+def _time_limited_result(task_id: str) -> SingleTaskRunResult:
+    failure = FailureReport(
+        failure_type=FailureType.AGENT_TIME_LIMIT,
+        source=FailureSource.RUNTIME,
+        message="开发智能体时间预算耗尽。",
+        retryable=False,
+    )
+    return SingleTaskRunResult(
+        task_id=task_id,
+        status=TaskRunState.FAILED,
+        events=[
+            RunEvent(sequence=0, state=TaskRunState.PENDING, detail="Created."),
+            RunEvent(sequence=1, state=TaskRunState.FAILED, detail="Time budget exhausted."),
+        ],
+        developer=DeveloperRunResult(
+            stop_reason=DeveloperStopReason.TIME_LIMIT,
+            iterations=1,
+            tool_calls=1,
+            changed_files=["module.py"],
+        ),
+        failures=[failure],
+        changed_files=["module.py"],
+    )
+
+
+class _ContinuationBackend:
+    def __init__(self, task_id: str) -> None:
+        self.task_id = task_id
+        self.bases: list[str] = []
+        self.contexts = []
+
+    async def execute(self, *, base_commit, dispatch_id, run_id, task, **_kwargs):
+        self.bases.append(base_commit)
+        self.contexts.append(_kwargs.get("continuation_context"))
+        if len(self.bases) == 1:
+            checkpoint_commit = "b" * 40
+            return WorkerExecutionEvidence(
+                dispatch_id=dispatch_id,
+                run_id=run_id,
+                task_id=task.task_id,
+                status=WorkerExecutionStatus.FAILED,
+                base_commit=base_commit,
+                checkpoint=TaskCheckpoint(
+                    task_id=task.task_id,
+                    base_commit=base_commit,
+                    commit_sha=checkpoint_commit,
+                    changed_files=("module.py",),
+                    reason=CheckpointReason.TIME_LIMIT,
+                    summary="partial change saved",
+                    context_state=ContextContinuationState(
+                        summary_version="repository_summary_v1",
+                        repository_head=base_commit,
+                        changed_files=("module.py",),
+                        remaining_summary="continue implementation",
+                    ),
+                ),
+                run_result=_time_limited_result(task.task_id),
+                failures=tuple(_time_limited_result(task.task_id).failures),
+                duration_ms=1,
+            )
+        return WorkerExecutionEvidence(
+            dispatch_id=dispatch_id,
+            run_id=run_id,
+            task_id=task.task_id,
+            status=WorkerExecutionStatus.SUCCEEDED,
+            base_commit=base_commit,
+            branch_name="devflow/task/continued",
+            commit_sha="c" * 40,
+            run_result=_success_result(task.task_id),
+            duration_ms=1,
+        )
+
+
 def test_worker_propagates_token_and_does_not_finalize_success_when_git_commit_failed() -> None:
     task = _task("QUEUE-COMMIT-FAIL")
     run_id = uuid4()
@@ -497,3 +596,52 @@ def test_worker_propagates_token_and_does_not_finalize_success_when_git_commit_f
     assert store.appended
     assert all(item[2] == run_token for item in store.appended)
     assert any(item[0] is PersistenceEvidenceKind.WORKER_EXECUTION for item in store.appended)
+
+
+def test_worker_persists_terminal_failure_before_returning_an_unhandled_boundary_error() -> None:
+    task = _task("QUEUE-TERMINAL-GUARD")
+    run_id = uuid4()
+    snapshot = SimpleNamespace(
+        status=PersistedRunStatus.RUNNING,
+        run_id=run_id,
+        project_id=uuid4(),
+        base_commit="a" * 40,
+        tasks=(SimpleNamespace(task=task),),
+    )
+    store = _RecordingStore(snapshot)
+    worker = QueuedTaskWorker(store=store, backend=_ExplodingBackend())
+    envelope = TaskDispatchEnvelope(dispatch_id=uuid4(), run_id=run_id, task_id=task.task_id)
+
+    evidence = asyncio.run(worker.execute(envelope, run_token=uuid4()))
+
+    assert evidence.status is WorkerExecutionStatus.FAILED
+    assert evidence.failures[0].evidence[0] == "terminalization=worker_exception"
+    assert any(item[0] is PersistenceEvidenceKind.WORKER_EXECUTION for item in store.appended)
+
+
+def test_worker_automatically_continues_time_limited_checkpoint_from_its_commit() -> None:
+    task = _task("QUEUE-CONTINUE")
+    run_id = uuid4()
+    snapshot = SimpleNamespace(
+        status=PersistedRunStatus.RUNNING,
+        run_id=run_id,
+        project_id=uuid4(),
+        base_commit="a" * 40,
+        tasks=(SimpleNamespace(task=task),),
+    )
+    store = _RecordingStore(snapshot)
+    backend = _ContinuationBackend(task.task_id)
+    worker = QueuedTaskWorker(store=store, backend=backend, continuation_max_slices=3)
+    envelope = TaskDispatchEnvelope(dispatch_id=uuid4(), run_id=run_id, task_id=task.task_id)
+
+    evidence = asyncio.run(worker.execute(envelope, run_token=uuid4()))
+
+    assert backend.bases == ["a" * 40, "b" * 40]
+    assert backend.contexts[0] is None
+    assert backend.contexts[1] is not None
+    assert backend.contexts[1].changed_files == ("module.py",)
+    assert evidence.status is WorkerExecutionStatus.SUCCEEDED
+    assert evidence.continuation is not None
+    assert evidence.continuation.slices_started == 2
+    assert any("checkpoint:slice:0001" in item[1] for item in store.appended)
+    assert store.finalized and store.finalized[0][0].status is TaskRunState.SUCCEEDED

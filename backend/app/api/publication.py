@@ -170,8 +170,7 @@ def _integration_source(
         return None
 
     identities = {
-        (source.commit, merge_snapshot.integration_ref)
-        for source, merge_snapshot in candidates
+        (source.commit, merge_snapshot.integration_ref) for source, merge_snapshot in candidates
     }
     if len(identities) != 1:
         raise PersistenceCorruptionError(
@@ -280,9 +279,7 @@ def _require_repaired_publication_authority(
 
     decision = decision_matches[0]
     if decision.decision is not HumanGateDecision.AUTHORIZE_REPAIR:
-        raise PersistenceCorruptionError(
-            "repaired publication is not backed by AUTHORIZE_REPAIR"
-        )
+        raise PersistenceCorruptionError("repaired publication is not backed by AUTHORIZE_REPAIR")
     expected_decision = {
         "decision_commit": attempt.human_decision_commit,
         "evidence_fingerprint": attempt.conflict_evidence_fingerprint,

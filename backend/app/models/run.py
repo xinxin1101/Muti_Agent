@@ -5,11 +5,13 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.agent import AgentRole, TokenUsage
+from app.models.context import ContextContinuationState
 from app.models.developer import DeveloperRunResult
 from app.models.failure import FailureReport
 from app.models.repair import RepairRunResult
 from app.models.review import ReviewDecision
 from app.models.verification import VerificationResult
+from app.models.workflow import WorkflowExecutionRecord
 
 
 class TaskRunState(StrEnum):
@@ -42,6 +44,7 @@ class AgentUsageSummary(BaseModel):
     calls: int = Field(default=0, ge=0)
     usage: TokenUsage = Field(default_factory=TokenUsage)
     latency_ms: int = Field(default=0, ge=0)
+    enable_thinking: bool = False
 
 
 class SingleTaskRunResult(BaseModel):
@@ -61,6 +64,8 @@ class SingleTaskRunResult(BaseModel):
     repair_attempts: int = Field(default=0, ge=0)
     agent_models: dict[AgentRole, str] = Field(default_factory=dict)
     agent_usage: list[AgentUsageSummary] = Field(default_factory=list)
+    context_state: ContextContinuationState | None = None
+    workflow_execution: WorkflowExecutionRecord | None = None
 
     @model_validator(mode="after")
     def validate_terminal_consistency(self) -> SingleTaskRunResult:

@@ -8,6 +8,7 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from app.models.context import ContextContinuationState
 from app.models.dispatch import (
     TaskDispatchEnvelope,
     WorkerExecutionEvidence,
@@ -104,6 +105,7 @@ class TraceAwareLocalQueuedTaskExecutionBackend(LocalQueuedTaskExecutionBackend)
         dispatch_id: UUID,
         run_token: UUID,
         base_commit: str,
+        continuation_context: ContextContinuationState | None = None,
     ) -> WorkerExecutionEvidence:
         generation = _TRACE_GENERATION.get()
         if generation is None:
@@ -114,6 +116,7 @@ class TraceAwareLocalQueuedTaskExecutionBackend(LocalQueuedTaskExecutionBackend)
                 dispatch_id=dispatch_id,
                 run_token=run_token,
                 base_commit=base_commit,
+                continuation_context=continuation_context,
             )
 
         trace = TaskTraceCollector(
@@ -126,7 +129,12 @@ class TraceAwareLocalQueuedTaskExecutionBackend(LocalQueuedTaskExecutionBackend)
         record: TaskWorktreeRecord | None = None
         run_result: SingleTaskRunResult | None = None
         trace_persisted = False
-        worktree_identity = self._worktree_identity(run_id, task.task_id, run_token)
+        worktree_identity = self._worktree_identity(
+            run_id,
+            task.task_id,
+            run_token,
+            base_commit,
+        )
         try:
             base_workspace = self._workspace_resolver.resolve(project_id)
             worktrees = TaskWorktreeManager(
@@ -144,16 +152,30 @@ class TraceAwareLocalQueuedTaskExecutionBackend(LocalQueuedTaskExecutionBackend)
                 record = await asyncio.to_thread(worktrees.create, worktree_identity)
             workspace = worktrees.open_workspace(worktree_identity)
 
-            runner = self._runner_factory(task)
-            run_result = await runner.run(
-                task,
-                workspace=workspace,
-                trace=trace,
+            runner = (
+                self._runner_factory_for_execution(task, run_id)
+                if self._runner_factory_for_execution is not None
+                else self._runner_factory(task)
             )
-            await self._persist_trace(trace, run_token=run_token)
+            run_kwargs = {"workspace": workspace, "trace": trace}
+            if continuation_context is not None:
+                run_kwargs["continuation_context"] = continuation_context
+            run_result = await runner.run(task, **run_kwargs)
+            await self._persist_trace(trace, run_token=run_token, base_commit=base_commit)
             trace_persisted = True
 
             if run_result.status is TaskRunState.FAILED:
+                checkpoint = await self._checkpoint_failed_work(
+                    worktrees=worktrees,
+                    worktree_identity=worktree_identity,
+                    task=task,
+                    base_commit=base_commit,
+                    workspace=workspace,
+                    run_result=run_result,
+                    run_id=run_id,
+                    dispatch_id=dispatch_id,
+                    run_token=run_token,
+                )
                 return self._failure_evidence(
                     task=task,
                     run_id=run_id,
@@ -163,6 +185,7 @@ class TraceAwareLocalQueuedTaskExecutionBackend(LocalQueuedTaskExecutionBackend)
                     record=record,
                     run_result=run_result,
                     failures=tuple(run_result.failures),
+                    checkpoint=checkpoint,
                 )
             if run_result.status is not TaskRunState.SUCCEEDED:
                 raise RuntimeError("single-task runtime returned a non-terminal status")
@@ -191,7 +214,7 @@ class TraceAwareLocalQueuedTaskExecutionBackend(LocalQueuedTaskExecutionBackend)
             )
         except Exception as exc:
             if not trace_persisted:
-                await self._persist_trace(trace, run_token=run_token)
+                await self._persist_trace(trace, run_token=run_token, base_commit=base_commit)
             failure = self._runtime_failure(
                 "Queued worker execution failed before fenced task-branch finalization.",
                 evidence=[f"exception_type={type(exc).__name__}"],
@@ -205,6 +228,7 @@ class TraceAwareLocalQueuedTaskExecutionBackend(LocalQueuedTaskExecutionBackend)
                 record=record,
                 run_result=run_result,
                 failures=(failure,),
+                checkpoint=None,
             )
 
     async def _persist_trace(
@@ -212,6 +236,7 @@ class TraceAwareLocalQueuedTaskExecutionBackend(LocalQueuedTaskExecutionBackend)
         trace: TaskTraceCollector,
         *,
         run_token: UUID,
+        base_commit: str,
     ) -> None:
         if trace.empty:
             return
@@ -220,7 +245,7 @@ class TraceAwareLocalQueuedTaskExecutionBackend(LocalQueuedTaskExecutionBackend)
             await self._trace_store.append_evidence(
                 run_id=batch.run_id,
                 task_id=batch.task_id,
-                evidence_key=f"dispatch:{batch.dispatch_id}:trace",
+                evidence_key=f"dispatch:{batch.dispatch_id}:trace:{base_commit[:16]}",
                 kind=PersistenceEvidenceKind.TRACE_BATCH,
                 payload_model=batch,
                 stage="trace",

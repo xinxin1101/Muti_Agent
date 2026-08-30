@@ -82,13 +82,10 @@ class DAGTaskReconciliationRecord(BaseModel):
 
     @model_validator(mode="after")
     def validate_record(self) -> DAGTaskReconciliationRecord:
-        if (self.worker_execution_status is None) != (
-            self.worker_execution_evidence_id is None
-        ):
+        if (self.worker_execution_status is None) != (self.worker_execution_evidence_id is None):
             raise ValueError("worker terminal status and evidence id must appear together")
         if self.execution_base is not None and (
-            self.execution_base.run_id != self.run_id
-            or self.execution_base.task_id != self.task_id
+            self.execution_base.run_id != self.run_id or self.execution_base.task_id != self.task_id
         ):
             raise ValueError("execution-base identity must match the frontier task")
         if self.frontier_state is DAGTaskFrontierState.SUCCEEDED:

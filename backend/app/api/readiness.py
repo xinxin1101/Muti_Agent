@@ -29,7 +29,7 @@ class ReadinessCheck(BaseModel):
 
 
 class ModelReadiness(BaseModel):
-    role: Literal["planner", "developer", "reviewer", "repair"]
+    role: Literal["planner", "developer", "reviewer", "repair", "failure_explanation"]
     model: str
     state: ReadinessState
 
@@ -41,6 +41,15 @@ class ProductReadiness(BaseModel):
     verification_image: ReadinessCheck
     provider: ReadinessCheck
     models: tuple[ModelReadiness, ...] = Field(default_factory=tuple)
+
+
+class RuntimeDependencyHealth(BaseModel):
+    """Cheap runtime transport status for the operator dashboard."""
+
+    runtime_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    database: ReadinessCheck
+    redis: ReadinessCheck
+    dispatch_available: bool
 
 
 class OperationalReadinessChecker:
@@ -61,9 +70,7 @@ class OperationalReadinessChecker:
         required.extend(item.state for item in models)
         return ProductReadiness(
             status=(
-                "READY"
-                if all(item is ReadinessState.READY for item in required)
-                else "NOT_READY"
+                "READY" if all(item is ReadinessState.READY for item in required) else "NOT_READY"
             ),
             database=database,
             redis=redis,
@@ -138,8 +145,7 @@ class OperationalReadinessChecker:
             return ReadinessCheck(
                 state=ReadinessState.UNAVAILABLE,
                 detail=(
-                    "Configured verification image is unavailable; "
-                    "build it before running tasks."
+                    "Configured verification image is unavailable; build it before running tasks."
                 ),
             )
         return ReadinessCheck(
@@ -155,7 +161,9 @@ class OperationalReadinessChecker:
             ("developer", self._settings.developer_model),
             ("reviewer", self._settings.reviewer_model),
             ("repair", self._settings.repair_model),
+            ("failure_explanation", self._settings.failure_explanation_model),
         )
+
         if self._settings.siliconflow_api_key is None:
             return (
                 ReadinessCheck(
@@ -190,9 +198,7 @@ class OperationalReadinessChecker:
                 role=role,
                 model=model,
                 state=(
-                    ReadinessState.READY
-                    if model in available
-                    else ReadinessState.MODEL_UNAVAILABLE
+                    ReadinessState.READY if model in available else ReadinessState.MODEL_UNAVAILABLE
                 ),
             )
             for role, model in configured
@@ -213,11 +219,34 @@ class OperationalReadinessChecker:
             models,
         )
 
+    async def check_runtime_dependencies(
+        self,
+        *,
+        runtime_fingerprint: str,
+    ) -> RuntimeDependencyHealth:
+        database, redis = await asyncio.gather(self._database(), self._redis())
+        return RuntimeDependencyHealth(
+            runtime_fingerprint=runtime_fingerprint,
+            database=database,
+            redis=redis,
+            dispatch_available=(
+                database.state is ReadinessState.READY and redis.state is ReadinessState.READY
+            ),
+        )
+
 
 def attach_readiness_route(app: FastAPI, checker: OperationalReadinessChecker) -> None:
     @app.get("/readyz", response_model=ProductReadiness)
     async def readyz() -> ProductReadiness | JSONResponse:
         result = await checker.check()
         if result.status == "READY":
+            return result
+        return JSONResponse(status_code=503, content=result.model_dump(mode="json"))
+
+    @app.get("/api/v1/runtime-health", response_model=RuntimeDependencyHealth)
+    async def runtime_health() -> RuntimeDependencyHealth | JSONResponse:
+        fingerprint = getattr(app.state, "runtime_fingerprint", "")
+        result = await checker.check_runtime_dependencies(runtime_fingerprint=fingerprint)
+        if result.dispatch_available:
             return result
         return JSONResponse(status_code=503, content=result.model_dump(mode="json"))

@@ -42,8 +42,7 @@ def _case() -> BenchmarkCase:
             readonly_files=[],
             acceptance_criteria=["result.txt exists."],
             verification_commands=[
-                "python -c \"from pathlib import Path; "
-                "assert Path('result.txt').exists()\""
+                "python -c \"from pathlib import Path; assert Path('result.txt').exists()\""
             ],
             max_retries=2,
         ),
@@ -141,11 +140,7 @@ def _terminal_observation(
             source_evidence_sha256="b" * 64,
             base_commit="a" * 40,
             head_commit="c" * 40,
-            changed_file_count=(
-                len(changed_files)
-                if diff_complete
-                else len(changed_files) + 1
-            ),
+            changed_file_count=(len(changed_files) if diff_complete else len(changed_files) + 1),
             changed_files=changed_files,
             additions=1,
             deletions=0,
@@ -184,11 +179,14 @@ def test_evaluator_matches_each_dimension_without_creating_a_total_score() -> No
     assert item.latency.status is BenchmarkDimensionStatus.MATCH
     assert report.summary.matched_cases == 1
     assert "score" not in report.model_dump(mode="json")
-    assert report.report_sha256 == evaluate_suite(
-        suite,
-        suite_sha,
-        _bundle(suite, suite_sha, observation),
-    ).report_sha256
+    assert (
+        report.report_sha256
+        == evaluate_suite(
+            suite,
+            suite_sha,
+            _bundle(suite, suite_sha, observation),
+        ).report_sha256
+    )
 
 
 def test_evaluator_reports_independent_mismatches_without_rewriting_runtime_status() -> None:
@@ -269,9 +267,7 @@ def test_incomplete_bounded_diff_prevents_code_delta_claim() -> None:
 def test_evaluator_fails_closed_on_wrong_suite_identity() -> None:
     suite, suite_sha = _suite()
     observation = _terminal_observation(suite, suite_sha)
-    bundle = _bundle(suite, suite_sha, observation).model_copy(
-        update={"suite_sha256": "f" * 64}
-    )
+    bundle = _bundle(suite, suite_sha, observation).model_copy(update={"suite_sha256": "f" * 64})
 
     with pytest.raises(ValueError, match="do not belong"):
         evaluate_suite(suite, suite_sha, bundle)

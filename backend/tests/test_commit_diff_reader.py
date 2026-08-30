@@ -110,9 +110,7 @@ def test_reader_disables_external_textconv_drivers(tmp_path: Path) -> None:
     marker = tmp_path / "textconv-ran"
     driver = tmp_path / "textconv-probe.sh"
     driver.write_text(
-        "#!/bin/sh\n"
-        f"touch '{marker}'\n"
-        "cat \"$1\"\n",
+        f"#!/bin/sh\ntouch '{marker}'\ncat \"$1\"\n",
         encoding="utf-8",
     )
     driver.chmod(0o755)

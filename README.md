@@ -87,7 +87,9 @@ SILICONFLOW_API_KEY=<your key>
 
 Agent model ids are explicit configuration in `.env`. `/readyz` checks the live SiliconFlow catalogue and reports `NOT_READY` if a configured model disappears; DevFlow never silently falls back to another model.
 
-`DEVFLOW_GITHUB_READ_TOKEN` is optional for private-repository reads. `DEVFLOW_GITHUB_PUBLICATION_TOKEN` is optional for accepted Draft PR publication. Backend settings and secrets are process-scoped; restart API/worker processes after editing `.env`.
+`DEVFLOW_GITHUB_READ_TOKEN` is optional for private-repository reads. `DEVFLOW_GITHUB_PUBLICATION_TOKEN` is optional for accepted Draft PR publication. `scripts/start-dev.ps1` generates `DEVFLOW_SECRETS_ENCRYPTION_KEY` once when needed; it encrypts project registration publication tokens in PostgreSQL's named Docker volume. Keep this key unchanged so those tokens remain usable after restarts. Restart API/worker processes after editing `.env`.
+
+Agent execution budgets are also configurable in `.env`. The default is a 300-second repair budget, a 90-second maximum per repair-model call, and at least two bounded repair attempts. Worker Heartbeat remains only a lease/liveness mechanism; it never removes agent time limits.
 
 ## 2. Start PostgreSQL and Redis
 
@@ -187,6 +189,34 @@ The same flow is available through `scripts/dev.ps1`:
 
 Use separate terminals for `api`, `worker` and `frontend`. The Windows CI gate validates the supported Python/Git path, frontend build and PowerShell syntax; Docker sandbox execution remains covered by the Linux Release Readiness gate.
 
+### One-command Windows startup
+
+After copying `.env.example` to `.env` and setting `SILICONFLOW_API_KEY`, start Docker Desktop and run:
+
+```powershell
+.\scripts\start-dev.ps1
+```
+
+The script prepares the repository-local Python environment and frontend dependencies when needed, starts PostgreSQL and Redis, applies migrations, builds the verifier images when they are absent, then opens dedicated API, worker, and frontend terminals. Use `-SkipVerifier` for quicker restarts once the trusted verifier images have been built; use `-SkipInstall` only when dependencies are already current.
+
+Stop the local API, worker, frontend, PostgreSQL, and Redis while preserving the PostgreSQL volume:
+
+```powershell
+.\scripts\stop-dev.ps1
+```
+
+To close only the API, worker, and frontend while leaving PostgreSQL and Redis running, use `-KeepInfra`.
+
+### Lightweight local UI/API mode
+
+For local UI and API exploration without provider credentials, Docker Hub verifier-image pulls, GitHub publication, or executing Agent Runs, use:
+
+```powershell
+.\scripts\start-local.ps1
+```
+
+It starts local PostgreSQL/Redis, runs migrations, and opens the API, worker, and frontend terminals. `/healthz` and the UI are available, but `/readyz` and Agent Runs remain intentionally unavailable until a `SILICONFLOW_API_KEY` is configured and the trusted verifier images are built.
+
 # Product usage
 
 1. Open **Projects** and register the target repository/default branch.
@@ -206,6 +236,8 @@ Add when publication is required:
 DEVFLOW_GITHUB_PUBLICATION_TOKEN=<token with minimum repository write/PR permissions>
 DEVFLOW_GITHUB_PUBLICATION_TIMEOUT_SECONDS=30
 ```
+
+Alternatively, enter a Fine-grained PAT during project registration. DevFlow encrypts it with the local `DEVFLOW_SECRETS_ENCRYPTION_KEY` before saving it in PostgreSQL; the `.env` file and `devflow-postgres-data` named Docker volume must both be retained for restart-safe publication.
 
 The publication token can publish only the server-selected accepted integration source. It cannot choose a source commit, declare success, bypass verification or override Human/Operator authority. The legacy `DEVFLOW_GITHUB_TOKEN` remains publication-only compatibility.
 

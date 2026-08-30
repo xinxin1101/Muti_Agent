@@ -2,10 +2,11 @@
 
 :root {
   font-family:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-    sans-serif;
-  color-scheme: dark;
-  background: #020617;
+    Inter, "Microsoft YaHei", "PingFang SC", "Noto Sans SC", ui-sans-serif,
+    system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color-scheme: light;
+  background: #f5f5f4;
+  color: #292524;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
 }
@@ -14,6 +15,47 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+}
+
+/* The product workspace is intentionally quiet: legacy product panels still use
+ * Tailwind slate utilities, so these scoped rules let the existing read-only
+ * evidence components participate in the new light surface without changing
+ * their data contracts or behaviour. */
+.workspace-sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  width: 15rem;
+  overflow-y: auto;
+}
+
+.workspace-shell [class*="bg-slate-950"] { background-color: #fafaf9 !important; }
+.workspace-shell [class*="bg-slate-900"] { background-color: #fff !important; }
+.workspace-shell [class*="bg-slate-800"] { background-color: #f5f5f4 !important; }
+.workspace-shell [class*="border-slate-"] { border-color: #e7e5e4 !important; }
+.workspace-shell [class*="divide-slate-"] { border-color: #e7e5e4 !important; }
+.workspace-shell [class*="text-white"] { color: #1c1917 !important; }
+.workspace-shell [class*="text-slate-100"],
+.workspace-shell [class*="text-slate-200"] { color: #292524 !important; }
+.workspace-shell [class*="text-slate-300"] { color: #57534e !important; }
+.workspace-shell [class*="text-slate-400"],
+.workspace-shell [class*="text-slate-500"] { color: #78716c !important; }
+.workspace-shell [class*="text-slate-600"] { color: #a8a29e !important; }
+.workspace-shell [class*="text-cyan-"] { color: #2563eb !important; }
+.workspace-shell [class*="bg-cyan-"] { background-color: #eff6ff !important; }
+.workspace-shell [class*="text-emerald-"] { color: #047857 !important; }
+.workspace-shell [class*="text-amber-"] { color: #b45309 !important; }
+.workspace-shell [class*="text-rose-"] { color: #be123c !important; }
+.workspace-shell .workspace-sidebar [class*="bg-stone-900"],
+.workspace-shell .task-composer button.text-white { color: #fff !important; }
+
+details > summary { list-style: none; }
+details > summary::-webkit-details-marker { display: none; }
+
+@media (max-width: 767px) {
+  .workspace-shell { display: block; }
+  .workspace-sidebar { position: static; width: auto; height: auto; }
+  .workspace-sidebar section { display: none; }
 }
 
 button,

@@ -7,6 +7,12 @@ from collections import deque
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models.task import TaskContract
+from app.models.work_package import (
+    PlanningComplexity,
+    PlanningComplexityAssessment,
+    TaskBudgetAllocation,
+)
+from app.models.workflow import WorkflowExecutionMode
 
 _TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
@@ -18,6 +24,15 @@ class TaskNode(BaseModel):
 
     task: TaskContract
     depends_on: tuple[str, ...] = Field(default_factory=tuple)
+    execution_mode: WorkflowExecutionMode = WorkflowExecutionMode.AGENT
+    # These declarations are immutable planning facts.  They deliberately live on the
+    # persisted DAG node rather than only on the Planner instance, so a restarted worker
+    # can enforce the same producer/consumer boundary without asking a model again.
+    produces: tuple[str, ...] = Field(default_factory=tuple, max_length=16)
+    consumes: tuple[str, ...] = Field(default_factory=tuple, max_length=16)
+    complexity: PlanningComplexity | None = None
+    budget_allocation: TaskBudgetAllocation | None = None
+    complexity_assessment: PlanningComplexityAssessment | None = None
 
     @field_validator("depends_on")
     @classmethod
@@ -39,6 +54,30 @@ class TaskNode(BaseModel):
     def reject_self_dependency(self) -> TaskNode:
         if self.task.task_id in self.depends_on:
             raise ValueError(f"task {self.task.task_id!r} must not depend on itself")
+        return self
+
+    @model_validator(mode="after")
+    def validate_work_package_metadata(self) -> TaskNode:
+        if len(self.produces) != len(set(self.produces)):
+            raise ValueError("produced interfaces must not contain duplicates")
+        if len(self.consumes) != len(set(self.consumes)):
+            raise ValueError("consumed interfaces must not contain duplicates")
+        if (
+            self.budget_allocation is not None
+            and self.budget_allocation.package_id != self.task.task_id
+        ):
+            raise ValueError("task budget allocation must belong to this task")
+        if (
+            self.complexity_assessment is not None
+            and self.complexity_assessment.package_id != self.task.task_id
+        ):
+            raise ValueError("task complexity assessment must belong to this task")
+        if (
+            self.complexity is not None
+            and self.complexity_assessment is not None
+            and self.complexity is not self.complexity_assessment.complexity
+        ):
+            raise ValueError("task complexity and assessment complexity must agree")
         return self
 
 

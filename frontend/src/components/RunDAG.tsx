@@ -3,6 +3,7 @@ import type {
   ProductDAGNodeState,
   ProductRunDAG,
 } from "../types/product";
+import { labelFor, translateTaskObjective } from "../i18n";
 
 type RunDAGProps = Readonly<{
   runId: string;
@@ -30,14 +31,13 @@ export function RunDAG({ runId, dag }: RunDAGProps) {
     <div className="space-y-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-xl font-semibold text-white">Task DAG</h2>
+          <h2 className="text-xl font-semibold text-white">任务 DAG</h2>
           <p className="mt-1 text-sm text-slate-500">
-            Read-only topology from the validated backend DAG. Node state is an
-            evidence-backed presentation projection, not browser scheduler state.
+            来自后端已验证 DAG 的只读拓扑。节点状态是由证据支撑的展示投影，而非浏览器调度状态。
           </p>
         </div>
         <div className="text-right text-xs text-slate-500">
-          <p>{dag.nodes.length} nodes · {dag.edges.length} edges</p>
+          <p>{dag.nodes.length} 个节点 · {dag.edges.length} 条边</p>
           <p className="mt-1 font-mono">DAG {dag.dag_sha256.slice(0, 12)}</p>
         </div>
       </div>
@@ -45,7 +45,7 @@ export function RunDAG({ runId, dag }: RunDAGProps) {
       <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/60 p-2">
         <svg
           role="img"
-          aria-label="Validated task dependency DAG"
+          aria-label="已验证的任务依赖 DAG"
           viewBox={`0 0 ${width} ${height}`}
           className="min-h-52"
           style={{ minWidth: width }}
@@ -96,10 +96,10 @@ export function RunDAG({ runId, dag }: RunDAGProps) {
               <a
                 key={node.task_id}
                 href={`/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(node.task_id)}`}
-                aria-label={`Open task ${node.task_id}`}
+                aria-label={`打开任务 ${node.task_id}`}
               >
                 <g transform={`translate(${point.x} ${point.y})`} data-state={node.presentation_state}>
-                  <title>{node.objective}</title>
+                  <title>{translateTaskObjective(node.objective)}</title>
                   <rect
                     width={NODE_WIDTH}
                     height={NODE_HEIGHT}
@@ -111,10 +111,10 @@ export function RunDAG({ runId, dag }: RunDAGProps) {
                     {truncate(node.task_id, 28)}
                   </text>
                   <text x="16" y="50" className={stateTextClass(node.presentation_state)}>
-                    {node.presentation_state}
+                    {labelFor(node.presentation_state)}
                   </text>
                   <text x="16" y="72" className="fill-slate-500 text-[10px]">
-                    layer {node.layer} · {node.state_basis === "EVIDENCE" ? "evidence" : "DAG-derived"}
+                    层级 {node.layer} · {labelFor(node.state_basis)}
                   </text>
                 </g>
               </a>
@@ -126,10 +126,10 @@ export function RunDAG({ runId, dag }: RunDAGProps) {
       <div className="flex flex-wrap gap-2 text-xs text-slate-500">
         {(["READY", "RUNNING", "SUCCEEDED", "FAILED", "BLOCKED"] as const).map((state) => (
           <span key={state} className="rounded-full border border-slate-800 px-2 py-1">
-            {state}
+            {labelFor(state)}
           </span>
         ))}
-        <span className="ml-auto">Topology: {dag.topology_source}</span>
+        <span className="ml-auto">拓扑来源：{labelFor(dag.topology_source)}</span>
       </div>
     </div>
   );

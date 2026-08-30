@@ -55,11 +55,7 @@ class _EvidenceReader:
     ) -> tuple[PersistedRuntimeEvent, ...]:
         if run_id != self.snapshot.run_id:
             raise ValueError("unknown run")
-        return tuple(
-            event
-            for event in self.events
-            if event.sequence > after_sequence
-        )[:limit]
+        return tuple(event for event in self.events if event.sequence > after_sequence)[:limit]
 
 
 class _DispatchReader:
@@ -361,10 +357,7 @@ async def _projector_builds_full_diagnostic_causal_tree() -> None:
     assert trace.privacy_mode == "METADATA_ONLY"
     assert trace.spans[0].kind is TraceSpanKind.RUN
 
-    by_kind = {
-        kind: [span for span in trace.spans if span.kind is kind]
-        for kind in TraceSpanKind
-    }
+    by_kind = {kind: [span for span in trace.spans if span.kind is kind] for kind in TraceSpanKind}
     assert len(by_kind[TraceSpanKind.TASK]) == 1
     assert len(by_kind[TraceSpanKind.DISPATCH]) == 1
     assert len(by_kind[TraceSpanKind.GENERATION]) == 1

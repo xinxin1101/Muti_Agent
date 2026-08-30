@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import UUID, uuid4
+
+import pytest
 
 from app.api.autonomous import (
     AutonomousProductRuntimeService,
@@ -15,7 +18,15 @@ from app.dispatch.errors import TaskDispatchBrokerError
 from app.models.dag import TaskDAG, TaskNode
 from app.models.dispatch import TaskDispatchReceipt
 from app.models.task import TaskContract
+from app.models.workflow import WorkflowActivationMode, WorkflowExecutionMode
 from app.persistence.dag import PersistedDAGSnapshot, PersistedDAGSource
+from app.verification.dependency_preflight import (
+    DependencyEnvironmentPreflightError,
+    DependencyPackageManager,
+    DependencyPreflightFailureCode,
+    DependencyPreflightReport,
+)
+from app.verification.project_profile import ProjectVerificationKind, VerificationRuntime
 
 
 def _task(task_id: str, path: str) -> TaskContract:
@@ -73,6 +84,14 @@ class FakeCatalog:
 
 
 class FakeEvidenceStore:
+    def __init__(self) -> None:
+        self.workflow_matches = []
+
+    async def append_evidence(self, *, kind, payload_model, **_kwargs) -> int:
+        if kind.value == "WORKFLOW_MATCH":
+            self.workflow_matches.append(payload_model)
+        return len(self.workflow_matches)
+
     async def dispose(self) -> None:
         return None
 
@@ -108,6 +127,8 @@ class FakeProvisioner:
 
 
 class FakeWorkspace:
+    root = Path(".")
+
     def head_commit(self) -> str:
         return "c" * 40
 
@@ -143,7 +164,48 @@ class FakePublicationStore:
         return None
 
 
-def _service(*, fail_task_id: str | None = None):
+class FailingDependencyPreflight:
+    def check(self, _workspace: Path):
+        raise DependencyEnvironmentPreflightError(
+            code=DependencyPreflightFailureCode.REGISTRY_UNREACHABLE,
+            package_manager=DependencyPackageManager.PYTHON,
+            manifest_paths=("requirements.txt",),
+            packages=("pygame",),
+            reason="包源不可访问。",
+        )
+
+
+class RecordingDependencyPreflight:
+    def __init__(self) -> None:
+        self.commands: list[tuple[str, ...]] = []
+
+    def check(
+        self,
+        _workspace: Path,
+        *,
+        verification_commands: tuple[str, ...] = (),
+    ) -> DependencyPreflightReport:
+        self.commands.append(verification_commands)
+        return DependencyPreflightReport(
+            profile_kind=ProjectVerificationKind.PYTHON_BASE,
+            dependency_fingerprint="a" * 64,
+            package_manager=DependencyPackageManager.NONE,
+            manifest_paths=(),
+            packages=(),
+            cache_state="NOT_REQUIRED",
+            docker_version="28.3.2",
+            proxy_configured=False,
+            required_runtimes=(VerificationRuntime.PYTHON,),
+        )
+
+
+def _service(
+    *,
+    fail_task_id: str | None = None,
+    dependency_preflight=None,
+    workflow_activation_mode: WorkflowActivationMode = WorkflowActivationMode.WORKFLOW_FIRST,
+    planner_configured: bool = True,
+):
     project_id = uuid4()
     project = ProductProject(
         project_id=project_id,
@@ -153,12 +215,13 @@ def _service(*, fail_task_id: str | None = None):
         run_count=0,
         workspace_ready=True,
     )
-    planner = FakePlanner(_dag())
+    planner = FakePlanner(_dag()) if planner_configured else None
     dag_store = FakeDAGStore()
     dispatcher = FakeDispatcher(fail_task_id=fail_task_id)
+    evidence_store = FakeEvidenceStore()
     service = AutonomousProductRuntimeService(
         catalog=FakeCatalog(project),  # type: ignore[arg-type]
-        evidence_store=FakeEvidenceStore(),  # type: ignore[arg-type]
+        evidence_store=evidence_store,  # type: ignore[arg-type]
         dag_store=dag_store,  # type: ignore[arg-type]
         provisioner=FakeProvisioner(),  # type: ignore[arg-type]
         workspace_resolver=FakeResolver(),  # type: ignore[arg-type]
@@ -166,12 +229,36 @@ def _service(*, fail_task_id: str | None = None):
         publication_store=FakePublicationStore(),  # type: ignore[arg-type]
         github_publisher=None,
         requirement_planner=planner,
+        dependency_preflight=dependency_preflight,
+        workflow_activation_mode=workflow_activation_mode,
     )
-    return service, project_id, planner, dag_store, dispatcher
+    return service, project_id, planner, dag_store, dispatcher, evidence_store
+
+
+def test_python_hello_world_skips_planner_and_persists_workflow_dag() -> None:
+    service, project_id, planner, dag_store, dispatcher, evidence_store = _service(
+        planner_configured=False
+    )
+
+    result = asyncio.run(
+        service.create_requirement_run(
+            RequirementRunCreateRequest(
+                project_id=project_id,
+                requirement="用 Python 编写 Hello World 程序",
+            )
+        )
+    )
+
+    assert planner is None
+    assert dag_store.started_dag is not None
+    assert dag_store.started_dag.tasks[0].execution_mode is WorkflowExecutionMode.WORKFLOW
+    assert result.task_ids == ("hello-world-python",)
+    assert dispatcher.dispatched == ["hello-world-python"]
+    assert evidence_store.workflow_matches[0].workflow_id.value == "python-script"
 
 
 def test_requirement_run_persists_validated_dag_before_dispatching_only_roots() -> None:
-    service, project_id, planner, dag_store, dispatcher = _service()
+    service, project_id, planner, dag_store, dispatcher, evidence_store = _service()
 
     result = asyncio.run(
         service.create_requirement_run(
@@ -194,10 +281,17 @@ def test_requirement_run_persists_validated_dag_before_dispatching_only_roots() 
     assert planner.repository_context is not None
     assert "base_commit=" + "c" * 40 in planner.repository_context
     assert "app/dependent.py" in planner.repository_context
+    assert {match.task_id for match in evidence_store.workflow_matches} == {
+        "root-a",
+        "root-b",
+        "dependent",
+    }
 
 
 def test_requirement_run_reports_partial_broker_failure_without_dispatching_dependencies() -> None:
-    service, project_id, _planner, _dag_store, dispatcher = _service(fail_task_id="root-b")
+    service, project_id, _planner, _dag_store, dispatcher, _evidence_store = _service(
+        fail_task_id="root-b"
+    )
 
     result = asyncio.run(
         service.create_requirement_run(
@@ -211,3 +305,62 @@ def test_requirement_run_reports_partial_broker_failure_without_dispatching_depe
     assert failed.state is RequirementDispatchState.BROKER_UNAVAILABLE
     assert failed.dispatch_id is None
     assert "dependent" not in dispatcher.dispatched
+
+
+def test_requirement_run_stops_before_planning_when_dependency_preflight_fails() -> None:
+    service, project_id, planner, dag_store, dispatcher, _evidence_store = _service(
+        dependency_preflight=FailingDependencyPreflight()
+    )
+
+    with pytest.raises(DependencyEnvironmentPreflightError) as captured:
+        asyncio.run(
+            service.create_requirement_run(
+                RequirementRunCreateRequest(project_id=project_id, requirement="实现一个游戏。")
+            )
+        )
+
+    assert captured.value.code is DependencyPreflightFailureCode.REGISTRY_UNREACHABLE
+    assert planner.requirement is None
+    assert dag_store.started_dag is None
+    assert dispatcher.dispatched == []
+
+
+def test_requirement_run_checks_planned_node_commands_before_dispatch() -> None:
+    preflight = RecordingDependencyPreflight()
+    service, project_id, planner, _dag_store, dispatcher, _evidence_store = _service(
+        dependency_preflight=preflight
+    )
+    node_task = _task("node-root", "app/game.js").model_copy(
+        update={"verification_commands": ["node test/test_game.js"]}
+    )
+    planner.dag = TaskDAG(tasks=(TaskNode(task=node_task),))
+
+    asyncio.run(
+        service.create_requirement_run(
+            RequirementRunCreateRequest(project_id=project_id, requirement="实现 JavaScript 游戏。")
+        )
+    )
+
+    assert preflight.commands == [(), ("node test/test_game.js",)]
+    assert dispatcher.dispatched == ["node-root"]
+
+
+def test_agent_only_rollout_policy_persists_agent_execution_modes() -> None:
+    service, project_id, _planner, dag_store, _dispatcher, evidence_store = _service(
+        workflow_activation_mode=WorkflowActivationMode.AGENT_ONLY
+    )
+
+    asyncio.run(
+        service.create_requirement_run(
+            RequirementRunCreateRequest(project_id=project_id, requirement="实现一个游戏。")
+        )
+    )
+
+    assert dag_store.started_dag is not None
+    assert all(
+        node.execution_mode is WorkflowExecutionMode.AGENT for node in dag_store.started_dag.tasks
+    )
+    assert all(
+        match.execution_mode is WorkflowExecutionMode.AGENT
+        for match in evidence_store.workflow_matches
+    )

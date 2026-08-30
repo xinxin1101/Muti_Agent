@@ -81,9 +81,7 @@ def test_siliconflow_model_catalogue_is_typed_and_bounded() -> None:
 
     result = asyncio.run(driver.list_model_ids())
 
-    assert result == frozenset(
-        {"zai-org/GLM-5.2", "Pro/deepseek-ai/DeepSeek-V3.2"}
-    )
+    assert result == frozenset({"zai-org/GLM-5.2", "Pro/deepseek-ai/DeepSeek-V3.2"})
 
 
 def test_readyz_returns_503_when_operational_dependencies_are_not_ready() -> None:

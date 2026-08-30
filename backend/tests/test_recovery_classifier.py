@@ -247,10 +247,7 @@ def test_expired_generation_without_terminal_evidence_is_redispatch_candidate_on
     plan = _classify(snapshot, lease)
 
     assessment = plan.tasks[0]
-    assert (
-        assessment.disposition
-        is RecoveryDisposition.REDISPATCH_CANDIDATE_EXPIRED_GENERATION
-    )
+    assert assessment.disposition is RecoveryDisposition.REDISPATCH_CANDIDATE_EXPIRED_GENERATION
     assert assessment.worker_execution_evidence_id is None
 
 
@@ -294,10 +291,7 @@ def test_released_generation_with_terminal_evidence_resumes_from_evidence() -> N
 
     plan = _classify(snapshot, lease)
 
-    assert (
-        plan.tasks[0].disposition
-        is RecoveryDisposition.RESUME_FROM_TERMINAL_EVIDENCE
-    )
+    assert plan.tasks[0].disposition is RecoveryDisposition.RESUME_FROM_TERMINAL_EVIDENCE
 
 
 def test_released_generation_without_terminal_evidence_stays_blocked() -> None:
@@ -306,10 +300,7 @@ def test_released_generation_without_terminal_evidence_stays_blocked() -> None:
 
     plan = _classify(snapshot, lease)
 
-    assert (
-        plan.tasks[0].disposition
-        is RecoveryDisposition.BLOCKED_RELEASED_EVIDENCE_GAP
-    )
+    assert plan.tasks[0].disposition is RecoveryDisposition.BLOCKED_RELEASED_EVIDENCE_GAP
 
 
 def test_unowned_task_exposes_dispatch_ambiguity_instead_of_guessing() -> None:
@@ -318,10 +309,7 @@ def test_unowned_task_exposes_dispatch_ambiguity_instead_of_guessing() -> None:
 
     plan = _classify(snapshot, lease)
 
-    assert (
-        plan.tasks[0].disposition
-        is RecoveryDisposition.BLOCKED_UNOWNED_DISPATCH_AMBIGUITY
-    )
+    assert plan.tasks[0].disposition is RecoveryDisposition.BLOCKED_UNOWNED_DISPATCH_AMBIGUITY
 
 
 def test_lease_task_identity_mismatch_fails_closed() -> None:

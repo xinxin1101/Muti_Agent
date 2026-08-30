@@ -170,9 +170,9 @@ def test_validate_and_evaluate_cli_produce_reproducible_report(
     first = json.loads((output / "report.json").read_text(encoding="utf-8"))
     assert first["summary"]["matched_cases"] == 1
     assert "score" not in first
-    assert "Benchmark verdicts are read-only comparisons" in (
-        output / "report.md"
-    ).read_text(encoding="utf-8")
+    assert "Benchmark verdicts are read-only comparisons" in (output / "report.md").read_text(
+        encoding="utf-8"
+    )
 
     assert (
         main(

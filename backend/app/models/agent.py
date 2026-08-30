@@ -85,6 +85,17 @@ class AgentRequest(BaseModel):
     model: str = Field(min_length=1, max_length=256)
     messages: list[AgentMessage] = Field(min_length=1)
     temperature: float = Field(default=0.1, ge=0.0, le=2.0)
+    # This is deliberately provider-neutral. Drivers translate it to their native completion
+    # limit (SiliconFlow/OpenAI-compatible APIs use ``max_tokens``).
+    max_output_tokens: int = Field(default=1024, ge=64, le=32_768)
+    # Mixed-reasoning providers such as DashScope Qwen otherwise enable hidden reasoning by
+    # default. This is explicit so each persisted execution path can be cost-audited.
+    enable_thinking: bool = False
+    # Set by bounded agent loops after a successful tool action or code change.  It is
+    # deliberately a runtime fact rather than a model claim and gates FLEX borrowing.
+    budget_progress: bool = False
+    # Used by DevFlow's local budget gate and deliberately never forwarded to a provider.
+    context_estimated_tokens: int = Field(default=0, ge=0)
     tools: list[ToolDefinition] = Field(default_factory=list)
 
     @field_validator("model")

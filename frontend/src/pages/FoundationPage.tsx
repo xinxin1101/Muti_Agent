@@ -1,58 +1,26 @@
-const boundaries = [
-  {
-    title: "Server truth remains authoritative",
-    body: "Frontend state is presentation state. Scheduling, leases, fencing, verification, and success decisions stay in the accepted backend runtime.",
-  },
-  {
-    title: "Product requests are typed",
-    body: "Step 4.2 adds bounded Project and Run HTTP contracts. Git HEAD and persisted runtime evidence remain backend-owned.",
-  },
-  {
-    title: "Secrets stay out of the browser",
-    body: "Provider credentials, GitHub credentials, database credentials, and run_token are never exposed through VITE_* configuration or client models.",
-  },
-] as const;
+import { useQuery } from "@tanstack/react-query";
+import { Link } from "react-router";
+
+import { TaskComposer } from "../components/TaskComposer";
+import { listProjects } from "../api/product";
 
 export function FoundationPage() {
   return (
-    <section className="space-y-8">
-      <div className="max-w-3xl space-y-4">
-        <p className="text-sm font-semibold uppercase tracking-[0.2em] text-cyan-300">
-          Phase 4
-        </p>
-        <h1 className="text-4xl font-semibold tracking-tight text-white">
-          DevFlow product foundation
-        </h1>
-        <p className="text-lg leading-8 text-slate-300">
-          The React foundation now hosts bounded Project and Run product pages
-          without widening the accepted runtime authority boundary.
-        </p>
+    <section className="workspace-home mx-auto flex min-h-[calc(100vh-4rem)] w-full max-w-6xl flex-col items-center justify-start pb-16 pt-[clamp(4.5rem,11vh,9rem)]">
+      <div className="mb-9 text-center">
+        <h2 className="sr-only">DevFlow 产品概览</h2>
+        <p className="text-sm text-stone-500">DevFlow 开发工作区</p>
+        <h1 className="mt-3 text-3xl font-semibold tracking-tight text-stone-900 md:text-4xl">下午好，准备开发什么？</h1>
+        <p className="mx-auto mt-3 max-w-xl text-[15px] leading-7 text-stone-500">选择一个已连接的仓库，描述目标。DevFlow 会规划任务、准备环境、编写代码并验证结果。</p>
       </div>
-
-      <div className="grid gap-4 md:grid-cols-3">
-        {boundaries.map((boundary) => (
-          <article
-            key={boundary.title}
-            className="rounded-xl border border-slate-800 bg-slate-900/60 p-5"
-          >
-            <h2 className="font-semibold text-white">{boundary.title}</h2>
-            <p className="mt-3 text-sm leading-6 text-slate-400">
-              {boundary.body}
-            </p>
-          </article>
-        ))}
-      </div>
-
-      <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/5 p-5">
-        <p className="text-sm font-medium text-emerald-200">
-          Current product scope
-        </p>
-        <p className="mt-2 text-sm leading-6 text-slate-300">
-          Projects, New Run, persisted Run Dashboard, and Task Detail are in
-          scope. SSE, DAG visualization, diff viewing, metrics, and GitHub
-          publication remain dedicated later steps.
-        </p>
-      </div>
+      <TaskComposer />
+      <RecentProjects />
     </section>
   );
+}
+
+function RecentProjects() {
+  const projects = useQuery({ queryKey: ["projects"], queryFn: listProjects });
+  if (!projects.data?.length) return <p className="mt-8 text-center text-sm text-stone-400">先到“项目”连接一个 GitHub 仓库，再开始开发。</p>;
+  return <section className="mt-9 w-full max-w-6xl"><h2 className="text-sm font-medium text-stone-500">最近项目</h2><div className="mt-3 grid gap-4 sm:grid-cols-2">{projects.data.slice(0, 4).map((project) => <Link key={project.project_id} to={`/runs/new?projectId=${project.project_id}`} className="rounded-xl border border-stone-200 bg-white p-5 transition hover:border-stone-300 hover:shadow-sm"><p className="truncate font-medium text-stone-800">{project.repository_url.replace(/\/$/, "").split("/").slice(-2).join("/")}</p><p className="mt-2 text-xs text-stone-500">GitHub {project.workspace_ready ? "已连接" : "待检查"} · {project.default_branch} · {project.run_count} 次运行</p></Link>)}</div></section>;
 }

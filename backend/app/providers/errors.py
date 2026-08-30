@@ -14,6 +14,7 @@ class ProviderErrorCode(StrEnum):
     BAD_REQUEST = "bad_request"
     CONNECTION = "connection"
     UNAVAILABLE = "unavailable"
+    TOKEN_BUDGET_EXHAUSTED = "token_budget_exhausted"
     UNKNOWN = "unknown"
 
 
@@ -40,6 +41,8 @@ class AgentProviderError(RuntimeError):
             failure_type = FailureType.MODEL_TIMEOUT
         elif self.code is ProviderErrorCode.RATE_LIMIT:
             failure_type = FailureType.RATE_LIMIT
+        elif self.code is ProviderErrorCode.TOKEN_BUDGET_EXHAUSTED:
+            failure_type = FailureType.TOKEN_BUDGET_EXHAUSTED
         else:
             failure_type = FailureType.TOOL_FAILURE
 

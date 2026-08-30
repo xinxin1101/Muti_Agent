@@ -4,19 +4,23 @@ import os
 import socket
 from collections.abc import Callable
 from functools import lru_cache
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from app.agents import DeveloperAgent, RepairAgent, ReviewerAgent
 from app.core.settings import Settings, get_settings
 from app.models.dispatch import TaskDispatchEnvelope, WorkerExecutionEvidence
 from app.models.sandbox import DockerSandboxPolicy
 from app.models.task import TaskContract
+from app.models.work_package import WorkPackageActivationMode
 from app.persistence import (
     PostgresDAGStore,
+    PostgresInterfaceContractRegistry,
+    PostgresRunTokenBudgetStore,
     PostgresTaskLeaseStore,
     PostgresTaskReconciliationStore,
 )
 from app.persistence.repair_completion import RepairAwarePostgresMultiTaskCompletionStore
+from app.providers.budgeted import BudgetedAgentDriver
 from app.providers.siliconflow import SiliconFlowDriver
 from app.runtime.integration_repair import IntegrationConflictRepairService
 from app.runtime.orchestrator import SingleTaskOrchestrator
@@ -34,6 +38,12 @@ from app.verification.project_profile import ProjectAwareVerificationRunner
 from app.workers.executor import ManagedProjectWorkspaceResolver, QueuedTaskWorker
 from app.workers.lease import LeasedQueuedTaskWorker
 from app.workers.project_identity import ProjectIdentityValidatingQueuedTaskWorker
+from app.workflows import (
+    DeterministicWorkflowRunner,
+    WorkflowAwareTaskRunner,
+    WorkflowMatcher,
+    WorkflowRegistry,
+)
 from app.workspace import ManagedProjectProvisioner
 
 
@@ -65,15 +75,45 @@ def build_verifier(settings: Settings) -> DeterministicVerifier:
             base_policy=policy,
             node_image=settings.verification_node_sandbox_image,
             cache_root=settings.workspace_root / "verification-deps",
+            proxy_url=settings.dependency_proxy_url,
+            python_index_url=settings.dependency_python_index_url,
+            node_registry_url=settings.dependency_node_registry_url,
+            build_timeout_seconds=settings.dependency_preflight_build_timeout_seconds,
+            max_cache_bytes=settings.dependency_cache_max_bytes,
         ),
     )
 
 
-def build_single_task_runner(settings: Settings) -> SingleTaskOrchestrator:
-    driver = SiliconFlowDriver.from_settings(settings)
-    developer = DeveloperAgent(driver=driver, model=settings.developer_model)
-    reviewer = ReviewerAgent(driver=driver, model=settings.reviewer_model)
-    repair = RepairAgent(driver=driver, model=settings.repair_model)
+def build_single_task_runner(
+    settings: Settings,
+    *,
+    driver: SiliconFlowDriver | BudgetedAgentDriver | None = None,
+) -> SingleTaskOrchestrator:
+    driver = driver or SiliconFlowDriver.from_settings(settings)
+    developer = DeveloperAgent(
+        driver=driver,
+        model=settings.developer_model,
+        max_iterations=settings.developer_max_iterations,
+        max_duration_seconds=settings.developer_max_duration_seconds,
+        max_model_turn_seconds=settings.developer_max_model_turn_seconds,
+        max_output_tokens=settings.developer_max_output_tokens,
+        enable_thinking=settings.developer_enable_thinking,
+    )
+    reviewer = ReviewerAgent(
+        driver=driver,
+        model=settings.reviewer_model,
+        max_output_tokens=settings.reviewer_max_output_tokens,
+        enable_thinking=settings.reviewer_enable_thinking,
+    )
+    repair = RepairAgent(
+        driver=driver,
+        model=settings.repair_model,
+        max_iterations=settings.repair_max_iterations,
+        max_duration_seconds=settings.repair_max_duration_seconds,
+        max_model_turn_seconds=settings.repair_max_model_turn_seconds,
+        max_output_tokens=settings.repair_max_output_tokens,
+        enable_thinking=settings.repair_enable_thinking,
+    )
     return SingleTaskOrchestrator(
         developer=developer,
         verifier=build_verifier(settings),
@@ -82,12 +122,60 @@ def build_single_task_runner(settings: Settings) -> SingleTaskOrchestrator:
         developer_model=settings.developer_model,
         reviewer_model=settings.reviewer_model,
         repair_model=settings.repair_model,
+        minimum_repair_attempts=settings.minimum_repair_attempts,
     )
 
 
-def build_runner_factory(settings: Settings) -> Callable[[TaskContract], SingleTaskOrchestrator]:
-    def factory(_task: TaskContract) -> SingleTaskOrchestrator:
-        return build_single_task_runner(settings)
+def build_runner_factory(settings: Settings) -> Callable[[TaskContract], WorkflowAwareTaskRunner]:
+    matcher = WorkflowMatcher(WorkflowRegistry.default())
+
+    def factory(_task: TaskContract) -> WorkflowAwareTaskRunner:
+        return WorkflowAwareTaskRunner(
+            matcher=matcher,
+            workflow_runner=DeterministicWorkflowRunner(
+                matcher=matcher,
+                verifier=build_verifier(settings),
+                estimated_tokens_saved=settings.developer_max_output_tokens,
+            ),
+            agent_runner_factory=lambda: build_single_task_runner(settings),
+            activation_mode=settings.workflow_activation_mode,
+        )
+
+    return factory
+
+
+def build_budgeted_runner_factory(
+    settings: Settings,
+    *,
+    budget_store: PostgresRunTokenBudgetStore,
+) -> Callable[[TaskContract, UUID], WorkflowAwareTaskRunner]:
+    matcher = WorkflowMatcher(WorkflowRegistry.default())
+
+    def factory(task: TaskContract, run_id: UUID) -> WorkflowAwareTaskRunner:
+        workflow_runner = DeterministicWorkflowRunner(
+            matcher=matcher,
+            verifier=build_verifier(settings),
+            estimated_tokens_saved=settings.developer_max_output_tokens,
+        )
+
+        def build_agent_runner() -> SingleTaskOrchestrator:
+            raw_driver = SiliconFlowDriver.from_settings(settings)
+            return build_single_task_runner(
+                settings,
+                driver=BudgetedAgentDriver(
+                    driver=raw_driver,
+                    budget_store=budget_store,
+                    run_id=run_id,
+                    task_id=task.task_id,
+                ),
+            )
+
+        return WorkflowAwareTaskRunner(
+            matcher=matcher,
+            workflow_runner=workflow_runner,
+            agent_runner_factory=build_agent_runner,
+            activation_mode=settings.workflow_activation_mode,
+        )
 
     return factory
 
@@ -117,6 +205,15 @@ async def execute_task_from_settings(
         settings.database_url,
         echo=settings.database_echo,
     )
+    token_budget_store = PostgresRunTokenBudgetStore.from_url(
+        settings.database_url,
+        default_total_budget_tokens=settings.run_token_budget_tokens,
+        echo=settings.database_echo,
+    )
+    interface_contract_registry = PostgresInterfaceContractRegistry.from_url(
+        settings.database_url,
+        echo=settings.database_echo,
+    )
     completion_store = RepairAwarePostgresMultiTaskCompletionStore.from_url(
         settings.database_url,
         echo=settings.database_echo,
@@ -138,6 +235,10 @@ async def execute_task_from_settings(
             workspace_resolver=resolver,
             worktree_root=settings.workspace_root / "worktrees",
             runner_factory=build_runner_factory(settings),
+            runner_factory_for_execution=build_budgeted_runner_factory(
+                settings,
+                budget_store=token_budget_store,
+            ),
             git_fence=lease_store,
             trace_store=evidence_store,
         )
@@ -146,6 +247,18 @@ async def execute_task_from_settings(
                 store=evidence_store,
                 backend=backend,
                 execution_base_resolver=execution_base_resolver,
+                continuation_max_slices=settings.continuation_max_slices,
+                continuation_total_budget_seconds=settings.continuation_total_budget_seconds,
+                continuation_max_repeated_file_slices=settings.continuation_max_repeated_file_slices,
+                interface_contract_registry=(
+                    interface_contract_registry
+                    if settings.work_package_activation_mode
+                    is WorkPackageActivationMode.CONTRACT_GATED
+                    else None
+                ),
+                dag_reader=dag_store,
+                token_budget_reader=token_budget_store,
+                token_budget_manager=token_budget_store,
             ),
             run_store=evidence_store,
             provisioner=provisioner,
@@ -172,13 +285,32 @@ async def execute_task_from_settings(
             lease_reader=lease_store,
             task_reconciler=task_reconciler,
             execution_base_resolver=execution_base_resolver,
+            max_concurrent_tasks=settings.dag_max_concurrent_tasks,
+            interface_contract_registry=(
+                interface_contract_registry
+                if settings.work_package_activation_mode is WorkPackageActivationMode.CONTRACT_GATED
+                else None
+            ),
         )
         driver = SiliconFlowDriver.from_settings(settings)
         conflict_repairer = IntegrationConflictRepairService(
             evidence_store=evidence_store,
             repair_store=completion_store,
             workspace_resolver=resolver,
-            developer=DeveloperAgent(driver=driver, model=settings.developer_model),
+            developer=DeveloperAgent(
+                driver=BudgetedAgentDriver(
+                    driver=driver,
+                    budget_store=token_budget_store,
+                    run_id=envelope.run_id,
+                    task_id="integration",
+                ),
+                model=settings.developer_model,
+                max_iterations=settings.developer_max_iterations,
+                max_duration_seconds=settings.developer_max_duration_seconds,
+                max_model_turn_seconds=settings.developer_max_model_turn_seconds,
+                max_output_tokens=settings.developer_max_output_tokens,
+                enable_thinking=settings.developer_enable_thinking,
+            ),
             verifier=build_verifier(settings),
             repair_root=settings.workspace_root / "integration-repairs",
         )
@@ -200,4 +332,6 @@ async def execute_task_from_settings(
         await completion_store.dispose()
         await lease_store.dispose()
         await dag_store.dispose()
+        await token_budget_store.dispose()
+        await interface_contract_registry.dispose()
         await evidence_store.dispose()

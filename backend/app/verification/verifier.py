@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shlex
 from dataclasses import dataclass
 
@@ -10,6 +11,9 @@ from app.verification.sandbox import DockerSandboxRunner, VerificationCommandRun
 from app.workspace import LocalGitWorkspace, ScopeCheckResult, ScopeEnforcer
 
 _MAX_OUTPUT_CHARS = 20_000
+_PYTHON_OUTPUT_ASSERTION = re.compile(
+    r"^test\s+['\"]\$\((python(?:3)?\s+[^()]+)\)['\"]\s*=\s*['\"]([^'\"]*)['\"]$"
+)
 
 
 @dataclass(frozen=True)
@@ -19,6 +23,14 @@ class _CommandSpec:
     failure_type: FailureType
     name: str
     requires_sandbox: bool = False
+    expected_stdout: str | None = None
+
+
+@dataclass(frozen=True)
+class _PreparedCommand:
+    command: str
+    spec: _CommandSpec
+    stage: str
 
 
 class DeterministicVerifier:
@@ -77,6 +89,7 @@ class DeterministicVerifier:
             )
             return VerificationResult(passed=False, checks=checks)
 
+        prepared: list[_PreparedCommand] = []
         for command in task.verification_commands:
             try:
                 spec = self._classify_command(command)
@@ -93,6 +106,20 @@ class DeterministicVerifier:
                 )
                 continue
 
+            prepared.append(
+                _PreparedCommand(
+                    command=command,
+                    spec=spec,
+                    stage=self._verification_stage(spec),
+                )
+            )
+
+        # Targeted checks expose an inexpensive defect before broad suite/lint checks.  Keeping
+        # this ordering deterministic also makes a failed repair cheaper: the broad stage is not
+        # started after a fast-stage failure and the next attempt receives the focused evidence.
+        for item in sorted(prepared, key=lambda value: value.stage != "fast"):
+            command = item.command
+            spec = item.spec
             if spec.requires_sandbox and not self._command_runner.is_sandboxed:
                 checks.append(
                     CheckResult(
@@ -109,7 +136,18 @@ class DeterministicVerifier:
                 )
                 continue
 
-            checks.append(self._run_command(command, spec, workspace=workspace))
+            command_check = self._run_command(command, spec, workspace=workspace)
+            check = command_check.model_copy(
+                update={
+                    "execution_details": (
+                        *command_check.execution_details,
+                        f"verification_stage={item.stage}",
+                    )
+                }
+            )
+            checks.append(check)
+            if item.stage == "fast" and not check.passed:
+                break
 
         post_scope = self._scope_enforcer.check(task, workspace.changed_files())
         if not post_scope.passed:
@@ -163,7 +201,24 @@ class DeterministicVerifier:
             timeout_seconds=self._command_timeout_seconds,
         )
         passed = execution.failure_type is None and execution.exit_code == 0
+        stderr = execution.stderr
+        if passed and spec.expected_stdout is not None:
+            actual = execution.stdout.rstrip("\r\n")
+            passed = actual == spec.expected_stdout
+            if not passed:
+                stderr = (
+                    "Program stdout did not match the expected value. "
+                    f"expected={spec.expected_stdout!r}; actual={actual!r}"
+                )
         failure_type = None if passed else execution.failure_type or spec.failure_type
+        if (
+            failure_type is FailureType.TEST_FAILURE
+            and spec.check_type is CheckType.CUSTOM
+            and self._is_sandbox_enforcement_failure(execution.stderr)
+        ):
+            # A project command that attempts a forbidden write has not exposed a code defect
+            # for the Repair Agent to fix. Keep it fail-closed as a sandbox/tool failure.
+            failure_type = FailureType.TOOL_FAILURE
         return CheckResult(
             check_type=spec.check_type,
             name=spec.name,
@@ -171,7 +226,7 @@ class DeterministicVerifier:
             passed=passed,
             exit_code=execution.exit_code,
             stdout=self._clip_output(execution.stdout),
-            stderr=self._clip_output(execution.stderr),
+            stderr=self._clip_output(stderr),
             duration_ms=execution.duration_ms,
             failure_type=failure_type,
             execution_backend=execution.backend,
@@ -180,6 +235,19 @@ class DeterministicVerifier:
 
     @staticmethod
     def _classify_command(command: str) -> _CommandSpec:
+        output_assertion = _PYTHON_OUTPUT_ASSERTION.fullmatch(command.strip())
+        if output_assertion is not None:
+            inner_command, expected_stdout = output_assertion.groups()
+            argv = shlex.split(inner_command, posix=True)
+            DeterministicVerifier._assert_workspace_bound_arguments(argv[1:])
+            return _CommandSpec(
+                argv=argv,
+                check_type=CheckType.TEST,
+                failure_type=FailureType.TEST_FAILURE,
+                name="python_stdout",
+                requires_sandbox=True,
+                expected_stdout=expected_stdout,
+            )
         try:
             argv = shlex.split(command, posix=True)
         except ValueError as exc:
@@ -237,10 +305,28 @@ class DeterministicVerifier:
         return _CommandSpec(
             argv=argv,
             check_type=CheckType.CUSTOM,
-            failure_type=FailureType.TOOL_FAILURE,
+            # A custom command has already passed command-boundary validation and runs inside
+            # the read-only Docker sandbox. A normal non-zero exit is therefore an executable
+            # acceptance-test failure, which the Repair Agent can address using its evidence.
+            failure_type=FailureType.TEST_FAILURE,
             name="custom",
             requires_sandbox=True,
         )
+
+    @staticmethod
+    def _verification_stage(spec: _CommandSpec) -> str:
+        """Classify only by already-validated argv; no heuristic model decision is involved."""
+
+        if spec.check_type is CheckType.CUSTOM or spec.expected_stdout is not None:
+            return "fast"
+        if spec.check_type is CheckType.TEST or spec.check_type is CheckType.LINT:
+            arguments = spec.argv[5:]
+        else:
+            return "full"
+        has_target = any(
+            argument and not argument.startswith("-") and argument != "." for argument in arguments
+        )
+        return "fast" if has_target else "full"
 
     @staticmethod
     def _assert_workspace_bound_arguments(arguments: list[str]) -> None:
@@ -298,15 +384,33 @@ class DeterministicVerifier:
                 return "Verification commands produced out-of-scope repository changes."
             return "Git scope integrity check failed before deterministic verification."
         if check.failure_type is FailureType.TEST_FAILURE:
+            if check.name == "custom":
+                return "Deterministic custom verification failed."
             return "Deterministic pytest verification failed."
         if check.failure_type is FailureType.LINT_FAILURE:
             return "Deterministic Ruff verification failed."
         if check.failure_type is FailureType.SANDBOX_TIMEOUT:
             return "Docker verification sandbox exceeded its execution deadline."
+        if check.failure_type is FailureType.VERIFICATION_ENV_UNAVAILABLE:
+            if "验证环境缺少 Node.js" in check.stderr:
+                return "验证环境缺少 Node.js，无法执行当前 JavaScript 验证命令。"
+            if "验证环境缺少 Python" in check.stderr:
+                return "验证环境缺少 Python，无法执行当前验证命令。"
+            return "验证环境不可用，无法安全执行当前验证命令。"
         return "Deterministic verification could not complete safely."
 
     @staticmethod
-    def _clip_output(value: str) -> str:
+    def _clip_output(value: str | None) -> str:
+        # A Windows subprocess decode failure can leave ``CompletedProcess.stdout`` unset even
+        # though the command itself completed. The sandbox normalizes this at the boundary; keep
+        # the verifier defensive so diagnostic projection never masks the original command error.
+        if value is None:
+            return ""
         if len(value) <= _MAX_OUTPUT_CHARS:
             return value
         return value[:_MAX_OUTPUT_CHARS] + "\n...[truncated by DevFlow]"
+
+    @staticmethod
+    def _is_sandbox_enforcement_failure(stderr: str) -> bool:
+        normalized = stderr.lower()
+        return "read-only file system" in normalized

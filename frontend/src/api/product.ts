@@ -1,6 +1,7 @@
 import type { ProductGitHubPublication } from "../types/publication";
 import type {
   ProductDiffKind,
+  ProductFailureExplanation,
   ProductProject,
   ProductRun,
   ProductRunDAG,
@@ -30,6 +31,45 @@ export type RequirementTaskDispatch = Readonly<{
   detail: string | null;
 }>;
 
+/** Server-verified dependency facts collected before a Run is created or dispatched. */
+export type DependencyPreflight = Readonly<{
+  profile_kind: "PYTHON_BASE" | "PYTHON_PINNED_REQUIREMENTS" | "NODE_NPM_LOCK";
+  dependency_fingerprint: string;
+  package_manager: "NONE" | "PYTHON" | "NODE" | "MIXED";
+  manifest_paths: readonly string[];
+  packages: readonly string[];
+  cache_state: "HIT" | "MISS" | "NOT_REQUIRED";
+  docker_version: string;
+  registry_url: string | null;
+  proxy_configured: boolean;
+  required_runtimes: readonly ("PYTHON" | "NODE")[];
+}>;
+
+export type DependencyEnvironmentStatus = Readonly<{
+  dependency_fingerprint: string;
+  profile_kind: string;
+  package_manager: string;
+  cache_state: "HIT" | "MISS" | "NOT_REQUIRED";
+  artifact_bytes: number;
+  build_duration_ms: number | null;
+  log_tail: string;
+}>;
+
+export type DependencyEnvironmentMetrics = Readonly<{
+  cache_hits: number;
+  builds: number;
+  failures: number;
+  hit_rate: number;
+  average_build_duration_ms: number;
+  cache_bytes: number;
+}>;
+
+export type DependencyCacheCleanup = Readonly<{
+  removed_fingerprints: readonly string[];
+  reclaimed_bytes: number;
+  retained_bytes: number;
+}>;
+
 export type RequirementRunLaunchResponse = Readonly<{
   run_id: string;
   project_id: string;
@@ -39,6 +79,7 @@ export type RequirementRunLaunchResponse = Readonly<{
   initial_ready_task_ids: readonly string[];
   launch_state: "QUEUED" | "PARTIAL" | "BROKER_UNAVAILABLE";
   dispatches: readonly RequirementTaskDispatch[];
+  dependency_preflight?: DependencyPreflight | null;
 }>;
 
 export type HumanGateDecisionName = "AUTHORIZE_REPAIR" | "ABORT";
@@ -146,6 +187,13 @@ export type OperatorActionExecutionResult = Readonly<{
   refreshed_plan: OperatorRecoveryPlan;
 }>;
 
+export type RuntimeDependencyHealth = Readonly<{
+  runtime_fingerprint: string;
+  database: Readonly<{ state: "READY" | "NOT_CONFIGURED" | "UNAVAILABLE" | "MODEL_UNAVAILABLE"; detail: string }>;
+  redis: Readonly<{ state: "READY" | "NOT_CONFIGURED" | "UNAVAILABLE" | "MODEL_UNAVAILABLE"; detail: string }>;
+  dispatch_available: boolean;
+}>;
+
 export function listProjects(): Promise<readonly ProductProject[]> {
   return apiClient.getJson<readonly ProductProject[]>(`${API_PREFIX}/projects`);
 }
@@ -182,6 +230,33 @@ export function createRequirementRun(
   );
 }
 
+/** Replays only the failed Run's server-persisted DAG as a new audited Run. */
+export function retryRun(runId: string): Promise<RequirementRunLaunchResponse> {
+  return apiClient.postNoBody<RequirementRunLaunchResponse>(
+    `${API_PREFIX}/runs/${runId}/retry`,
+  );
+}
+
+/** Continues from a server-created, fenced checkpoint when the failed Run exposes one. */
+export function resumeRun(runId: string): Promise<RequirementRunLaunchResponse> {
+  return apiClient.postNoBody<RequirementRunLaunchResponse>(
+    `${API_PREFIX}/runs/${runId}/resume`,
+  );
+}
+
+/** Starts a new Run only when the server confirms that the prior Run was interrupted mid-flight. */
+export function recoverInterruptedRun(runId: string): Promise<RequirementRunLaunchResponse> {
+  return apiClient.postNoBody<RequirementRunLaunchResponse>(
+    `${API_PREFIX}/runs/${runId}/recover-as-new`,
+  );
+}
+
+export function explainRunFailure(runId: string): Promise<ProductFailureExplanation> {
+  return apiClient.postNoBody<ProductFailureExplanation>(
+    `${API_PREFIX}/runs/${runId}/failure-explanation`,
+  );
+}
+
 export function listHumanGates(runId: string): Promise<readonly HumanGateSnapshot[]> {
   return apiClient.getJson<readonly HumanGateSnapshot[]>(
     `${API_PREFIX}/runs/${runId}/human-gates`,
@@ -202,6 +277,34 @@ export function decideHumanGate(
 export function getOperatorRecovery(runId: string): Promise<OperatorRecoveryPlan> {
   return apiClient.getJson<OperatorRecoveryPlan>(
     `${API_PREFIX}/runs/${runId}/operator-recovery`,
+  );
+}
+
+export function getRuntimeDependencyHealth(): Promise<RuntimeDependencyHealth> {
+  return apiClient.getJson<RuntimeDependencyHealth>(`${API_PREFIX}/runtime-health`);
+}
+
+export function getDependencyEnvironment(projectId: string): Promise<DependencyEnvironmentStatus> {
+  return apiClient.getJson<DependencyEnvironmentStatus>(
+    `${API_PREFIX}/projects/${encodeURIComponent(projectId)}/dependency-environment`,
+  );
+}
+
+export function rebuildDependencyEnvironment(projectId: string): Promise<DependencyEnvironmentStatus> {
+  return apiClient.postNoBody<DependencyEnvironmentStatus>(
+    `${API_PREFIX}/projects/${encodeURIComponent(projectId)}/dependency-environment/rebuild`,
+  );
+}
+
+export function getDependencyEnvironmentMetrics(): Promise<DependencyEnvironmentMetrics> {
+  return apiClient.getJson<DependencyEnvironmentMetrics>(
+    `${API_PREFIX}/dependency-environment/metrics`,
+  );
+}
+
+export function cleanupDependencyEnvironments(): Promise<DependencyCacheCleanup> {
+  return apiClient.postNoBody<DependencyCacheCleanup>(
+    `${API_PREFIX}/dependency-environment/cleanup`,
   );
 }
 

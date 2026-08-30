@@ -5,6 +5,7 @@ import {
   getOperatorRecovery,
   type OperatorAction,
 } from "../api/product";
+import { labelFor, translateOperatorRecoveryReason } from "../i18n";
 
 export function OperatorRecoveryPanel({ runId }: { runId: string }) {
   const queryClient = useQueryClient();
@@ -30,16 +31,16 @@ export function OperatorRecoveryPanel({ runId }: { runId: string }) {
   if (recovery.isLoading) {
     return (
       <p className="rounded-xl border border-slate-800 bg-slate-950/60 p-5 text-sm text-slate-500">
-        Reconstructing durable recovery state…
+        正在重建持久化恢复状态…
       </p>
     );
   }
   if (recovery.error || !recovery.data) {
     return (
       <div className="rounded-xl border border-amber-400/20 bg-amber-400/5 p-5">
-        <h2 className="font-semibold text-amber-100">Operator recovery unavailable</h2>
+        <h2 className="font-semibold text-amber-100">运维恢复不可用</h2>
         <p className="mt-2 text-sm text-amber-200/80">
-          {recovery.error?.message ?? "Durable recovery state could not be reconstructed."}
+          {recovery.error?.message ?? "无法重建持久化恢复状态。"}
         </p>
       </div>
     );
@@ -47,18 +48,17 @@ export function OperatorRecoveryPanel({ runId }: { runId: string }) {
 
   const plan = recovery.data;
   return (
-    <section aria-label="Operator recovery" className="space-y-4">
+    <section aria-label="运维恢复" className="space-y-4">
       <div className="rounded-xl border border-cyan-400/20 bg-cyan-400/5 p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-xl font-semibold text-cyan-50">Operator recovery</h2>
+            <h2 className="text-xl font-semibold text-cyan-50">运维恢复</h2>
             <p className="mt-2 max-w-3xl text-sm text-cyan-100/75">
-              This is a diagnostic projection over durable runtime facts. Causal trace can explain
-              the Run, but it cannot authorize retry, resume, merge, or publication.
+              这是对持久化运行时事实的诊断投影。因果追踪可解释运行，但不能授权重试、恢复、合并或发布。
             </p>
           </div>
           <span className="rounded-full border border-cyan-300/30 px-3 py-1 font-mono text-xs text-cyan-100">
-            FRESH REVALIDATION REQUIRED
+            必须重新验证
           </span>
         </div>
 
@@ -70,12 +70,16 @@ export function OperatorRecoveryPanel({ runId }: { runId: string }) {
             >
               <p className="font-mono text-xs text-cyan-200">{task.task_id}</p>
               <div>
-                <p className="font-mono text-xs text-slate-300">{task.frontier_state}</p>
+                <p className="font-mono text-xs text-slate-300">
+                  {labelFor(task.frontier_state)}
+                </p>
                 <p className="mt-1 text-[11px] text-slate-600">
-                  {task.lease_state} · gen {task.lease_generation}
+                  {labelFor(task.lease_state)} · 代次 {task.lease_generation}
                 </p>
               </div>
-              <p className="text-xs leading-5 text-slate-400">{task.reason}</p>
+              <p className="text-xs leading-5 text-slate-400">
+                {translateOperatorRecoveryReason(task.reason)}
+              </p>
             </div>
           ))}
         </div>
@@ -96,20 +100,18 @@ export function OperatorRecoveryPanel({ runId }: { runId: string }) {
               onClick={() => action.mutate(candidate)}
               className="rounded-md bg-cyan-200 px-4 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              {action.isPending ? "Revalidating durable facts…" : candidate.label}
+              {action.isPending ? "正在重新验证持久化事实…" : candidate.label}
             </button>
           ))}
           {plan.actions.length === 0 ? (
             <p className="text-sm text-slate-500">
-              No operator mutation is currently advertised by the server. The browser will not
-              synthesize one from trace or task state.
+              服务端当前未公布可执行的运维变更。浏览器不会根据追踪或任务状态虚构操作。
             </p>
           ) : null}
         </div>
 
         <p className="mt-4 text-[11px] text-slate-600">
-          Action identities are opaque server values bound to current DAG, lease, worker evidence,
-          execution-base and dispatch-ledger facts. Clicking sends only that action id.
+          操作标识是绑定当前 DAG、租约、Worker 证据、执行基线和分派账本事实的不透明服务端值；点击仅发送该操作 ID。
         </p>
       </div>
     </section>

@@ -72,10 +72,7 @@ async def _inspect_postgres_without_mutation() -> None:
         assessment = plan.tasks[0]
         assert assessment.task_id == task.task_id
         assert assessment.lease_state is TaskLeaseState.UNOWNED
-        assert (
-            assessment.disposition
-            is RecoveryDisposition.BLOCKED_UNOWNED_DISPATCH_AMBIGUITY
-        )
+        assert assessment.disposition is RecoveryDisposition.BLOCKED_UNOWNED_DISPATCH_AMBIGUITY
 
         after_run = await evidence_store.load_run(run_id)
         after_events = await evidence_store.list_runtime_events(run_id)

@@ -119,13 +119,17 @@ class PostgresMultiTaskCompletionStore(PostgresEvidenceStore):
         async with self._session_factory.begin() as session:
             run = await self._locked_run(session, result.run_id)
             rows = (
-                await session.execute(
-                    select(TaskRow)
-                    .where(TaskRow.run_id == result.run_id)
-                    .order_by(TaskRow.task_id)
-                    .with_for_update()
+                (
+                    await session.execute(
+                        select(TaskRow)
+                        .where(TaskRow.run_id == result.run_id)
+                        .order_by(TaskRow.task_id)
+                        .with_for_update()
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             dag = self._decode_dag(rows)
             if tuple(dag.topological_order()) != result.task_ids:
                 raise PersistenceConflictError(
@@ -144,13 +148,17 @@ class PostgresMultiTaskCompletionStore(PostgresEvidenceStore):
                 )
 
             evidence_rows = (
-                await session.execute(
-                    select(EvidenceRow)
-                    .where(EvidenceRow.run_id == result.run_id)
-                    .order_by(EvidenceRow.id)
-                    .with_for_update()
+                (
+                    await session.execute(
+                        select(EvidenceRow)
+                        .where(EvidenceRow.run_id == result.run_id)
+                        .order_by(EvidenceRow.id)
+                        .with_for_update()
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             worker_evidence = self._worker_evidence(evidence_rows, result.run_id)
 
             if result.status is TaskRunState.SUCCEEDED:
@@ -271,8 +279,7 @@ class PostgresMultiTaskCompletionStore(PostgresEvidenceStore):
                 "successful DAG finalization requires terminal worker evidence for every task"
             )
         if any(
-            item.status is not WorkerExecutionStatus.SUCCEEDED
-            for item in worker_evidence.values()
+            item.status is not WorkerExecutionStatus.SUCCEEDED for item in worker_evidence.values()
         ):
             raise PersistenceConflictError(
                 "successful DAG finalization cannot include failed worker evidence"
@@ -305,9 +312,7 @@ class PostgresMultiTaskCompletionStore(PostgresEvidenceStore):
                 "successful DAG finalization requires every task to be integrated"
             )
         if merge.head_commit != result.integration_head:
-            raise PersistenceConflictError(
-                "successful DAG finalization integration head changed"
-            )
+            raise PersistenceConflictError("successful DAG finalization integration head changed")
         attempts = {item.task_id: item for item in merge.attempts}
         for task_id, execution in worker_evidence.items():
             attempt = attempts.get(task_id)
@@ -381,10 +386,7 @@ class PostgresMultiTaskCompletionStore(PostgresEvidenceStore):
     ) -> None:
         matches: list[HumanIntegrationDecision] = []
         for row in evidence_rows:
-            if (
-                row.kind != PersistenceEvidenceKind.HUMAN_DECISION.value
-                or row.task_id != task_id
-            ):
+            if row.kind != PersistenceEvidenceKind.HUMAN_DECISION.value or row.task_id != task_id:
                 continue
             verify_payload_hash(
                 row.payload,

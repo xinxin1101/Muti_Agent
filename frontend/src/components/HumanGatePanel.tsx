@@ -43,14 +43,14 @@ export function HumanGatePanel({ runId }: { runId: string }) {
   if (gates.isLoading) {
     return (
       <p className="rounded-xl border border-slate-800 bg-slate-950/60 p-5 text-sm text-slate-500">
-        Checking durable human gates…
+        正在检查持久化人工门控…
       </p>
     );
   }
   if (gates.error) {
     return (
       <div className="rounded-xl border border-amber-400/20 bg-amber-400/5 p-5">
-        <h2 className="font-semibold text-amber-100">Human Gate unavailable</h2>
+        <h2 className="font-semibold text-amber-100">人工门控不可用</h2>
         <p className="mt-2 text-sm text-amber-200/80">{gates.error.message}</p>
       </div>
     );
@@ -60,12 +60,11 @@ export function HumanGatePanel({ runId }: { runId: string }) {
   }
 
   return (
-    <section aria-label="Durable human gates" className="space-y-4">
+    <section aria-label="持久化人工门控" className="space-y-4">
       <div>
-        <h2 className="text-xl font-semibold text-white">Human intervention</h2>
+        <h2 className="text-xl font-semibold text-white">人工介入</h2>
         <p className="mt-1 text-sm text-slate-500">
-          Decisions are bound to persisted conflict evidence and revalidated Git state. The browser
-          cannot supply branches, commits, lease generations, or run tokens.
+          决策绑定到已持久化的冲突证据和重新验证后的 Git 状态。浏览器不能提供分支、提交、租约代次或运行令牌。
         </p>
       </div>
       {gates.data.map((gate) => (
@@ -100,7 +99,7 @@ function HumanGateCard({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="font-mono text-sm text-amber-200">{gate.task_id}</p>
-          <h3 className="mt-1 font-semibold text-amber-50">Integration conflict</h3>
+          <h3 className="mt-1 font-semibold text-amber-50">集成冲突</h3>
         </div>
         <span className="rounded-full border border-amber-300/30 px-3 py-1 font-mono text-xs text-amber-100">
           {gate.state}
@@ -109,7 +108,7 @@ function HumanGateCard({
 
       <div className="mt-4 grid gap-4 md:grid-cols-2">
         <div>
-          <p className="text-xs uppercase tracking-wide text-amber-200/60">Conflicting paths</p>
+          <p className="text-xs uppercase tracking-wide text-amber-200/60">冲突路径</p>
           <ul className="mt-2 space-y-1 font-mono text-xs text-amber-100/90">
             {gate.policy.conflicting_paths.map((path) => (
               <li key={path}>{path}</li>
@@ -117,7 +116,7 @@ function HumanGateCard({
           </ul>
         </div>
         <div>
-          <p className="text-xs uppercase tracking-wide text-amber-200/60">Policy evidence</p>
+          <p className="text-xs uppercase tracking-wide text-amber-200/60">策略证据</p>
           <ul className="mt-2 space-y-1 text-xs text-amber-100/80">
             {gate.policy.reasons.map((reason) => (
               <li key={reason}>{reason}</li>
@@ -127,15 +126,15 @@ function HumanGateCard({
       </div>
 
       <p className="mt-4 break-all font-mono text-[11px] text-slate-500">
-        Evidence {gate.evidence_fingerprint}
+        证据 {gate.evidence_fingerprint}
       </p>
 
       {awaiting ? (
         <div className="mt-5 space-y-3">
           <label className="block text-sm text-slate-300">
-            <span>Decision note (optional)</span>
+            <span>决策备注（可选）</span>
             <input
-              aria-label={`Decision note for ${gate.task_id}`}
+              aria-label={`任务 ${gate.task_id} 的决策备注`}
               value={note}
               maxLength={512}
               onChange={(event) => setNote(event.target.value.replace(/[\r\n]+/g, " "))}
@@ -150,7 +149,7 @@ function HumanGateCard({
               onClick={() => onDecision("AUTHORIZE_REPAIR", note.trim())}
               className="rounded-md bg-amber-200 px-4 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              {pending ? "Recording decision…" : "Authorize bounded repair"}
+              {pending ? "正在记录决策…" : "授权受限修复"}
             </button>
             <button
               type="button"
@@ -158,23 +157,22 @@ function HumanGateCard({
               onClick={() => onDecision("ABORT", note.trim())}
               className="rounded-md border border-rose-400/40 px-4 py-2 text-sm font-semibold text-rose-200 disabled:opacity-40"
             >
-              Abort Run
+              终止运行
             </button>
           </div>
           {!gate.policy.human_repair_authorizable ? (
             <p className="text-xs text-rose-200/80">
-              Policy hard boundaries prohibit Agent repair for this conflict. Abort remains the only
-              browser-authorized action.
+              策略硬边界禁止 Agent 修复此冲突。终止运行仍是浏览器唯一可授权的操作。
             </p>
           ) : null}
         </div>
       ) : (
         <p className="mt-5 text-sm text-amber-100/80">
           {gate.state === "REPAIR_AUTHORIZED"
-            ? "Repair authorization is durable. The server must revalidate the same Git and policy facts before any integration repair can run."
+            ? "修复授权已持久化。执行任何集成修复前，服务端必须重新验证相同的 Git 与策略事实。"
             : gate.state === "ABORTED"
-              ? "This conflict was explicitly aborted and cannot be resumed as repair authorization."
-              : "This gate is not awaiting a browser decision."}
+              ? "此冲突已被明确终止，不能恢复为修复授权。"
+              : "此门控当前不等待浏览器决策。"}
         </p>
       )}
     </article>

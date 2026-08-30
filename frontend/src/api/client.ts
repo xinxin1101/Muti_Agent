@@ -1,4 +1,6 @@
 const DEFAULT_API_BASE_URL = "http://127.0.0.1:8000";
+// A cache miss may prepare a deterministic dependency environment before a Run exists.
+const REQUEST_TIMEOUT_MS = 120_000;
 
 type ApiErrorPayload = Readonly<{
   detail?: unknown;
@@ -60,26 +62,42 @@ export class ApiClient {
   private async requestJson<T>(path: string, init: RequestInit): Promise<T> {
     const headers = new Headers(init.headers);
     headers.set("Accept", "application/json");
+    const controller = new AbortController();
+    const callerSignal = init.signal;
+    const cancelFromCaller = () => controller.abort();
+    callerSignal?.addEventListener("abort", cancelFromCaller, { once: true });
+    const timeoutId = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
-    const response = await fetch(this.url(path), {
-      ...init,
-      headers,
-    });
+    try {
+      const response = await fetch(this.url(path), {
+        ...init,
+        headers,
+        signal: controller.signal,
+      });
 
-    if (!response.ok) {
-      let detail = `DevFlow API request failed with HTTP ${response.status}.`;
-      try {
-        const payload = (await response.json()) as ApiErrorPayload;
-        if (typeof payload.detail === "string" && payload.detail.trim()) {
-          detail = payload.detail;
+      if (!response.ok) {
+        let detail = `DevFlow API 请求失败，HTTP 状态码：${response.status}。`;
+        try {
+          const payload = (await response.json()) as ApiErrorPayload;
+          if (typeof payload.detail === "string" && payload.detail.trim()) {
+            detail = payload.detail;
+          }
+        } catch {
+          // Keep the bounded status-based fallback when the response is not JSON.
         }
-      } catch {
-        // Keep the bounded status-based fallback when the response is not JSON.
+        throw new ApiError(response.status, detail);
       }
-      throw new ApiError(response.status, detail);
-    }
 
-    return (await response.json()) as T;
+      return (await response.json()) as T;
+    } catch (error) {
+      if (controller.signal.aborted && !callerSignal?.aborted) {
+        throw new ApiError(408, "DevFlow API 响应超时，请检查后端与 GitHub 网络连接后重试。");
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timeoutId);
+      callerSignal?.removeEventListener("abort", cancelFromCaller);
+    }
   }
 
   private url(path: string): string {

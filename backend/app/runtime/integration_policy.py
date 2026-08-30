@@ -128,9 +128,7 @@ class IntegrationConflictPolicy:
             blocked_paths = ", ".join(
                 f"{violation.kind.value}:{violation.path}" for violation in scope.violations
             )
-            hard_blockers.append(
-                f"conflict path is outside the task repair scope: {blocked_paths}"
-            )
+            hard_blockers.append(f"conflict path is outside the task repair scope: {blocked_paths}")
 
         if blob_is_safe_text is None:
             hard_blockers.append("repair authorization requires bounded Git blob text inspection")
@@ -154,9 +152,7 @@ class IntegrationConflictPolicy:
         if not self._automatic_repair_enabled:
             automatic_blockers.append("automatic merge-conflict repair policy is disabled")
         if len(evidence.files) != 1:
-            automatic_blockers.append(
-                "automatic repair is limited to exactly one conflicted path"
-            )
+            automatic_blockers.append("automatic repair is limited to exactly one conflicted path")
         else:
             conflict_file = evidence.files[0]
             if conflict_file.stage_shape is not MergeConflictStageShape.THREE_WAY:
@@ -172,8 +168,7 @@ class IntegrationConflictPolicy:
         if evidence.conflict_types != ("CONFLICT (contents)",):
             observed = ", ".join(evidence.conflict_types) or "<none>"
             automatic_blockers.append(
-                "automatic repair requires only native CONFLICT (contents); "
-                f"observed {observed}"
+                f"automatic repair requires only native CONFLICT (contents); observed {observed}"
             )
 
         human_repair_authorizable = not hard_blockers

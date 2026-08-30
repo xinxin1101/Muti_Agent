@@ -62,11 +62,7 @@ def _integration_commit(
 ) -> str:
     root = workspace.root
     tree = _git(root, "rev-parse", f"{task_commit}^{{tree}}")
-    parents = (
-        (task_commit, base)
-        if reverse_parents
-        else (base, task_commit)
-    )
+    parents = (task_commit, base) if reverse_parents else (base, task_commit)
     return _git(
         root,
         "commit-tree",

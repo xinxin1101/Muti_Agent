@@ -6,7 +6,9 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.persistence.database import create_postgres_engine
 
-EXPECTED_ALEMBIC_REVISION = "0008_project_lifecycle"
+# Keep this in lockstep with the latest migration. The startup guard must accept a database
+# that already contains the current run-token-budget schema rather than treating it as stale.
+EXPECTED_ALEMBIC_REVISION = "0014_flex_work_package_budgets"
 _MIGRATION_HINT = "Run `cd backend && alembic upgrade head`."
 
 

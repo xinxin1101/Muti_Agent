@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, replace
 from hashlib import sha256
+from pathlib import Path
 
 from app.context.relevance import (
     RelevanceCandidate,
@@ -11,6 +12,7 @@ from app.context.relevance import (
 )
 from app.models.context import (
     ContextBudget,
+    ContextContinuationState,
     ContextFile,
     ContextPacket,
     ContextScopeKind,
@@ -79,6 +81,7 @@ class ContextPacketBuilder:
         task: TaskContract,
         *,
         workspace: LocalGitWorkspace,
+        resume: ContextContinuationState | None = None,
     ) -> ContextPacket:
         try:
             repository_head = workspace.head_commit()
@@ -88,7 +91,10 @@ class ContextPacketBuilder:
         except WorkspaceGitError as exc:
             raise ContextBuildError(f"Unable to read trusted Git state: {exc}") from exc
 
-        changed = set(changed_files)
+        # A resumed worktree is clean because the previous slice has already committed its
+        # bounded patch. Keep those changed paths visible without replaying every earlier read.
+        resumed_changes = set(resume.changed_files) if resume is not None else set()
+        changed = set(changed_files) | resumed_changes
         base_candidates = self._base_candidates(
             task,
             inventory=inventory,
@@ -106,6 +112,7 @@ class ContextPacketBuilder:
         selected_files: list[ContextFile] = []
         truncations: list[ContextTruncation] = []
         omitted_files = 0
+        reused_files = 0
         remaining_chars = self._budget.max_total_chars
         remaining_tokens = self._budget.max_estimated_tokens
 
@@ -124,6 +131,16 @@ class ContextPacketBuilder:
                     )
                 )
                 break
+
+            if self._can_reuse_candidate(
+                candidate,
+                resume=resume,
+                changed=changed,
+                workspace=workspace,
+                source_cache=source_cache,
+            ):
+                reused_files += 1
+                continue
             if remaining_chars <= 0:
                 omitted_files += remaining_candidates
                 truncations.append(
@@ -169,6 +186,7 @@ class ContextPacketBuilder:
             remaining_chars -= context_file.selected_chars
             remaining_tokens -= context_file.estimated_tokens
 
+        repository_summary = self._repository_summary(repository_head, inventory)
         usage = ContextUsage(
             candidate_files=len(candidates),
             selected_files=len(selected_files),
@@ -176,6 +194,13 @@ class ContextPacketBuilder:
             estimated_tokens=sum(item.estimated_tokens for item in selected_files),
             truncated_files=sum(1 for item in selected_files if item.truncated),
             omitted_files=omitted_files,
+            reused_files=reused_files,
+            trimmed_files=sum(1 for item in selected_files if item.truncated),
+            prompt_estimated_tokens=(
+                sum(item.estimated_tokens for item in selected_files)
+                + len(repository_summary.encode("utf-8"))
+                + self._resume_estimated_tokens(resume)
+            ),
         )
 
         payload = {
@@ -186,7 +211,13 @@ class ContextPacketBuilder:
             "writable_files": task.writable_files,
             "readonly_files": task.readonly_files,
             "repository_head": repository_head,
-            "changed_files": changed_files,
+            "repository_summary_version": "repository_summary_v1",
+            "repository_summary": repository_summary,
+            "resume": resume.model_dump(mode="json") if resume is not None else None,
+            "changed_files": sorted(changed),
+            # A compact, path-only map gives the Agent enough orientation to choose its first
+            # batch read without exposing more repository content or consuming another model turn.
+            "repository_map": sorted(candidate.path for candidate in base_candidates)[:80],
             "selected_files": [item.model_dump(mode="json") for item in selected_files],
             "truncations": [item.model_dump(mode="json") for item in truncations],
             "budget": self._budget.model_dump(mode="json"),
@@ -194,9 +225,7 @@ class ContextPacketBuilder:
             "selection_strategy": (
                 "python_ast_import_relevance_v1>changed>writable>read_only>readable>path"
             ),
-            "snippet_strategy": (
-                "python_ast_symbol_regions_v1+deterministic_prefix_fallback"
-            ),
+            "snippet_strategy": ("python_ast_symbol_regions_v1+deterministic_prefix_fallback"),
             "token_estimator": "utf8_bytes_upper_bound",
         }
         fingerprint = sha256(
@@ -209,6 +238,92 @@ class ContextPacketBuilder:
         ).hexdigest()
 
         return ContextPacket(**payload, fingerprint=fingerprint)
+
+    def _can_reuse_candidate(
+        self,
+        candidate: _Candidate,
+        *,
+        resume: ContextContinuationState | None,
+        changed: set[str],
+        workspace: LocalGitWorkspace,
+        source_cache: dict[str, _SourceResult],
+    ) -> bool:
+        if resume is None or candidate.path in changed:
+            return False
+        previous = {item.path: item.source_sha256 for item in resume.read_files}
+        expected_hash = previous.get(candidate.path)
+        if expected_hash is None:
+            return False
+        source = self._read_source(
+            candidate.path,
+            workspace=workspace,
+            source_cache=source_cache,
+        )
+        return isinstance(source, _LoadedSource) and sha256(source.raw).hexdigest() == expected_hash
+
+    @staticmethod
+    def _resume_estimated_tokens(resume: ContextContinuationState | None) -> int:
+        if resume is None:
+            return 0
+        text = "\n".join(
+            (
+                resume.completed_summary,
+                resume.remaining_summary,
+                resume.verification_summary,
+                resume.failure_summary,
+            )
+        )
+        return len(text.encode("utf-8"))
+
+    @staticmethod
+    def _repository_summary(repository_head: str, inventory: list[str]) -> str:
+        dependency_files = [
+            path
+            for path in inventory
+            if Path(path).name
+            in {
+                "pyproject.toml",
+                "requirements.txt",
+                "package.json",
+                "package-lock.json",
+                "pnpm-lock.yaml",
+                "yarn.lock",
+                "go.mod",
+                "Cargo.toml",
+            }
+        ]
+        entry_files = [
+            path
+            for path in inventory
+            if Path(path).name
+            in {"main.py", "app.py", "server.py", "index.js", "index.ts", "main.ts", "main.tsx"}
+        ]
+        test_files = [
+            path
+            for path in inventory
+            if "/test" in f"/{path.lower()}" or Path(path).name.startswith("test_")
+        ]
+        technologies = []
+        names = {Path(path).name for path in inventory}
+        if {"pyproject.toml", "requirements.txt"} & names:
+            technologies.append("Python")
+        if {"package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock"} & names:
+            technologies.append("Node.js")
+        if "go.mod" in names:
+            technologies.append("Go")
+        if "Cargo.toml" in names:
+            technologies.append("Rust")
+        return "\n".join(
+            (
+                "summary_version=repository_summary_v1",
+                f"repository_head={repository_head}",
+                f"technology={','.join(technologies) or 'unknown'}",
+                f"entry_files={','.join(entry_files[:12]) or 'unknown'}",
+                f"dependency_files={','.join(dependency_files[:12]) or 'none'}",
+                f"test_file_count={len(test_files)}",
+                f"directory_index={','.join(sorted(inventory)[:80])}",
+            )
+        )
 
     def _rank_candidates(
         self,
@@ -223,9 +338,7 @@ class ContextPacketBuilder:
             RelevanceCandidate(
                 path=candidate.path,
                 changed=candidate.changed,
-                scope_kinds=tuple(
-                    dict.fromkeys(match.kind for match in candidate.scope_matches)
-                ),
+                scope_kinds=tuple(dict.fromkeys(match.kind for match in candidate.scope_matches)),
             )
             for candidate in candidates
         ]
@@ -406,7 +519,11 @@ class ContextPacketBuilder:
             return result
 
         try:
-            text = raw.decode("utf-8")
+            # Keep the byte hash below tied to the exact worktree content, but use
+            # one canonical newline representation for model context and budgets.
+            # Git worktrees on Windows may contain CRLF even when the same source
+            # is LF-only on another supported host.
+            text = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
         except UnicodeDecodeError:
             result = _SourceFailure(
                 reason=ContextTruncationReason.NON_UTF8,
@@ -562,18 +679,15 @@ class ContextPacketBuilder:
     ) -> None:
         if per_file_remaining < len(region_text):
             reason_omissions[ContextTruncationReason.PER_FILE_CHAR_LIMIT] = (
-                reason_omissions.get(ContextTruncationReason.PER_FILE_CHAR_LIMIT, 0)
-                + omitted_chars
+                reason_omissions.get(ContextTruncationReason.PER_FILE_CHAR_LIMIT, 0) + omitted_chars
             )
         if total_remaining < len(region_text):
             reason_omissions[ContextTruncationReason.TOTAL_CHAR_LIMIT] = (
-                reason_omissions.get(ContextTruncationReason.TOTAL_CHAR_LIMIT, 0)
-                + omitted_chars
+                reason_omissions.get(ContextTruncationReason.TOTAL_CHAR_LIMIT, 0) + omitted_chars
             )
         if token_remaining < len(region_text.encode("utf-8")):
             reason_omissions[ContextTruncationReason.TOKEN_BUDGET] = (
-                reason_omissions.get(ContextTruncationReason.TOKEN_BUDGET, 0)
-                + omitted_chars
+                reason_omissions.get(ContextTruncationReason.TOKEN_BUDGET, 0) + omitted_chars
             )
 
     @staticmethod
@@ -692,8 +806,7 @@ class ContextPacketBuilder:
                         reason=ContextTruncationReason.TOKEN_BUDGET,
                         path=candidate.path,
                         detail=(
-                            "File content was truncated by the remaining conservative token "
-                            "budget."
+                            "File content was truncated by the remaining conservative token budget."
                         ),
                         omitted_chars=omitted_chars,
                     )

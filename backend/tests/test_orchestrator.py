@@ -126,6 +126,91 @@ def _review_changes_requested() -> str:
     ).model_dump_json()
 
 
+class TimeoutThenRepair:
+    """Simulate a timeout after inspection without producing a candidate patch."""
+
+    def __init__(self) -> None:
+        self.attempts: list[int] = []
+
+    async def repair(self, task, failures, *, attempt, workspace, context_packet, trace=None):
+        del task, failures, context_packet, trace
+        self.attempts.append(attempt)
+        if attempt == 1:
+            return models.RepairRunResult(
+                attempt=attempt,
+                failure_types=[models.FailureType.TEST_FAILURE],
+                stop_reason=models.RepairStopReason.TIME_LIMIT,
+                iterations=1,
+                tool_calls=1,
+                changed_files=workspace.changed_files(),
+                usage=models.TokenUsage(),
+                latency_ms=1,
+            )
+        (workspace.root / "module.py").write_text("VALUE = 2\n", encoding="utf-8")
+        return models.RepairRunResult(
+            attempt=attempt,
+            failure_types=[models.FailureType.TEST_FAILURE],
+            stop_reason=models.RepairStopReason.MODEL_STOP,
+            iterations=1,
+            tool_calls=1,
+            changed_files=workspace.changed_files(),
+            usage=models.TokenUsage(),
+            latency_ms=1,
+        )
+
+
+class WritesPatchRepair:
+    """Simulate a Repair Agent that produces one controlled candidate patch."""
+
+    def __init__(self, *, value: int) -> None:
+        self._value = value
+        self.attempts: list[int] = []
+
+    async def repair(self, task, failures, *, attempt, workspace, context_packet, trace=None):
+        del task, failures, context_packet, trace
+        self.attempts.append(attempt)
+        (workspace.root / "module.py").write_text(f"VALUE = {self._value}\n", encoding="utf-8")
+        return models.RepairRunResult(
+            attempt=attempt,
+            failure_types=[models.FailureType.TEST_FAILURE],
+            stop_reason=models.RepairStopReason.MODEL_STOP,
+            iterations=1,
+            tool_calls=1,
+            changed_files=workspace.changed_files(),
+            usage=models.TokenUsage(),
+            latency_ms=1,
+        )
+
+
+class SequenceVerifier:
+    def __init__(self, passed: list[bool], *, failure_summaries: list[str] | None = None) -> None:
+        self._passed = iter(passed)
+        self._failure_summaries = iter(failure_summaries or [])
+        self.calls = 0
+
+    def verify(self, task, *, workspace):
+        del task, workspace
+        self.calls += 1
+        passed = next(self._passed)
+        summary = ""
+        if not passed:
+            summary = next(self._failure_summaries, "unchanged failure")
+        return models.VerificationResult(
+            passed=passed,
+            checks=[
+                models.CheckResult(
+                    check_type=models.CheckType.TEST,
+                    name="test",
+                    command="pytest -q",
+                    passed=passed,
+                    exit_code=0 if passed else 1,
+                    stderr=summary,
+                    failure_type=None if passed else models.FailureType.TEST_FAILURE,
+                )
+            ],
+        )
+
+
 def _orchestrator(
     *,
     developer_driver: FakeDriver,
@@ -171,6 +256,11 @@ def test_complete_loop_repairs_first_test_failure_then_succeeds(tmp_path: Path) 
     assert result.status is TaskRunState.SUCCEEDED
     assert result.changed_files == ["module.py"]
     assert result.repair_attempts == 1
+    assert result.repairs[0].progress is not None
+    assert result.repairs[0].progress.status is models.RepairProgressStatus.REPAIRED
+    assert result.repairs[0].progress.has_patch is True
+    assert result.repairs[0].progress.files_changed == ["module.py"]
+    assert result.repairs[0].progress.validation_executed is True
     assert len(result.verifications) == 2
     assert result.verifications[0].passed is False
     assert result.verifications[1].passed is True
@@ -207,9 +297,7 @@ def test_semantic_review_rejection_repairs_then_reverifies_and_passes(tmp_path: 
     )
     repair_driver = FakeDriver(
         [
-            _response(
-                tool_calls=[_patch("repair-1", "VALUE = 2", "VALUE = 2  # reviewed")]
-            ),
+            _response(tool_calls=[_patch("repair-1", "VALUE = 2", "VALUE = 2  # reviewed")]),
             _response(content="Applied the semantic review fix."),
         ]
     )
@@ -247,8 +335,7 @@ def test_semantic_review_rejection_repairs_then_reverifies_and_passes(tmp_path: 
         TaskRunState.SUCCEEDED,
     ]
     assert any(
-        "REVIEW_REJECTED" in message.content
-        for message in repair_driver.requests[0].messages
+        "REVIEW_REJECTED" in message.content for message in repair_driver.requests[0].messages
     )
 
 
@@ -285,6 +372,135 @@ def test_retry_budget_exhaustion_preserves_test_failure(tmp_path: Path) -> None:
     assert "Repair retry budget was exhausted" in result.failures[0].message
     assert any(item == "repair_attempts_exhausted=1" for item in result.failures[0].evidence)
     assert reviewer_driver.requests == []
+
+
+def test_developer_time_limit_is_not_misclassified_as_a_tool_failure(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    workspace = LocalGitWorkspace(root)
+    developer_driver = FakeDriver(
+        [
+            _response(tool_calls=[_patch("read-only", "VALUE = 1", "VALUE = 1")]),
+        ]
+    )
+    times = iter([0.0, 0.0, 2.0])
+    developer = agents.DeveloperAgent(
+        driver=developer_driver,
+        model="fake/developer",
+        max_duration_seconds=1.0,
+        max_model_turn_seconds=1.0,
+        clock=lambda: next(times),
+    )
+    orchestrator = SingleTaskOrchestrator(
+        developer=developer,
+        verifier=DeterministicVerifier(command_timeout_seconds=10),
+        reviewer=agents.ReviewerAgent(driver=FakeDriver([]), model="fake/reviewer"),
+        repair=agents.RepairAgent(driver=FakeDriver([]), model="fake/repair"),
+        developer_model="fake/developer",
+        reviewer_model="fake/reviewer",
+        repair_model="fake/repair",
+    )
+
+    result = asyncio.run(orchestrator.run(_task(), workspace=workspace))
+
+    assert result.status is TaskRunState.FAILED
+    assert result.developer is not None
+    assert result.developer.stop_reason is models.DeveloperStopReason.TIME_LIMIT
+    assert result.developer.execution_budget is not None
+    assert result.failures[0].failure_type is models.FailureType.AGENT_TIME_LIMIT
+    assert result.failures[0].message == "开发智能体时间预算耗尽，未能在限制内完成代码修改。"
+    assert "developer_max_duration_seconds=1" in result.failures[0].evidence
+    assert "developer_max_model_turn_seconds=1" in result.failures[0].evidence
+    assert "developer_model_latency_ms=3" in result.failures[0].evidence
+
+
+def test_repair_without_patch_stops_without_repeating_verification(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    workspace = LocalGitWorkspace(root)
+    developer_driver = FakeDriver(
+        [
+            _response(tool_calls=[_patch("dev-1", "VALUE = 1", "VALUE = 3")]),
+            _response(content="Initial implementation completed."),
+        ]
+    )
+    repair = TimeoutThenRepair()
+    reviewer_driver = FakeDriver([])
+    verifier = SequenceVerifier([False])
+    orchestrator = SingleTaskOrchestrator(
+        developer=agents.DeveloperAgent(driver=developer_driver, model="fake/developer"),
+        verifier=verifier,  # type: ignore[arg-type]
+        reviewer=agents.ReviewerAgent(driver=reviewer_driver, model="fake/reviewer"),
+        repair=repair,  # type: ignore[arg-type]
+        developer_model="fake/developer",
+        reviewer_model="fake/reviewer",
+        repair_model="fake/repair",
+        minimum_repair_attempts=2,
+    )
+
+    result = asyncio.run(orchestrator.run(_task(max_retries=1), workspace=workspace))
+
+    assert result.status is TaskRunState.FAILED
+    assert repair.attempts == [1]
+    assert result.repair_attempts == 1
+    assert result.repairs[0].stop_reason is models.RepairStopReason.TIME_LIMIT
+    assert result.repairs[0].progress is not None
+    assert result.repairs[0].progress.status is models.RepairProgressStatus.NO_PATCH_PRODUCED
+    assert result.repairs[0].progress.has_patch is False
+    assert result.repairs[0].progress.validation_executed is False
+    assert verifier.calls == 1
+    assert len(result.verifications) == 1
+    assert any("repair_progress=NO_PATCH_PRODUCED" in item for item in result.failures[0].evidence)
+    assert reviewer_driver.requests == []
+
+
+@pytest.mark.parametrize(
+    ("failure_summaries", "expected_status"),
+    [
+        (["original assertion", "different assertion"], models.RepairProgressStatus.PROGRESS_MADE),
+        (["same assertion", "same assertion"], models.RepairProgressStatus.REPAIR_INEFFECTIVE),
+    ],
+)
+def test_repair_patch_records_failure_signature_progress(
+    tmp_path: Path,
+    failure_summaries: list[str],
+    expected_status: models.RepairProgressStatus,
+) -> None:
+    root = _repository(tmp_path)
+    workspace = LocalGitWorkspace(root)
+    developer_driver = FakeDriver(
+        [
+            _response(tool_calls=[_patch("dev-1", "VALUE = 1", "VALUE = 3")]),
+            _response(content="Initial implementation completed."),
+        ]
+    )
+    repair = WritesPatchRepair(value=4)
+    verifier = SequenceVerifier([False, False], failure_summaries=failure_summaries)
+    orchestrator = SingleTaskOrchestrator(
+        developer=agents.DeveloperAgent(driver=developer_driver, model="fake/developer"),
+        verifier=verifier,  # type: ignore[arg-type]
+        reviewer=agents.ReviewerAgent(driver=FakeDriver([]), model="fake/reviewer"),
+        repair=repair,  # type: ignore[arg-type]
+        developer_model="fake/developer",
+        reviewer_model="fake/reviewer",
+        repair_model="fake/repair",
+    )
+
+    result = asyncio.run(orchestrator.run(_task(max_retries=1), workspace=workspace))
+
+    assert result.status is TaskRunState.FAILED
+    assert repair.attempts == [1]
+    assert verifier.calls == 2
+    progress = result.repairs[0].progress
+    assert progress is not None
+    assert progress.status is expected_status
+    assert progress.has_patch is True
+    assert progress.files_changed == ["module.py"]
+    assert progress.validation_executed is True
+    assert progress.failure_signature_before is not None
+    assert progress.failure_signature_after is not None
+    if expected_status is models.RepairProgressStatus.PROGRESS_MADE:
+        assert progress.failure_signature_before != progress.failure_signature_after
+    else:
+        assert progress.failure_signature_before == progress.failure_signature_after
 
 
 def test_state_machine_rejects_invalid_transition() -> None:

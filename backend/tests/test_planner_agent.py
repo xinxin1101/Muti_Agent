@@ -57,7 +57,9 @@ def test_planner_returns_valid_task_contract_without_repair() -> None:
     assert driver.requests[0].role is models.AgentRole.PLANNER
     assert driver.requests[0].model == "test/planner"
     assert driver.requests[0].messages[0].role.value == "system"
-    assert "TaskContract JSON Schema" in driver.requests[0].messages[0].content
+    assert "compact shape" in driver.requests[0].messages[0].content
+    assert "TaskContract JSON Schema" not in driver.requests[0].messages[0].content
+    assert driver.requests[0].max_output_tokens == 1_200
 
 
 def test_planner_repairs_invalid_output_once() -> None:
@@ -80,6 +82,7 @@ def test_planner_repairs_invalid_output_once() -> None:
     assert len(driver.requests) == 2
     repair_request = driver.requests[1]
     assert repair_request.temperature == 0.0
+    assert repair_request.max_output_tokens == 1_200
     assert "Pydantic validation error" in repair_request.messages[1].content
     assert invalid_output in repair_request.messages[1].content
 
@@ -182,3 +185,16 @@ def test_planner_configuration_is_bounded(
             max_schema_repair_attempts=repair_attempts,
             temperature=temperature,
         )
+
+
+def test_planner_propagates_configured_output_limit() -> None:
+    driver = FakeDriver([_response(json.dumps(VALID_TASK))])
+    planner = agents.PlannerAgent(
+        driver=driver,
+        model="test/planner",
+        max_output_tokens=640,
+    )
+
+    asyncio.run(planner.plan("Add JWT login support."))
+
+    assert driver.requests[0].max_output_tokens == 640

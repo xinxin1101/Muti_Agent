@@ -62,9 +62,7 @@ class GitMergeConflictClassifier:
 
         attempt = snapshot.attempts[-1]
         if attempt.outcome is not MergeAttemptOutcome.CONFLICT:
-            raise MergeConflictClassificationError(
-                "merge queue terminal attempt is not a conflict"
-            )
+            raise MergeConflictClassificationError("merge queue terminal attempt is not a conflict")
         if snapshot.head_commit != attempt.previous_integration_commit:
             raise MergeConflictClassificationError(
                 "conflict attempt does not reference the current integration head"
@@ -155,9 +153,7 @@ class GitMergeConflictClassifier:
     ) -> MergeConflictEvidence:
         parts = stdout.split(b"\0")
         if len(parts) < 3 or parts[-1] != b"":
-            raise MergeConflictClassificationError(
-                "merge-tree -z output is not NUL terminated"
-            )
+            raise MergeConflictClassificationError("merge-tree -z output is not NUL terminated")
 
         conflicted_tree = self._decode_oid(parts[0], label="conflicted tree")
         index = 1
@@ -190,9 +186,7 @@ class GitMergeConflictClassifier:
             path_count = self._decode_count(parts[index])
             index += 1
             if index + path_count + 2 > len(parts):
-                raise MergeConflictClassificationError(
-                    "merge-tree message record is truncated"
-                )
+                raise MergeConflictClassificationError("merge-tree message record is truncated")
             paths = tuple(os.fsdecode(value) for value in parts[index : index + path_count])
             index += path_count
             conflict_type = self._decode_text(parts[index]).strip()
@@ -380,9 +374,7 @@ class GitMergeConflictClassifier:
         result = self._git(["rev-parse", "--verify", f"{ref}^{{commit}}"], check=False)
         resolved = self._decode_text(result.stdout).strip()
         if result.returncode != 0 or _OID_PATTERN.fullmatch(resolved) is None:
-            raise MergeConflictClassificationError(
-                f"{label} does not resolve to a full commit id"
-            )
+            raise MergeConflictClassificationError(f"{label} does not resolve to a full commit id")
         return resolved
 
     def _resolve_tree(self, ref: str) -> str:

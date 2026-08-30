@@ -29,6 +29,7 @@ from app.persistence.serialization import (
     canonical_payload,
     decode_evidence,
     decode_terminal_result,
+    evidence_schema_version,
     verify_payload_hash,
 )
 from app.persistence.types import (
@@ -41,8 +42,6 @@ from app.persistence.types import (
 )
 
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40,64}$")
-_SCHEMA_VERSION = 1
-
 _EVIDENCE_EVENT_SOURCES = {
     PersistenceEvidenceKind.STATE_TRANSITION: RuntimeEventSource.RUNTIME,
     PersistenceEvidenceKind.DEVELOPER_RUN: RuntimeEventSource.AGENT,
@@ -57,6 +56,9 @@ _EVIDENCE_EVENT_SOURCES = {
     PersistenceEvidenceKind.CONTEXT_REFERENCE: RuntimeEventSource.RUNTIME,
     PersistenceEvidenceKind.DISPATCH_EVENT: RuntimeEventSource.DISPATCH,
     PersistenceEvidenceKind.WORKER_EXECUTION: RuntimeEventSource.WORKER,
+    PersistenceEvidenceKind.TASK_CHECKPOINT: RuntimeEventSource.RUNTIME,
+    PersistenceEvidenceKind.WORKFLOW_MATCH: RuntimeEventSource.RUNTIME,
+    PersistenceEvidenceKind.WORKFLOW_EXECUTION: RuntimeEventSource.RUNTIME,
 }
 
 
@@ -217,7 +219,8 @@ class PostgresEvidenceStore:
             raise ValueError("evidence sequence must be non-negative")
 
         payload, digest = canonical_payload(payload_model)
-        decode_evidence(kind, payload)
+        schema_version = evidence_schema_version(kind)
+        decode_evidence(kind, payload, schema_version=schema_version)
 
         async with self._session_factory.begin() as session:
             run = await self._locked_run(session, run_id)
@@ -264,7 +267,7 @@ class PostgresEvidenceStore:
                 kind=kind.value,
                 stage=normalized_stage,
                 sequence=sequence,
-                schema_version=_SCHEMA_VERSION,
+                schema_version=schema_version,
                 payload=payload,
                 payload_sha256=digest,
             )
@@ -399,13 +402,17 @@ class PostgresEvidenceStore:
         async with self._session_factory.begin() as session:
             run = await self._locked_run(session, run_id)
             tasks = (
-                await session.execute(
-                    select(TaskRow)
-                    .where(TaskRow.run_id == run_id)
-                    .order_by(TaskRow.task_id)
-                    .with_for_update()
+                (
+                    await session.execute(
+                        select(TaskRow)
+                        .where(TaskRow.run_id == run_id)
+                        .order_by(TaskRow.task_id)
+                        .with_for_update()
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             if len(tasks) != 1 or tasks[0].task_id != result.task_id:
                 raise PersistenceConflictError(
                     "SingleTaskRunResult can finalize only a run containing exactly that task"
@@ -473,17 +480,25 @@ class PostgresEvidenceStore:
             run, project = joined
 
             task_rows = (
-                await session.execute(
-                    select(TaskRow).where(TaskRow.run_id == run_id).order_by(TaskRow.task_id)
+                (
+                    await session.execute(
+                        select(TaskRow).where(TaskRow.run_id == run_id).order_by(TaskRow.task_id)
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             evidence_rows = (
-                await session.execute(
-                    select(EvidenceRow)
-                    .where(EvidenceRow.run_id == run_id)
-                    .order_by(EvidenceRow.id)
+                (
+                    await session.execute(
+                        select(EvidenceRow)
+                        .where(EvidenceRow.run_id == run_id)
+                        .order_by(EvidenceRow.id)
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
 
         tasks = tuple(self._decode_task(row) for row in task_rows)
         evidence = tuple(self._decode_evidence_row(row) for row in evidence_rows)
@@ -531,9 +546,7 @@ class PostgresEvidenceStore:
             statement = select(EvidenceRow).where(EvidenceRow.run_id == run_id)
             if kind is not None:
                 statement = statement.where(EvidenceRow.kind == kind.value)
-            rows = (
-                await session.execute(statement.order_by(EvidenceRow.id))
-            ).scalars().all()
+            rows = (await session.execute(statement.order_by(EvidenceRow.id))).scalars().all()
         return tuple(self._decode_evidence_row(row) for row in rows)
 
     async def list_runtime_events(
@@ -571,8 +584,10 @@ class PostgresEvidenceStore:
             if source is not None:
                 statement = statement.where(RuntimeEventRow.source == source.value)
             rows = (
-                await session.execute(statement.order_by(RuntimeEventRow.sequence).limit(limit))
-            ).scalars().all()
+                (await session.execute(statement.order_by(RuntimeEventRow.sequence).limit(limit)))
+                .scalars()
+                .all()
+            )
         return tuple(decode_runtime_event(row) for row in rows)
 
     async def _locked_run(self, session: AsyncSession, run_id: UUID) -> RunRow:
@@ -621,11 +636,7 @@ class PostgresEvidenceStore:
             raise PersistenceCorruptionError(
                 f"persisted evidence {row.id} has unknown kind {row.kind!r}"
             ) from exc
-        if row.schema_version != _SCHEMA_VERSION:
-            raise PersistenceCorruptionError(
-                f"unsupported evidence schema version {row.schema_version} for row {row.id}"
-            )
-        decode_evidence(kind, row.payload)
+        decode_evidence(kind, row.payload, schema_version=row.schema_version)
         return PersistedEvidence(
             id=row.id,
             run_id=row.run_id,
@@ -655,7 +666,7 @@ class PostgresEvidenceStore:
             and row.kind == kind.value
             and row.stage == stage
             and row.sequence == sequence
-            and row.schema_version == _SCHEMA_VERSION
+            and row.schema_version == evidence_schema_version(kind)
             and row.payload_sha256 == payload_sha256
         )
 
@@ -675,11 +686,7 @@ class PostgresEvidenceStore:
             if kind is PersistenceEvidenceKind.MERGE_CONFLICT
             else RuntimeEventLevel.INFO
         )
-        generation = (
-            task.lease_generation
-            if task is not None and task.lease_generation
-            else None
-        )
+        generation = task.lease_generation if task is not None and task.lease_generation else None
         return RuntimeEventDraft(
             event_key=f"evidence:{row.id}",
             kind=RuntimeEventKind.EVIDENCE_RECORDED,

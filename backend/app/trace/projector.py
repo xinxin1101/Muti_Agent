@@ -180,8 +180,7 @@ class CausalTraceProjector:
                         else attempt.requested_at
                     )
                     released = any(
-                        event.kind is RuntimeEventKind.LEASE_RELEASED
-                        for event in correlated_events
+                        event.kind is RuntimeEventKind.LEASE_RELEASED for event in correlated_events
                     )
                     self._append(
                         spans,
@@ -381,6 +380,10 @@ class CausalTraceProjector:
                     prompt_tokens=item.prompt_tokens,
                     completion_tokens=item.completion_tokens,
                     total_tokens=item.total_tokens,
+                    enable_thinking=item.enable_thinking,
+                    context_estimated_tokens=item.context_estimated_tokens,
+                    context_reused_files=item.context_reused_files,
+                    context_trimmed_files=item.context_trimmed_files,
                 )
                 existing_ids.add(item.span_id)
 
@@ -712,6 +715,9 @@ class CausalTraceProjector:
         prompt_tokens: int = 0,
         completion_tokens: int = 0,
         total_tokens: int = 0,
+        context_estimated_tokens: int = 0,
+        context_reused_files: int = 0,
+        context_trimmed_files: int = 0,
     ) -> None:
         spans.append(
             CausalTraceSpan(
@@ -742,5 +748,8 @@ class CausalTraceProjector:
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
+                context_estimated_tokens=context_estimated_tokens,
+                context_reused_files=context_reused_files,
+                context_trimmed_files=context_trimmed_files,
             )
         )

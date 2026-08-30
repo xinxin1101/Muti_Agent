@@ -78,10 +78,7 @@ def _task(
 
 def _dag(*nodes: tuple[models.TaskContract, tuple[str, ...]]) -> models.TaskDAG:
     return models.TaskDAG(
-        tasks=tuple(
-            models.TaskNode(task=task, depends_on=depends_on)
-            for task, depends_on in nodes
-        )
+        tasks=tuple(models.TaskNode(task=task, depends_on=depends_on) for task, depends_on in nodes)
     )
 
 
@@ -567,7 +564,6 @@ def test_v01_verifiers_are_offloaded_so_parallel_workers_do_not_block_event_loop
     )
 
     assert all(
-        item.scheduler_state is models.TaskScheduleState.SUCCEEDED
-        for item in result.task_results
+        item.scheduler_state is models.TaskScheduleState.SUCCEEDED for item in result.task_results
     )
     assert len(verifier.thread_ids) == 2

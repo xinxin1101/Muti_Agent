@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 from hashlib import sha256
-from typing import TypeAlias
+from typing import Any, TypeAlias
 
 from pydantic import BaseModel
 
+from app.models.checkpoint import TaskCheckpoint
 from app.models.conflict import MergeConflictEvidence
 from app.models.developer import DeveloperRunResult
 from app.models.dispatch import WorkerDispatchEvent, WorkerExecutionEvidence
@@ -20,6 +21,7 @@ from app.models.review import ReviewDecision
 from app.models.run import RunEvent, SingleTaskRunResult
 from app.models.trace import TaskTraceBatch
 from app.models.verification import VerificationResult
+from app.models.workflow import WorkflowExecutionRecord, WorkflowMatch
 from app.persistence.errors import PersistenceCorruptionError
 from app.persistence.types import ContextFingerprintReference, PersistenceEvidenceKind
 
@@ -40,6 +42,9 @@ EvidenceModel: TypeAlias = (
     | WorkerExecutionEvidence
     | TaskTraceBatch
     | OperatorActionRequestEvidence
+    | TaskCheckpoint
+    | WorkflowMatch
+    | WorkflowExecutionRecord
 )
 TerminalRunResult: TypeAlias = SingleTaskRunResult | MultiTaskRunResult
 
@@ -60,7 +65,19 @@ _EVIDENCE_MODELS: dict[PersistenceEvidenceKind, type[BaseModel]] = {
     PersistenceEvidenceKind.WORKER_EXECUTION: WorkerExecutionEvidence,
     PersistenceEvidenceKind.TRACE_BATCH: TaskTraceBatch,
     PersistenceEvidenceKind.OPERATOR_ACTION: OperatorActionRequestEvidence,
+    PersistenceEvidenceKind.TASK_CHECKPOINT: TaskCheckpoint,
+    PersistenceEvidenceKind.WORKFLOW_MATCH: WorkflowMatch,
+    PersistenceEvidenceKind.WORKFLOW_EXECUTION: WorkflowExecutionRecord,
 }
+
+# The database column is the schema version of the JSON payload. Keep versions scoped to
+# an evidence kind: adding a field to Developer evidence must not invalidate unrelated rows.
+_CURRENT_SCHEMA_VERSION: dict[PersistenceEvidenceKind, int] = {kind: 1 for kind in _EVIDENCE_MODELS}
+_CURRENT_SCHEMA_VERSION[PersistenceEvidenceKind.DEVELOPER_RUN] = 2
+
+
+def evidence_schema_version(kind: PersistenceEvidenceKind) -> int:
+    return _CURRENT_SCHEMA_VERSION[kind]
 
 
 def canonical_payload(model: BaseModel) -> tuple[dict, str]:
@@ -86,10 +103,30 @@ def verify_payload_hash(payload: dict, expected_sha256: str, *, label: str) -> N
         )
 
 
-def decode_evidence(kind: PersistenceEvidenceKind, payload: dict) -> EvidenceModel:
+def decode_evidence(
+    kind: PersistenceEvidenceKind,
+    payload: dict[str, Any],
+    *,
+    schema_version: int | None = None,
+) -> EvidenceModel:
+    version = schema_version if schema_version is not None else evidence_schema_version(kind)
+    current_version = evidence_schema_version(kind)
+    if version < 1 or version > current_version:
+        raise PersistenceCorruptionError(
+            f"unsupported {kind.value} payload schema version {version}; "
+            f"this runtime supports up to {current_version}"
+        )
+
+    normalized_payload = dict(payload)
+    # V1 Developer results predate the persisted effective execution budget. The field is
+    # optional in the model, but making the migration explicit documents the durable contract
+    # and preserves compatibility should validation become stricter later.
+    if kind is PersistenceEvidenceKind.DEVELOPER_RUN and version == 1:
+        normalized_payload.setdefault("execution_budget", None)
+
     model_type = _EVIDENCE_MODELS[kind]
     try:
-        return model_type.model_validate(payload)
+        return model_type.model_validate(normalized_payload)
     except ValueError as exc:
         raise PersistenceCorruptionError(
             f"persisted {kind.value} payload failed typed validation: {exc}"

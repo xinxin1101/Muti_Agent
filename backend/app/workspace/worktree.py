@@ -277,8 +277,7 @@ class TaskWorktreeManager:
         changed = workspace.changed_files()
         if changed and not force:
             raise TaskWorktreeError(
-                "refusing to remove dirty task worktree without force=True: "
-                + ", ".join(changed)
+                "refusing to remove dirty task worktree without force=True: " + ", ".join(changed)
             )
 
         was_locked = entry.locked_reason is not None

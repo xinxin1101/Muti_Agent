@@ -201,9 +201,7 @@ class DurableHumanGateService:
     ) -> None:
         await self._evidence_store.append_evidence(
             run_id=run_id,
-            evidence_key=(
-                f"integration:gate:{gate.evidence_fingerprint[:40]}:{suffix}"
-            ),
+            evidence_key=(f"integration:gate:{gate.evidence_fingerprint[:40]}:{suffix}"),
             kind=PersistenceEvidenceKind.INTEGRATION_GATE,
             payload_model=gate,
             task_id=gate.task_id,

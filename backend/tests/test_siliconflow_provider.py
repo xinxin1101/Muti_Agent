@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import app.providers.siliconflow as siliconflow_module
 from app.core.settings import Settings
 from app.models.agent import AgentMessage, AgentRequest, AgentRole, MessageRole
 from app.models.failure import FailureSource, FailureType
@@ -49,6 +50,7 @@ def make_request() -> AgentRequest:
             AgentMessage(role=MessageRole.USER, content="Implement the task."),
         ],
         temperature=0.2,
+        max_output_tokens=777,
     )
 
 
@@ -72,6 +74,42 @@ def test_role_model_config_is_loaded_from_settings() -> None:
 def test_driver_requires_api_key_without_injected_client() -> None:
     with pytest.raises(ValueError, match="API key"):
         SiliconFlowDriver(api_key=None)
+
+
+def test_driver_routes_provider_requests_through_configured_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created_http_clients: list[dict] = []
+    created_openai_clients: list[dict] = []
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs) -> None:
+            created_openai_clients.append(kwargs)
+
+    def create_http_client(**kwargs):
+        created_http_clients.append(kwargs)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(siliconflow_module.httpx, "AsyncClient", create_http_client)
+    monkeypatch.setattr(siliconflow_module, "AsyncOpenAI", FakeAsyncOpenAI)
+
+    SiliconFlowDriver(
+        api_key="test-key",
+        proxy_url="http://127.0.0.1:7897/",
+    )
+
+    assert created_http_clients == [{"proxy": "http://127.0.0.1:7897"}]
+    assert created_openai_clients[0]["http_client"] is not None
+
+
+def test_settings_accepts_shared_clash_proxy_for_siliconflow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEVFLOW_PROXY_URL", "http://127.0.0.1:7897/")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.siliconflow_proxy_url == "http://127.0.0.1:7897"
 
 
 def test_driver_implements_agent_driver_protocol() -> None:
@@ -112,11 +150,34 @@ def test_complete_normalizes_response_and_usage() -> None:
     call = completions.calls[0]
     assert call["model"] == "deepseek-ai/DeepSeek-V3.2"
     assert call["temperature"] == 0.2
+    assert call["max_tokens"] == 777
     assert call["stream"] is False
     assert call["messages"] == [
         {"role": "system", "content": "You are a coding agent."},
         {"role": "user", "content": "Implement the task."},
     ]
+
+
+@pytest.mark.parametrize("enable_thinking", [False, True])
+def test_dashscope_requests_explicitly_control_qwen_thinking(
+    enable_thinking: bool,
+) -> None:
+    response = SimpleNamespace(
+        model="qwen3.7-flash",
+        choices=[SimpleNamespace(message=SimpleNamespace(content="ok"), finish_reason="stop")],
+        usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+    )
+    completions = FakeCompletions(response=response)
+    driver = SiliconFlowDriver(
+        client=FakeClient(completions),
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+    )
+
+    asyncio.run(
+        driver.complete(make_request().model_copy(update={"enable_thinking": enable_thinking}))
+    )
+
+    assert completions.calls[0]["extra_body"] == {"enable_thinking": enable_thinking}
 
 
 def test_complete_defaults_missing_usage_to_zero() -> None:

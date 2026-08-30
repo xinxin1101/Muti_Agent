@@ -82,6 +82,27 @@ class _OperatorService:
             refreshed_plan=self.plan,
         )
 
+    async def recover_interrupted_run(self, run_id):
+        assert run_id == self.plan.run_id
+        return {
+            "run_id": str(uuid4()),
+            "project_id": str(uuid4()),
+            "base_commit": "b" * 40,
+            "dag_sha256": "c" * 64,
+            "task_ids": ["A"],
+            "initial_ready_task_ids": ["A"],
+            "launch_state": "QUEUED",
+            "dispatches": [
+                {
+                    "task_id": "A",
+                    "state": "QUEUED",
+                    "dispatch_id": str(uuid4()),
+                    "broker_message_id": "message-1",
+                    "queue_name": "default",
+                }
+            ],
+        }
+
 
 def test_operator_recovery_api_returns_server_advertised_actions() -> None:
     plan = _plan()
@@ -167,3 +188,33 @@ def test_operator_action_rejects_query_authority_before_service() -> None:
 
     assert response.status_code == 400
     assert service.action_calls == []
+
+
+def test_interrupted_recovery_creates_a_new_server_owned_run() -> None:
+    plan = _plan()
+    service = _OperatorService(plan)
+    app = FastAPI()
+    attach_operator_routes(app, service)  # type: ignore[arg-type]
+    client = TestClient(app)
+
+    response = client.post(f"/api/v1/runs/{plan.run_id}/recover-as-new")
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["run_id"] != str(plan.run_id)
+    assert body["initial_ready_task_ids"] == ["A"]
+
+
+def test_interrupted_recovery_rejects_browser_authored_inputs() -> None:
+    plan = _plan()
+    service = _OperatorService(plan)
+    app = FastAPI()
+    attach_operator_routes(app, service)  # type: ignore[arg-type]
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/runs/{plan.run_id}/recover-as-new",
+        json={"base_commit": "a" * 40},
+    )
+
+    assert response.status_code == 400

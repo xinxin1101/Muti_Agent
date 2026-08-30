@@ -182,9 +182,7 @@ def test_create_project_provisions_backend_managed_workspace() -> None:
 
 def test_create_run_atomically_freezes_dag_before_dispatch() -> None:
     service, _store, dag_store, _provisioner, dispatcher, project_id = _service()
-    result = asyncio.run(
-        service.create_run(RunCreateRequest(project_id=project_id, task=_task()))
-    )
+    result = asyncio.run(service.create_run(RunCreateRequest(project_id=project_id, task=_task())))
 
     assert dag_store.started_project_id == project_id
     assert dag_store.started_base_commit == "c" * 40
@@ -200,14 +198,10 @@ def test_create_run_atomically_freezes_dag_before_dispatch() -> None:
 
 def test_atomic_dag_run_start_failure_prevents_dispatch_and_run_identity() -> None:
     dag_store = FakeDAGStore(fail=True)
-    service, _store, _dag, _provisioner, dispatcher, project_id = _service(
-        dag_store=dag_store
-    )
+    service, _store, _dag, _provisioner, dispatcher, project_id = _service(dag_store=dag_store)
 
     with pytest.raises(RuntimeError, match="atomic DAG Run start failed"):
-        asyncio.run(
-            service.create_run(RunCreateRequest(project_id=project_id, task=_task()))
-        )
+        asyncio.run(service.create_run(RunCreateRequest(project_id=project_id, task=_task())))
 
     assert dag_store.started_run_id is None
     assert dispatcher.dispatched is None
@@ -215,12 +209,8 @@ def test_atomic_dag_run_start_failure_prevents_dispatch_and_run_identity() -> No
 
 def test_broker_failure_is_reported_without_fabricating_runtime_success() -> None:
     dispatcher = FakeDispatcher(fail=True)
-    service, _store, _dag, _provisioner, _dispatcher, project_id = _service(
-        dispatcher=dispatcher
-    )
-    result = asyncio.run(
-        service.create_run(RunCreateRequest(project_id=project_id, task=_task()))
-    )
+    service, _store, _dag, _provisioner, _dispatcher, project_id = _service(dispatcher=dispatcher)
+    result = asyncio.run(service.create_run(RunCreateRequest(project_id=project_id, task=_task())))
 
     assert result.dispatch_status is DispatchStatus.BROKER_UNAVAILABLE
     assert result.dispatch_id is None

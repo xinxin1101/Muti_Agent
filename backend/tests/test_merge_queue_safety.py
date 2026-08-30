@@ -59,9 +59,7 @@ def _task(task_id: str) -> models.TaskContract:
 
 
 def _dag(*tasks: models.TaskContract) -> models.TaskDAG:
-    return models.TaskDAG(
-        tasks=tuple(models.TaskNode(task=task, depends_on=()) for task in tasks)
-    )
+    return models.TaskDAG(tasks=tuple(models.TaskNode(task=task, depends_on=()) for task in tasks))
 
 
 def _run_result(task: models.TaskContract) -> SingleTaskRunResult:
@@ -159,9 +157,7 @@ def test_real_merge_conflict_stops_and_recovers_from_git_evidence(tmp_path: Path
     assert conflict.integration_commit is None
     assert conflict.failure is not None
     assert conflict.failure.failure_type is models.FailureType.MERGE_CONFLICT
-    assert any(
-        evidence.startswith("conflict_marker=") for evidence in conflict.failure.evidence
-    )
+    assert any(evidence.startswith("conflict_marker=") for evidence in conflict.failure.evidence)
     assert snapshot.head_commit == snapshot.attempts[0].integration_commit
     assert _git(base.root, "rev-parse", queue.integration_ref) == snapshot.head_commit
     conflict_ref = "refs/devflow/integration-conflicts/run-001"
@@ -286,10 +282,13 @@ def test_invalid_integration_id_is_rejected_without_creating_ref(tmp_path: Path)
             integration_id="../unsafe",
         )
 
-    assert _git_code(
-        base.root,
-        "show-ref",
-        "--verify",
-        "--quiet",
-        "refs/devflow/integration/unsafe",
-    ) == 1
+    assert (
+        _git_code(
+            base.root,
+            "show-ref",
+            "--verify",
+            "--quiet",
+            "refs/devflow/integration/unsafe",
+        )
+        == 1
+    )

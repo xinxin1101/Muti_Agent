@@ -3,13 +3,18 @@ from __future__ import annotations
 import asyncio
 from enum import StrEnum
 from typing import Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from app.agents.errors import InvalidPlannerOutputError
+from app.api.failure_explanation import (
+    FailureExplanationService,
+    FailureExplanationUnavailableError,
+)
 from app.api.github_publication import ProductRuntimeServiceWithGitHubPublication
+from app.api.models import ProductDependencyPreflight, ProductFailureExplanation, ProductProject
 from app.api.publication import _require_repaired_publication_authority
 from app.api.service import (
     ProductDiffUnavailableError,
@@ -17,16 +22,22 @@ from app.api.service import (
     _DiffCommitPair,
 )
 from app.dispatch.errors import TaskDispatchBrokerError
+from app.models.agent import AgentRole
 from app.models.dag import TaskDAG
 from app.models.dispatch import TaskDispatchReceipt
 from app.models.integration_gate import HumanGateDecision, IntegrationGateSnapshot
 from app.models.merge import MergeAttemptOutcome, MergeQueueSnapshot
 from app.persistence.errors import PersistenceConflictError, PersistenceCorruptionError
-from app.persistence.types import PersistedRunSnapshot, PersistenceEvidenceKind
-from app.providers.errors import AgentProviderError
+from app.persistence.planning_budget import PostgresPlanningTokenBudgetStore
+from app.persistence.token_budget import TokenBudgetPlanError
+from app.persistence.types import PersistedRunSnapshot, PersistedRunStatus, PersistenceEvidenceKind
+from app.providers.errors import AgentProviderError, ProviderErrorCode
+from app.providers.planning_budgeted import PlanningBudgetedAgentDriver
 from app.runtime.durable_human_gate import DurableHumanGateService
 from app.runtime.merge_queue import MergeQueueError
-from app.workspace import LocalGitWorkspace, WorkspaceGitError
+from app.verification.dependency_preflight import DependencyEnvironmentPreflightError
+from app.workflows.requirement_matcher import RequirementWorkflowMatcher
+from app.workspace import LocalGitWorkspace, ProjectProvisionError, WorkspaceGitError
 
 _MAX_REQUIREMENT_CHARS = 12_000
 _MAX_CONTEXT_FILES = 400
@@ -79,6 +90,7 @@ class RequirementRunLaunchResponse(RequirementProductModel):
     initial_ready_task_ids: tuple[str, ...] = Field(min_length=1)
     launch_state: RequirementRunLaunchState
     dispatches: tuple[InitialTaskDispatch, ...] = Field(min_length=1)
+    dependency_preflight: ProductDependencyPreflight | None = None
 
 
 class HumanGateDecisionRequest(RequirementProductModel):
@@ -121,11 +133,16 @@ class AutonomousProductRuntimeService(ProductRuntimeServiceWithGitHubPublication
         self,
         *,
         requirement_planner: RequirementPlanner | None,
+        planning_budget_store: PostgresPlanningTokenBudgetStore | None = None,
+        failure_explainer: FailureExplanationService | None = None,
         run_controller: ProductRunController | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
         self._requirement_planner = requirement_planner
+        self._planning_budget_store = planning_budget_store
+        self._requirement_workflow_matcher = RequirementWorkflowMatcher()
+        self._failure_explainer = failure_explainer
         self._run_controller = run_controller
         self._human_gates = DurableHumanGateService(
             evidence_store=self._evidence_store,  # type: ignore[arg-type]
@@ -134,20 +151,20 @@ class AutonomousProductRuntimeService(ProductRuntimeServiceWithGitHubPublication
         )
 
     async def dispose(self) -> None:
-        if self._run_controller is not None:
-            await self._run_controller.dispose()
-        await super().dispose()
+        try:
+            if self._run_controller is not None:
+                await self._run_controller.dispose()
+            if self._failure_explainer is not None:
+                await self._failure_explainer.dispose()
+            if self._planning_budget_store is not None:
+                await self._planning_budget_store.dispose()
+        finally:
+            await super().dispose()
 
     async def create_requirement_run(
         self,
         request: RequirementRunCreateRequest,
     ) -> RequirementRunLaunchResponse:
-        if self._requirement_planner is None:
-            raise ProductPlannerUnavailableError(
-                "natural-language planning is unavailable because the Planner provider is not "
-                "configured"
-            )
-
         project = await self._catalog.get_project(request.project_id)
         ready = await asyncio.to_thread(self._provisioner.is_ready, request.project_id)
         if not ready:
@@ -157,35 +174,104 @@ class AutonomousProductRuntimeService(ProductRuntimeServiceWithGitHubPublication
 
         workspace = self._resolve_planning_workspace(request.project_id)
         try:
+            dependency_preflight = await self._preflight_workspace(workspace)
             base_commit = await asyncio.to_thread(workspace.head_commit)
-            repository_context = await asyncio.to_thread(
-                self._build_repository_context,
-                workspace,
-                repository_url=project.repository_url,
-                default_branch=project.default_branch,
-                base_commit=base_commit,
-            )
         except (ValueError, WorkspaceGitError) as exc:
             raise ProductWorkspaceNotReadyError(
                 f"managed workspace is not trustworthy for project {request.project_id}"
             ) from exc
 
-        dag = await self._requirement_planner.plan(
+        tracked_files = await asyncio.to_thread(workspace.tracked_files)
+        dag = self._requirement_workflow_matcher.match(
             request.requirement,
-            repository_context=repository_context,
+            repository_files=tracked_files,
         )
+        launch_id: UUID | None = None
+        planner: RequirementPlanner | None = None
+        repository_context: str | None = None
+        if dag is None:
+            if self._requirement_planner is None:
+                raise ProductPlannerUnavailableError(
+                    "natural-language planning is unavailable because the Planner provider is "
+                    "not configured"
+                )
+            try:
+                repository_context = await asyncio.to_thread(
+                    self._build_repository_context,
+                    workspace,
+                    repository_url=project.repository_url,
+                    default_branch=project.default_branch,
+                    base_commit=base_commit,
+                )
+            except (ValueError, WorkspaceGitError) as exc:
+                raise ProductWorkspaceNotReadyError(
+                    f"managed workspace is not trustworthy for project {request.project_id}"
+                ) from exc
+            launch_id = uuid4()
+            planner = await self._budgeted_requirement_planner(
+                launch_id=launch_id,
+                project_id=request.project_id,
+            )
+            dag = await planner.plan(
+                request.requirement,
+                repository_context=repository_context,
+            )
         # Re-validate at the product boundary even though the Planner already validates its output.
         dag = TaskDAG.model_validate(dag.model_dump(mode="python"))
+        dependency_preflight = await self._preflight_workspace(
+            workspace,
+            verification_commands=self._dag_verification_commands(dag),
+        )
+        matches = await self._match_workflows(
+            tasks=tuple(node.task for node in dag.tasks),
+            workspace=workspace,
+        )
+        dag = self._with_workflow_execution_modes(dag, matches)
+        try:
+            self._validate_run_token_budget_plan(dag)
+        except TokenBudgetPlanError:
+            # The planning budget permits two bounded calls.  Use the second only when the
+            # first valid DAG cannot fund the minimum Agent turns; it is a structural retry,
+            # not a blind provider retry.
+            if planner is None or repository_context is None:
+                raise
+            dag = await planner.plan(
+                request.requirement
+                + "\n\n预算约束：当前工作包方案无法支持最低开发轮次。"
+                "请将职责进一步拆分为更小、可独立验证的工作包；"
+                "每个工作包只保留一个交付物和所需最小 Token 建议。",
+                repository_context=repository_context,
+            )
+            dag = TaskDAG.model_validate(dag.model_dump(mode="python"))
+            dependency_preflight = await self._preflight_workspace(
+                workspace,
+                verification_commands=self._dag_verification_commands(dag),
+            )
+            matches = await self._match_workflows(
+                tasks=tuple(node.task for node in dag.tasks),
+                workspace=workspace,
+            )
+            dag = self._with_workflow_execution_modes(dag, matches)
+            self._validate_run_token_budget_plan(dag)
         run_id = await self._dag_store.start_run(
             project_id=request.project_id,
             dag=dag,
             base_commit=base_commit,
         )
+        await self._initialize_run_token_budget(run_id, dag)
+        if launch_id is not None and planner is not None:
+            await self._transfer_planner_usage(
+                launch_id=launch_id,
+                run_id=run_id,
+                planner=planner,
+            )
+        await self._record_workflow_matches(
+            run_id=run_id,
+            matches=matches,
+        )
         persisted_dag = await self._dag_store.load_dag(run_id)
 
-        initial_ready = tuple(
-            dag.ready_task_ids(completed_task_ids=set(), failed_task_ids=set())
-        )
+        initial_ready = tuple(dag.ready_task_ids(completed_task_ids=set(), failed_task_ids=set()))
         if not initial_ready:
             raise RuntimeError("validated TaskDAG unexpectedly has no initial READY task")
 
@@ -210,7 +296,232 @@ class AutonomousProductRuntimeService(ProductRuntimeServiceWithGitHubPublication
             initial_ready_task_ids=initial_ready,
             launch_state=launch_state,
             dispatches=tuple(dispatches),
+            dependency_preflight=dependency_preflight,
         )
+
+    async def _budgeted_requirement_planner(
+        self,
+        *,
+        launch_id: UUID,
+        project_id: UUID,
+    ) -> RequirementPlanner:
+        planner = self._requirement_planner
+        if planner is None:
+            raise ProductPlannerUnavailableError(
+                "natural-language planning is unavailable because the Planner provider is "
+                "not configured"
+            )
+        if self._planning_budget_store is None:
+            return planner
+        await self._planning_budget_store.initialize(
+            launch_id=launch_id,
+            project_id=project_id,
+            enable_thinking=bool(getattr(planner, "enable_thinking", False)),
+        )
+        clone = getattr(planner, "with_driver", None)
+        driver = getattr(planner, "_driver", None)
+        if not callable(clone) or driver is None:
+            raise RuntimeError("configured Planner does not support DevFlow launch token budgeting")
+        return clone(
+            PlanningBudgetedAgentDriver(
+                driver=driver,
+                budget_store=self._planning_budget_store,
+                launch_id=launch_id,
+            )
+        )
+
+    async def _transfer_planner_usage(
+        self,
+        *,
+        launch_id: UUID,
+        run_id: UUID,
+        planner: RequirementPlanner,
+    ) -> None:
+        if self._planning_budget_store is None:
+            await self._record_planner_usage(run_id, planner)
+            return
+        usage = await self._planning_budget_store.link_to_run(
+            launch_id=launch_id,
+            run_id=run_id,
+        )
+        if usage.total_tokens and self._token_budget_store is not None:
+            await self._token_budget_store.record_usage(
+                run_id=run_id,
+                role=AgentRole.PLANNER,
+                usage=usage,
+            )
+
+    async def get_run_metrics(self, run_id: UUID):
+        metrics = await super().get_run_metrics(run_id)
+        if self._planning_budget_store is None:
+            return metrics
+        planning_budget = await self._planning_budget_store.snapshot_for_run(run_id)
+        return metrics.model_copy(
+            update={
+                "planning_budget": (
+                    None
+                    if planning_budget is None
+                    else {
+                        "total_budget_tokens": planning_budget.total_budget_tokens,
+                        "used_total_tokens": planning_budget.used_total_tokens,
+                        "attempt_count": planning_budget.attempt_count,
+                        "max_attempts": planning_budget.max_attempts,
+                        "enable_thinking": planning_budget.enable_thinking,
+                        "status": planning_budget.status,
+                    }
+                )
+            }
+        )
+
+    async def retry_run(self, run_id: UUID) -> RequirementRunLaunchResponse:
+        """Start a fresh Run from a failed Run's persisted TaskDAG.
+
+        The browser supplies no task, repository, branch, or commit authority. The ended run is
+        immutable; this creates a separately auditable run using the server-stored topology.
+        """
+
+        previous = await self._evidence_store.load_run(run_id)
+        if previous.status is not PersistedRunStatus.FAILED:
+            raise PersistenceConflictError("only a failed Run can be started again")
+        project = await self._catalog.get_project(previous.project_id)
+        base_commit = await self._retry_base_commit(project)
+        dependency_preflight = await self._preflight_workspace(
+            self._resolve_planning_workspace(previous.project_id)
+        )
+        persisted_dag = await self._dag_store.load_dag(run_id)
+        dag = TaskDAG.model_validate(persisted_dag.dag.model_dump(mode="python"))
+        self._validate_run_token_budget_plan(dag)
+        dependency_preflight = await self._preflight_workspace(
+            self._resolve_planning_workspace(previous.project_id),
+            verification_commands=self._dag_verification_commands(dag),
+        )
+        new_run_id = await self._dag_store.start_run(
+            project_id=previous.project_id,
+            dag=dag,
+            base_commit=base_commit,
+        )
+        await self._initialize_run_token_budget(new_run_id, dag)
+        new_persisted_dag = await self._dag_store.load_dag(new_run_id)
+        initial_ready = tuple(dag.ready_task_ids(completed_task_ids=set(), failed_task_ids=set()))
+        if not initial_ready:
+            raise PersistenceCorruptionError("persisted TaskDAG has no initial READY task")
+        dispatches = tuple(
+            await asyncio.gather(
+                *(
+                    self._dispatch_initial_task(run_id=new_run_id, task_id=task_id)
+                    for task_id in initial_ready
+                )
+            )
+        )
+        queued = sum(item.state is RequirementDispatchState.QUEUED for item in dispatches)
+        launch_state = (
+            RequirementRunLaunchState.QUEUED
+            if queued == len(dispatches)
+            else RequirementRunLaunchState.BROKER_UNAVAILABLE
+            if queued == 0
+            else RequirementRunLaunchState.PARTIAL
+        )
+        return RequirementRunLaunchResponse(
+            run_id=new_run_id,
+            project_id=previous.project_id,
+            base_commit=base_commit,
+            dag_sha256=new_persisted_dag.dag_sha256,
+            task_ids=tuple(dag.topological_order()),
+            initial_ready_task_ids=initial_ready,
+            launch_state=launch_state,
+            dispatches=dispatches,
+            dependency_preflight=dependency_preflight,
+        )
+
+    async def resume_run(self, run_id: UUID) -> RequirementRunLaunchResponse:
+        """Create a new, auditable Run from the sole fenced checkpoint of a failed Run."""
+
+        previous = await self._evidence_store.load_run(run_id)
+        if previous.status is not PersistedRunStatus.FAILED:
+            raise PersistenceConflictError("only a failed Run can continue from a checkpoint")
+        checkpoint = self._checkpoint_summary(previous)
+        if checkpoint is None:
+            raise PersistenceConflictError(
+                "this failed Run has no unambiguous continuation checkpoint"
+            )
+        project = await self._catalog.get_project(previous.project_id)
+        # Synchronize first to validate the managed repository identity, but intentionally retain
+        # the fenced checkpoint commit as the new Run's immutable base.
+        await self._retry_base_commit(project)
+        dependency_preflight = await self._preflight_workspace(
+            self._resolve_planning_workspace(previous.project_id)
+        )
+        persisted_dag = await self._dag_store.load_dag(run_id)
+        dag = TaskDAG.model_validate(persisted_dag.dag.model_dump(mode="python"))
+        self._validate_run_token_budget_plan(dag)
+        dependency_preflight = await self._preflight_workspace(
+            self._resolve_planning_workspace(previous.project_id),
+            verification_commands=self._dag_verification_commands(dag),
+        )
+        new_run_id = await self._dag_store.start_run(
+            project_id=previous.project_id,
+            dag=dag,
+            base_commit=checkpoint.commit_sha,
+        )
+        await self._initialize_run_token_budget(new_run_id, dag)
+        new_persisted_dag = await self._dag_store.load_dag(new_run_id)
+        initial_ready = tuple(dag.ready_task_ids(completed_task_ids=set(), failed_task_ids=set()))
+        if not initial_ready:
+            raise PersistenceCorruptionError("persisted TaskDAG has no initial READY task")
+        dispatches = tuple(
+            await asyncio.gather(
+                *(
+                    self._dispatch_initial_task(run_id=new_run_id, task_id=task_id)
+                    for task_id in initial_ready
+                )
+            )
+        )
+        queued = sum(item.state is RequirementDispatchState.QUEUED for item in dispatches)
+        launch_state = (
+            RequirementRunLaunchState.QUEUED
+            if queued == len(dispatches)
+            else RequirementRunLaunchState.BROKER_UNAVAILABLE
+            if queued == 0
+            else RequirementRunLaunchState.PARTIAL
+        )
+        return RequirementRunLaunchResponse(
+            run_id=new_run_id,
+            project_id=previous.project_id,
+            base_commit=checkpoint.commit_sha,
+            dag_sha256=new_persisted_dag.dag_sha256,
+            task_ids=tuple(dag.topological_order()),
+            initial_ready_task_ids=initial_ready,
+            launch_state=launch_state,
+            dispatches=dispatches,
+            dependency_preflight=dependency_preflight,
+        )
+
+    async def explain_run_failure(self, run_id: UUID) -> ProductFailureExplanation:
+        snapshot = await self._evidence_store.load_run(run_id)
+        if snapshot.status is not PersistedRunStatus.FAILED:
+            raise PersistenceConflictError("AI 解读只适用于已失败的运行")
+        if self._failure_explainer is None:
+            raise FailureExplanationUnavailableError(
+                "AI 解读未配置模型服务，请先配置 SiliconFlow 密钥。"
+            )
+        return await self._failure_explainer.explain(
+            run_id=run_id,
+            failures=self._failure_summaries(snapshot),
+        )
+
+    async def _retry_base_commit(self, project: ProductProject) -> str:
+        ready = await asyncio.to_thread(self._provisioner.is_ready, project.project_id)
+        if not ready:
+            raise ProductWorkspaceNotReadyError(
+                f"managed workspace is not ready for project {project.project_id}"
+            )
+        workspace = self._resolve_planning_workspace(project.project_id)
+        try:
+            return await asyncio.to_thread(workspace.head_commit)
+        except WorkspaceGitError as exc:
+            raise ProductWorkspaceNotReadyError(
+                f"managed workspace is not trustworthy for project {project.project_id}"
+            ) from exc
 
     async def list_human_gates(self, run_id: UUID) -> tuple[IntegrationGateSnapshot, ...]:
         return await self._human_gates.list_gates(run_id)
@@ -330,6 +641,12 @@ class AutonomousProductRuntimeService(ProductRuntimeServiceWithGitHubPublication
         )
 
     @staticmethod
+    def _dag_verification_commands(dag: TaskDAG) -> tuple[str, ...]:
+        """Return the immutable command contract that must be environment-checked pre-dispatch."""
+
+        return tuple(command for node in dag.tasks for command in node.task.verification_commands)
+
+    @staticmethod
     def _build_repository_context(
         workspace: LocalGitWorkspace,
         *,
@@ -375,16 +692,118 @@ def attach_autonomous_routes(
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except ProductWorkspaceNotReadyError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except DependencyEnvironmentPreflightError as exc:
+            raise HTTPException(status_code=424, detail=exc.public_detail) from exc
         except InvalidPlannerOutputError as exc:
             raise HTTPException(
-                status_code=502,
-                detail="Planner failed to produce a valid TaskDAG",
+                status_code=422,
+                detail="规划不可执行：工作包计划未通过结构校验，未启动 Developer。",
             ) from exc
+        except TokenBudgetPlanError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         except AgentProviderError as exc:
+            # ProviderErrorCode values are wire-level lowercase strings (for example,
+            # ``token_budget_exhausted``). Compare the enum itself so budget exhaustion is
+            # never misreported as a generic 502 provider failure.
+            if exc.code is ProviderErrorCode.TOKEN_BUDGET_EXHAUSTED:
+                raise HTTPException(
+                    status_code=429,
+                    detail=(
+                        "本次启动的规划模型预算已用尽，未向模型服务发起超额请求。"
+                        f"原因：{exc}"
+                    ),
+                ) from exc
             raise HTTPException(
                 status_code=502,
                 detail=f"Planner provider failed: {exc.code.value}",
             ) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post(
+        "/api/v1/runs/{run_id}/retry",
+        response_model=RequirementRunLaunchResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def retry_run(request: Request, run_id: UUID) -> RequirementRunLaunchResponse:
+        if request.query_params or (await request.body()).strip():
+            raise HTTPException(
+                status_code=400,
+                detail="Run retry does not accept browser-authored task or Git authority",
+            )
+        try:
+            return await service.retry_run(run_id)
+        except DependencyEnvironmentPreflightError as exc:
+            raise HTTPException(status_code=424, detail=exc.public_detail) from exc
+        except TokenBudgetPlanError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except (
+            PersistenceConflictError,
+            ProductWorkspaceNotReadyError,
+            ProjectProvisionError,
+            WorkspaceGitError,
+        ) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except PersistenceCorruptionError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail="persisted Run retry source facts failed integrity validation",
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post(
+        "/api/v1/runs/{run_id}/resume",
+        response_model=RequirementRunLaunchResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def resume_run(request: Request, run_id: UUID) -> RequirementRunLaunchResponse:
+        if request.query_params or (await request.body()).strip():
+            raise HTTPException(
+                status_code=400,
+                detail="Run continuation does not accept browser-authored task or Git authority",
+            )
+        try:
+            return await service.resume_run(run_id)
+        except DependencyEnvironmentPreflightError as exc:
+            raise HTTPException(status_code=424, detail=exc.public_detail) from exc
+        except TokenBudgetPlanError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except (
+            PersistenceConflictError,
+            ProductWorkspaceNotReadyError,
+            ProjectProvisionError,
+            WorkspaceGitError,
+        ) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except PersistenceCorruptionError as exc:
+            raise HTTPException(
+                status_code=500, detail="persisted checkpoint failed integrity validation"
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post(
+        "/api/v1/runs/{run_id}/failure-explanation",
+        response_model=ProductFailureExplanation,
+    )
+    async def explain_run_failure(request: Request, run_id: UUID) -> ProductFailureExplanation:
+        if request.query_params or (await request.body()).strip():
+            raise HTTPException(
+                status_code=400,
+                detail="AI failure explanation accepts no browser-authored diagnostic data",
+            )
+        try:
+            return await service.explain_run_failure(run_id)
+        except PersistenceConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except PersistenceCorruptionError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail="persisted failure evidence failed integrity validation",
+            ) from exc
+        except FailureExplanationUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 

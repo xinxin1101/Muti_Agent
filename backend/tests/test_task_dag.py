@@ -135,10 +135,13 @@ def test_failed_task_blocks_all_transitive_descendants() -> None:
         "TASK-004",
         "TASK-005",
     ]
-    assert dag.ready_task_ids(
-        completed_task_ids={"TASK-001"},
-        failed_task_ids={"TASK-002"},
-    ) == []
+    assert (
+        dag.ready_task_ids(
+            completed_task_ids={"TASK-001"},
+            failed_task_ids={"TASK-002"},
+        )
+        == []
+    )
 
 
 def test_one_failed_branch_does_not_block_independent_ready_sibling() -> None:

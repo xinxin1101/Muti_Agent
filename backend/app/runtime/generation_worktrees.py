@@ -129,8 +129,7 @@ class GenerationBoundWorktreeView:
             ) from exc
         if result.returncode != 0:
             raise PersistenceCorruptionError(
-                "Git worktree registry inspection failed: "
-                f"exit_code={result.returncode}"
+                f"Git worktree registry inspection failed: exit_code={result.returncode}"
             )
         return result
 

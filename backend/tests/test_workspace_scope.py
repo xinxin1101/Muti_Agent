@@ -198,7 +198,12 @@ def test_resolve_path_blocks_existing_symlink_escape(tmp_path: Path) -> None:
     root = _make_repository(tmp_path)
     outside = tmp_path / "outside"
     outside.mkdir()
-    (root / "escape").symlink_to(outside, target_is_directory=True)
+    try:
+        (root / "escape").symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        if exc.winerror == 1314:
+            pytest.skip("Windows account does not have permission to create symbolic links")
+        raise
     workspace = LocalGitWorkspace(root)
 
     with pytest.raises(ValueError, match="resolves outside"):

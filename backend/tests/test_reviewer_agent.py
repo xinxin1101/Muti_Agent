@@ -163,6 +163,9 @@ def test_reviewer_receives_task_actual_diff_and_verification_without_tools(tmp_p
         )
     )
 
+    assert driver.requests[0].max_output_tokens == 800
+    assert "compact shape" in driver.requests[0].messages[0].content
+
     assert decision.decision is models.ReviewOutcome.PASS
     assert len(driver.requests) == 1
     request = driver.requests[0]

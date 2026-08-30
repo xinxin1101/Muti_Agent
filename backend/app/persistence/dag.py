@@ -125,6 +125,7 @@ class PostgresDAGStore:
                             contract=payload,
                             contract_sha256=contract_digest,
                             depends_on=list(node.depends_on),
+                            node_metadata=_node_metadata(node),
                         )
                     )
 
@@ -161,21 +162,23 @@ class PostgresDAGStore:
 
         async with self._session_factory.begin() as session:
             run = (
-                await session.execute(
-                    select(RunRow).where(RunRow.id == run_id).with_for_update()
-                )
+                await session.execute(select(RunRow).where(RunRow.id == run_id).with_for_update())
             ).scalar_one_or_none()
             if run is None:
                 raise ValueError(f"unknown persistence run: {run_id}")
 
             rows = (
-                await session.execute(
-                    select(TaskRow)
-                    .where(TaskRow.run_id == run_id)
-                    .order_by(TaskRow.task_id)
-                    .with_for_update()
+                (
+                    await session.execute(
+                        select(TaskRow)
+                        .where(TaskRow.run_id == run_id)
+                        .order_by(TaskRow.task_id)
+                        .with_for_update()
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             self._validate_task_identity(rows, normalized)
 
             if run.dag_sha256 is not None:
@@ -208,6 +211,7 @@ class PostgresDAGStore:
             nodes = {node.task.task_id: node for node in normalized.tasks}
             for row in rows:
                 row.depends_on = list(nodes[row.task_id].depends_on)
+                row.node_metadata = _node_metadata(nodes[row.task_id])
             run.dag_sha256 = digest
             await session.flush()
 
@@ -224,10 +228,14 @@ class PostgresDAGStore:
             if run is None:
                 raise ValueError(f"unknown persistence run: {run_id}")
             rows = (
-                await session.execute(
-                    select(TaskRow).where(TaskRow.run_id == run_id).order_by(TaskRow.task_id)
+                (
+                    await session.execute(
+                        select(TaskRow).where(TaskRow.run_id == run_id).order_by(TaskRow.task_id)
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
 
         if not rows:
             raise PersistenceCorruptionError("persisted Run contains no tasks")
@@ -298,6 +306,7 @@ class PostgresDAGStore:
                     TaskNode(
                         task=_decode_task_contract(row),
                         depends_on=tuple(row.depends_on or ()),
+                        **_decode_node_metadata(row),
                     )
                     for row in rows
                 )
@@ -308,7 +317,31 @@ class PostgresDAGStore:
             ) from exc
         normalized = normalize_task_dag(dag)
         payload, _ = canonical_payload(normalized)
-        verify_payload_hash(payload, digest, label=f"Run {run_id} DAG")
+        try:
+            verify_payload_hash(payload, digest, label=f"Run {run_id} DAG")
+        except PersistenceCorruptionError:
+            # DAGs written before 0013 did not contain node metadata.  Preserve their
+            # accepted topology while making new runs hash the richer node payload.
+            if any(row.node_metadata is not None for row in rows):
+                raise
+            legacy_payload = {"tasks": []}
+            for item in payload["tasks"]:
+                legacy_payload["tasks"].append(
+                    {
+                        key: value
+                        for key, value in item.items()
+                        if key
+                        not in {
+                            "execution_mode",
+                            "produces",
+                            "consumes",
+                            "complexity",
+                            "budget_allocation",
+                            "complexity_assessment",
+                        }
+                    }
+                )
+            verify_payload_hash(legacy_payload, digest, label=f"legacy Run {run_id} DAG")
         return normalized
 
 
@@ -333,7 +366,54 @@ def normalize_task_dag(dag: TaskDAG) -> TaskDAG:
             TaskNode(
                 task=dag.node(task_id).task,
                 depends_on=tuple(sorted(dag.node(task_id).depends_on)),
+                execution_mode=dag.node(task_id).execution_mode,
+                produces=dag.node(task_id).produces,
+                consumes=dag.node(task_id).consumes,
+                complexity=dag.node(task_id).complexity,
+                budget_allocation=dag.node(task_id).budget_allocation,
+                complexity_assessment=dag.node(task_id).complexity_assessment,
             )
             for task_id in dag.topological_order()
         )
     )
+
+
+def _node_metadata(node: TaskNode) -> dict | None:
+    """Persist non-contract DAG facts separately from the immutable task contract."""
+
+    payload = {
+        "execution_mode": node.execution_mode.value,
+        "produces": list(node.produces),
+        "consumes": list(node.consumes),
+        "complexity": node.complexity.value if node.complexity is not None else None,
+        "budget_allocation": (
+            node.budget_allocation.model_dump(mode="json")
+            if node.budget_allocation is not None
+            else None
+        ),
+        "complexity_assessment": (
+            node.complexity_assessment.model_dump(mode="json")
+            if node.complexity_assessment is not None
+            else None
+        ),
+    }
+    return payload if any(value not in (None, [], "AGENT") for value in payload.values()) else None
+
+
+def _decode_node_metadata(row: TaskRow) -> dict:
+    if row.node_metadata is None:
+        return {}
+    try:
+        payload = dict(row.node_metadata)
+        return {
+            "execution_mode": payload.get("execution_mode", "AGENT"),
+            "produces": tuple(payload.get("produces", ())),
+            "consumes": tuple(payload.get("consumes", ())),
+            "complexity": payload.get("complexity"),
+            "budget_allocation": payload.get("budget_allocation"),
+            "complexity_assessment": payload.get("complexity_assessment"),
+        }
+    except (TypeError, ValueError) as exc:
+        raise PersistenceCorruptionError(
+            f"persisted task {row.task_id!r} has invalid DAG node metadata: {exc}"
+        ) from exc

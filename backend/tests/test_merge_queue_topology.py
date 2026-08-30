@@ -60,10 +60,7 @@ def _task(task_id: str, writable: str) -> models.TaskContract:
 
 def _dag(*nodes: tuple[models.TaskContract, tuple[str, ...]]) -> models.TaskDAG:
     return models.TaskDAG(
-        tasks=tuple(
-            models.TaskNode(task=task, depends_on=depends_on)
-            for task, depends_on in nodes
-        )
+        tasks=tuple(models.TaskNode(task=task, depends_on=depends_on) for task, depends_on in nodes)
     )
 
 
@@ -140,20 +137,26 @@ def test_reverse_input_integrates_in_deterministic_dag_order(tmp_path: Path) -> 
     assert _git(base.root, "rev-parse", queue.integration_ref) == snapshot.head_commit
     assert _git(base.root, "rev-parse", "HEAD") == base_head
     assert base.changed_files() == []
-    assert _git_code(
-        base.root,
-        "merge-base",
-        "--is-ancestor",
-        result_a.commit_sha or "",
-        snapshot.head_commit,
-    ) == 0
-    assert _git_code(
-        base.root,
-        "merge-base",
-        "--is-ancestor",
-        result_b.commit_sha or "",
-        snapshot.head_commit,
-    ) == 0
+    assert (
+        _git_code(
+            base.root,
+            "merge-base",
+            "--is-ancestor",
+            result_a.commit_sha or "",
+            snapshot.head_commit,
+        )
+        == 0
+    )
+    assert (
+        _git_code(
+            base.root,
+            "merge-base",
+            "--is-ancestor",
+            result_b.commit_sha or "",
+            snapshot.head_commit,
+        )
+        == 0
+    )
 
 
 def test_higher_topological_success_waits_for_earlier_success(tmp_path: Path) -> None:

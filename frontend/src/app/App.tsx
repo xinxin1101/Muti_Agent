@@ -24,8 +24,8 @@ export function App() {
           element={
             <PlaceholderPage
               eyebrow="404"
-              title="Page not found"
-              description="This route is outside the current DevFlow product surface."
+              title="未找到页面"
+              description="此路由不在当前 DevFlow 产品功能范围内。"
             />
           }
         />

@@ -38,8 +38,7 @@ class _DockerPreflight:
 @runtime_checkable
 class VerificationCommandRunner(Protocol):
     @property
-    def is_sandboxed(self) -> bool:
-        ...
+    def is_sandboxed(self) -> bool: ...
 
     def run(
         self,
@@ -47,8 +46,7 @@ class VerificationCommandRunner(Protocol):
         *,
         workspace: Path,
         timeout_seconds: float,
-    ) -> VerificationExecution:
-        ...
+    ) -> VerificationExecution: ...
 
 
 class LocalProcessVerificationRunner:
@@ -83,6 +81,8 @@ class LocalProcessVerificationRunner:
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=timeout_seconds,
                 check=False,
                 shell=False,
@@ -112,8 +112,8 @@ class LocalProcessVerificationRunner:
 
         return VerificationExecution(
             exit_code=completed.returncode,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
+            stdout=completed.stdout or "",
+            stderr=completed.stderr or "",
             duration_ms=_duration_ms(started_at),
             backend=VerificationBackend.HOST,
             details=("sandboxed=false",),
@@ -132,8 +132,8 @@ class DockerSandboxRunner:
         *,
         docker_executable: str = "docker",
     ) -> None:
-        if not docker_executable or any(character.isspace() for character in docker_executable):
-            raise ValueError("docker_executable must be one non-empty executable token")
+        if not docker_executable or any(character in "\r\n" for character in docker_executable):
+            raise ValueError("docker_executable must be one non-empty executable path")
         self._policy = policy or DockerSandboxPolicy()
         self._docker_executable = docker_executable
 
@@ -197,6 +197,8 @@ class DockerSandboxRunner:
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=timeout_seconds,
                 check=False,
                 shell=False,
@@ -229,7 +231,8 @@ class DockerSandboxRunner:
             )
 
         failure_type = None
-        stderr = completed.stderr
+        stdout = completed.stdout or ""
+        stderr = completed.stderr or ""
         if completed.returncode in {125, 126, 127}:
             failure_type = FailureType.TOOL_FAILURE
             stderr = stderr or (
@@ -244,7 +247,7 @@ class DockerSandboxRunner:
 
         return VerificationExecution(
             exit_code=completed.returncode,
-            stdout=completed.stdout,
+            stdout=stdout,
             stderr=stderr,
             duration_ms=_duration_ms(started_at),
             backend=VerificationBackend.DOCKER,
@@ -309,11 +312,17 @@ class DockerSandboxRunner:
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=timeout_seconds,
                 check=False,
                 shell=False,
             )
         except FileNotFoundError as exc:
+            fallback = self._windows_docker_fallback()
+            if fallback is not None and fallback != self._docker_executable:
+                self._docker_executable = fallback
+                return self._control_command(arguments, timeout_seconds=timeout_seconds)
             return f"Docker executable is unavailable: {exc}"
         except subprocess.TimeoutExpired:
             return "Docker daemon capability check timed out."
@@ -323,6 +332,21 @@ class DockerSandboxRunner:
             detail = (completed.stderr or completed.stdout).strip()
             return detail or f"Docker control command exited with {completed.returncode}."
         return completed
+
+    @staticmethod
+    def _windows_docker_fallback() -> str | None:
+        """Find the standard Docker Desktop CLI when a fresh shell has not inherited PATH.
+
+        Windows service/terminal launches can omit Docker Desktop's resource directory even while
+        the daemon is healthy. ``subprocess`` receives the full path as one argument, so spaces in
+        ``Program Files`` are safe and do not weaken command isolation.
+        """
+
+        if os.name != "nt":
+            return None
+        program_files = Path(os.environ.get("PROGRAMFILES", r"C:\Program Files"))
+        candidate = program_files / "Docker" / "Docker" / "resources" / "bin" / "docker.exe"
+        return str(candidate) if candidate.is_file() else None
 
     def _docker_run_command(
         self,
@@ -336,6 +360,16 @@ class DockerSandboxRunner:
         if _IMAGE_ID_PATTERN.fullmatch(image_reference) is None:
             raise ValueError("sandbox execution requires an immutable Docker image id")
         policy = self._policy
+        command_argv = list(argv)
+        ruff_check_index = None
+        if command_argv[:2] == ["ruff", "check"]:
+            ruff_check_index = 2
+        elif command_argv[:4] == ["python", "-m", "ruff", "check"]:
+            ruff_check_index = 4
+        if os.name == "nt" and ruff_check_index is not None:
+            # Docker Desktop bind mounts do not preserve Windows executable bits. Ruff's EXE002
+            # would otherwise report every mounted source file as a false lint failure.
+            command_argv[ruff_check_index:ruff_check_index] = ["--ignore", "EXE002"]
         memory = f"{policy.memory_mb}m"
         return [
             self._docker_executable,
@@ -367,16 +401,16 @@ class DockerSandboxRunner:
             "--tmpfs",
             f"/tmp:rw,nosuid,nodev,size={policy.tmpfs_mb}m,mode=1777",
             "--mount",
-            (
-                "type=bind,"
-                f"src={workspace},"
-                f"dst={self._CONTAINER_WORKSPACE},"
-                "readonly"
-            ),
+            (f"type=bind,src={workspace},dst={self._CONTAINER_WORKSPACE},readonly"),
             "--workdir",
             self._CONTAINER_WORKSPACE,
             "--env",
             "PYTHONDONTWRITEBYTECODE=1",
+            # ``py_compile`` deliberately writes bytecode even when
+            # PYTHONDONTWRITEBYTECODE is set. Keep the checked-out project
+            # read-only while giving Python a bounded writable cache target.
+            "--env",
+            "PYTHONPYCACHEPREFIX=/tmp/pycache",
             "--env",
             "PYTHONUNBUFFERED=1",
             "--env",
@@ -385,10 +419,14 @@ class DockerSandboxRunner:
             "TMPDIR=/tmp",
             "--env",
             "XDG_CACHE_HOME=/tmp/cache",
+            # Ruff defaults to a project-local cache, which is unavailable in the
+            # read-only source mount. Keep its cache in the bounded tmpfs too.
+            "--env",
+            "RUFF_CACHE_DIR=/tmp/ruff-cache",
             "--entrypoint",
             "",
             image_reference,
-            *argv,
+            *command_argv,
         ]
 
     def _resolved_container_user(self) -> str:
@@ -434,6 +472,8 @@ class DockerSandboxRunner:
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=self._CONTROL_TIMEOUT_SECONDS,
                 check=False,
                 shell=False,

@@ -149,6 +149,7 @@ class GitHubPublicationGateway:
         intent: GitHubPublicationIntent,
     ) -> None:
         self._assert_local_commit(workspace.root, intent.source_commit)
+        self._ensure_remote_base_branch(workspace.root, intent)
         existing = self._remote_branch_head(
             workspace.root,
             repository_url=intent.repository_url,
@@ -200,6 +201,73 @@ class GitHubPublicationGateway:
             raise GitHubPublicationGatewayError(
                 "REMOTE_BRANCH_VERIFY_FAILED",
                 "Published GitHub branch does not match the evidence-bound source commit.",
+            )
+
+    def _ensure_remote_base_branch(
+        self,
+        root: Path,
+        intent: GitHubPublicationIntent,
+    ) -> None:
+        """Seed an empty GitHub repository with the local bootstrap commit.
+
+        Empty repositories have no base branch, so a Draft Pull Request cannot
+        be created until the local immutable root commit is published as the
+        selected default branch.  Existing repositories are never changed here.
+        """
+
+        if (
+            self._remote_branch_head(
+                root,
+                repository_url=intent.repository_url,
+                branch_name=intent.base_branch,
+            )
+            is not None
+        ):
+            return
+        roots = self._run_git(
+            root,
+            ["rev-list", "--max-parents=0", intent.source_commit],
+            authenticated=False,
+        )
+        root_commits = [line.strip().lower() for line in roots.stdout.splitlines() if line.strip()]
+        if len(root_commits) != 1 or _COMMIT_RE.fullmatch(root_commits[0]) is None:
+            raise GitHubPublicationGatewayError(
+                "INITIAL_BRANCH_SOURCE_INVALID",
+                "DevFlow could not determine a valid initial commit for the empty repository.",
+            )
+        initial_commit = root_commits[0]
+        pushed = self._run_git(
+            root,
+            [
+                "push",
+                "--porcelain",
+                "--no-verify",
+                intent.repository_url,
+                f"{initial_commit}:refs/heads/{intent.base_branch}",
+            ],
+            authenticated=True,
+        )
+        if pushed.returncode != 0:
+            observed = self._remote_branch_head(
+                root,
+                repository_url=intent.repository_url,
+                branch_name=intent.base_branch,
+            )
+            if observed == initial_commit:
+                return
+            raise GitHubPublicationGatewayError(
+                "INITIAL_BRANCH_PUSH_FAILED",
+                "GitHub initial branch publication failed for the empty repository.",
+            )
+        observed = self._remote_branch_head(
+            root,
+            repository_url=intent.repository_url,
+            branch_name=intent.base_branch,
+        )
+        if observed != initial_commit:
+            raise GitHubPublicationGatewayError(
+                "INITIAL_BRANCH_VERIFY_FAILED",
+                "GitHub did not preserve the expected initial branch commit.",
             )
 
     def _assert_local_commit(self, root: Path, source_commit: str) -> None:

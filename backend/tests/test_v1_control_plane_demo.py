@@ -59,9 +59,7 @@ def test_required_demo_normal_success(tmp_path: Path) -> None:
     (root / "tests").mkdir()
     (root / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
     (root / "tests" / "test_value.py").write_text(
-        "from module import VALUE\n\n\n"
-        "def test_value():\n"
-        "    assert VALUE == 2\n",
+        "from module import VALUE\n\n\ndef test_value():\n    assert VALUE == 2\n",
         encoding="utf-8",
     )
     _git(root, "init")
@@ -119,9 +117,7 @@ def test_required_demo_normal_success(tmp_path: Path) -> None:
         max_retries=1,
     )
 
-    result = asyncio.run(
-        orchestrator.run(task, workspace=LocalGitWorkspace(root))
-    )
+    result = asyncio.run(orchestrator.run(task, workspace=LocalGitWorkspace(root)))
 
     assert result.status is TaskRunState.SUCCEEDED, [
         failure.model_dump(mode="json") for failure in result.failures
@@ -198,12 +194,7 @@ def test_required_demo_parallel_merge_conflict(tmp_path: Path) -> None:
         )
         for task_id in ("TASK-A", "TASK-B")
     )
-    dag = models.TaskDAG(
-        tasks=tuple(
-            models.TaskNode(task=task, depends_on=())
-            for task in tasks
-        )
-    )
+    dag = models.TaskDAG(tasks=tuple(models.TaskNode(task=task, depends_on=()) for task in tasks))
     scheduler = DAGScheduler(dag)
     worktrees = TaskWorktreeManager(base, tmp_path / "parallel-worktrees")
     gate = _ParallelGate()
@@ -220,8 +211,7 @@ def test_required_demo_parallel_merge_conflict(tmp_path: Path) -> None:
     assert wave.peak_concurrency == 2
     assert wave.scheduled_task_ids == ("TASK-A", "TASK-B")
     assert all(
-        result.scheduler_state is models.TaskScheduleState.SUCCEEDED
-        for result in wave.task_results
+        result.scheduler_state is models.TaskScheduleState.SUCCEEDED for result in wave.task_results
     )
     assert all(result.commit_sha is not None for result in wave.task_results)
     assert len({result.worktree_path for result in wave.task_results}) == 2

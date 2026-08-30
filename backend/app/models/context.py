@@ -110,9 +110,7 @@ class ContextFile(BaseModel):
     def validate_aggregate_usage(self) -> ContextFile:
         if self.selected_chars != sum(snippet.char_count for snippet in self.snippets):
             raise ValueError("selected_chars must equal the sum of snippet char counts")
-        if self.estimated_tokens != sum(
-            snippet.estimated_tokens for snippet in self.snippets
-        ):
+        if self.estimated_tokens != sum(snippet.estimated_tokens for snippet in self.snippets):
             raise ValueError("estimated_tokens must equal the sum of snippet token estimates")
         if self.selected_chars > self.source_chars:
             raise ValueError("selected_chars cannot exceed source_chars")
@@ -159,6 +157,59 @@ class ContextUsage(BaseModel):
     estimated_tokens: int = Field(ge=0)
     truncated_files: int = Field(ge=0)
     omitted_files: int = Field(ge=0)
+    reused_files: int = Field(default=0, ge=0)
+    trimmed_files: int = Field(default=0, ge=0)
+    prompt_estimated_tokens: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_prompt_estimate(self) -> ContextUsage:
+        if self.prompt_estimated_tokens and self.prompt_estimated_tokens < self.estimated_tokens:
+            raise ValueError("prompt token estimate cannot be smaller than selected content")
+        return self
+
+
+class ContextFileDigest(BaseModel):
+    """Content identity retained for a later compact continuation, never source text."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    path: str = Field(min_length=1, max_length=1000)
+    source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, value: str) -> str:
+        return _normalize_repository_path(value)
+
+
+class ContextContinuationState(BaseModel):
+    """Bounded, content-free state used to resume a task without replaying source files."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    summary_version: str = Field(min_length=1, max_length=64)
+    repository_head: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    read_files: tuple[ContextFileDigest, ...] = Field(default_factory=tuple, max_length=100)
+    changed_files: tuple[str, ...] = Field(default_factory=tuple, max_length=512)
+    completed_summary: str = Field(default="", max_length=512)
+    remaining_summary: str = Field(default="", max_length=512)
+    verification_summary: str = Field(default="", max_length=512)
+    failure_summary: str = Field(default="", max_length=512)
+
+    @field_validator("changed_files")
+    @classmethod
+    def validate_changed_paths(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(_normalize_repository_path(value) for value in values)
+        if normalized != tuple(sorted(set(normalized))):
+            raise ValueError("continuation changed_files must be sorted and unique")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_unique_read_files(self) -> ContextContinuationState:
+        paths = [item.path for item in self.read_files]
+        if len(paths) != len(set(paths)):
+            raise ValueError("continuation read_files must not contain duplicate paths")
+        return self
 
 
 class ContextPacket(BaseModel):
@@ -177,7 +228,15 @@ class ContextPacket(BaseModel):
     writable_files: list[str] = Field(min_length=1)
     readonly_files: list[str] = Field(default_factory=list)
     repository_head: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    repository_summary_version: str = Field(
+        default="repository_summary_v1",
+        min_length=1,
+        max_length=64,
+    )
+    repository_summary: str = Field(default="", max_length=16_000)
+    resume: ContextContinuationState | None = None
     changed_files: list[str] = Field(default_factory=list)
+    repository_map: list[str] = Field(default_factory=list, max_length=80)
     selected_files: list[ContextFile] = Field(default_factory=list)
     truncations: list[ContextTruncation] = Field(default_factory=list)
     budget: ContextBudget
@@ -195,6 +254,14 @@ class ContextPacket(BaseModel):
             raise ValueError("changed_files must be sorted and unique")
         return normalized
 
+    @field_validator("repository_map")
+    @classmethod
+    def validate_repository_map(cls, values: list[str]) -> list[str]:
+        normalized = [_normalize_repository_path(value) for value in values]
+        if normalized != sorted(set(normalized)):
+            raise ValueError("repository_map must be sorted and unique")
+        return normalized
+
     @model_validator(mode="after")
     def validate_packet_usage_and_fingerprint(self) -> ContextPacket:
         paths = [item.path for item in self.selected_files]
@@ -202,9 +269,7 @@ class ContextPacket(BaseModel):
             raise ValueError("selected_files must not contain duplicate paths")
         if self.usage.selected_files != len(self.selected_files):
             raise ValueError("usage.selected_files must match selected_files length")
-        if self.usage.selected_chars != sum(
-            item.selected_chars for item in self.selected_files
-        ):
+        if self.usage.selected_chars != sum(item.selected_chars for item in self.selected_files):
             raise ValueError("usage.selected_chars must match selected file usage")
         if self.usage.estimated_tokens != sum(
             item.estimated_tokens for item in self.selected_files
@@ -216,6 +281,8 @@ class ContextPacket(BaseModel):
             raise ValueError("packet exceeds max_estimated_tokens")
         if self.usage.selected_files > self.budget.max_files:
             raise ValueError("packet exceeds max_files")
+        if self.usage.trimmed_files != self.usage.truncated_files:
+            raise ValueError("trimmed_files must match truncated_files")
 
         canonical_payload = self.model_dump(mode="json", exclude={"fingerprint"})
         expected_fingerprint = _canonical_fingerprint(canonical_payload)

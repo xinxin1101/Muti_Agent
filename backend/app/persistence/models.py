@@ -12,6 +12,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -68,6 +69,28 @@ class ProjectRow(PersistenceBase):
     runs: Mapped[list[RunRow]] = relationship(
         back_populates="project",
         cascade="all, delete-orphan",
+    )
+
+
+class ProjectCredentialRow(PersistenceBase):
+    """Encrypted project-scoped credentials; plaintext never enters this table."""
+
+    __tablename__ = "project_credentials"
+
+    project_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    github_publication_token_ciphertext: Mapped[bytes] = mapped_column(
+        LargeBinary,
+        nullable=False,
+    )
+    key_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
     )
 
 
@@ -144,6 +167,7 @@ class TaskRow(PersistenceBase):
     contract: Mapped[dict] = mapped_column(JSONB, nullable=False)
     contract_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     depends_on: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    node_metadata: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     lease_owner: Mapped[str | None] = mapped_column(String(255), nullable=True)
     lease_dispatch_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     lease_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

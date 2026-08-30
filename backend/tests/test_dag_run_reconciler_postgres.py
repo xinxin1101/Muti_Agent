@@ -376,10 +376,7 @@ async def _integrated_dependency_unlocks_only_downstream_task() -> None:
         assert task_b.execution_base is not None
         assert task_b.execution_base.commit_sha == _INTEGRATION_A
         assert task_b.execution_base.basis.value == "MERGE_QUEUE_SNAPSHOT"
-        assert (
-            first.task_outcomes[0].decision.action
-            is TaskReconciliationAction.PREPARED_DISPATCH
-        )
+        assert first.task_outcomes[0].decision.action is TaskReconciliationAction.PREPARED_DISPATCH
         assert (
             second.task_outcomes[0].decision.action
             is TaskReconciliationAction.WAIT_EXISTING_DISPATCH

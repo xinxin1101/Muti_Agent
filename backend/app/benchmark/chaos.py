@@ -104,9 +104,7 @@ class ChaosRecoveryManifest(BenchmarkModel):
             raise ValueError(f"chaos manifest is missing required fault domains: {missing}")
 
         covered_invariants = {
-            invariant
-            for scenario in self.scenarios
-            for invariant in scenario.invariants
+            invariant for scenario in self.scenarios for invariant in scenario.invariants
         }
         if not _REQUIRED_INVARIANTS.issubset(covered_invariants):
             missing = sorted(item.value for item in _REQUIRED_INVARIANTS - covered_invariants)

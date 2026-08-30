@@ -59,10 +59,10 @@ describe("GitHubPublication", () => {
   it("does not query or publish before persisted Run success", () => {
     renderPublication("RUNNING");
     expect(
-      screen.getByText(/eligible only after persisted Run status is SUCCEEDED/),
+      screen.getByText(/仅当已持久化的运行状态为“已成功”后/),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Create Draft PR" }),
+      screen.queryByRole("button", { name: "创建草稿 PR" }),
     ).not.toBeInTheDocument();
     expect(productApi.getGitHubPublication).not.toHaveBeenCalled();
     expect(productApi.publishGitHubDraft).not.toHaveBeenCalled();
@@ -71,7 +71,7 @@ describe("GitHubPublication", () => {
   it("renders only backend-selected publication facts", async () => {
     renderPublication("SUCCEEDED");
     expect(
-      await screen.findByRole("button", { name: "Create Draft PR" }),
+      await screen.findByRole("button", { name: "创建草稿 PR" }),
     ).toBeInTheDocument();
     expect(screen.getByText(`devflow/run-${runId}`)).toBeInTheDocument();
     expect(screen.getByText("example/repo")).toBeInTheDocument();
@@ -85,10 +85,10 @@ describe("GitHubPublication", () => {
     );
     renderPublication("SUCCEEDED");
 
-    const button = await screen.findByRole("button", { name: "Retry publication" });
+    const button = await screen.findByRole("button", { name: "重试发布" });
     expect(button).toBeEnabled();
     expect(
-      screen.getByText(/backend rejects a still-live claim and takes over only after/),
+      screen.getByText(/后端会拒绝仍有效的声明/),
     ).toBeInTheDocument();
     expect(screen.queryByText(/attempt_token/i)).not.toBeInTheDocument();
 
@@ -100,12 +100,12 @@ describe("GitHubPublication", () => {
 
   it("publishes with no browser selector form and leaves Run status outside the component", async () => {
     renderPublication("SUCCEEDED");
-    fireEvent.click(await screen.findByRole("button", { name: "Create Draft PR" }));
+    fireEvent.click(await screen.findByRole("button", { name: "创建草稿 PR" }));
 
     await waitFor(() =>
       expect(productApi.publishGitHubDraft).toHaveBeenCalledWith(runId),
     );
-    const link = await screen.findByRole("link", { name: "Open Draft PR #42" });
+    const link = await screen.findByRole("link", { name: "打开草稿 PR #42" });
     expect(link).toHaveAttribute("href", "https://github.com/example/repo/pull/42");
     expect(screen.queryByText(/Run SUCCEEDED by GitHub/i)).not.toBeInTheDocument();
   });

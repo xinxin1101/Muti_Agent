@@ -64,6 +64,9 @@ class PostgresProductCatalog:
                 created_at=project.created_at,
                 run_count=count,
                 workspace_ready=False,
+                provision_status=project.provision_status,
+                provision_error_code=project.provision_error_code,
+                provision_error_message=project.provision_error_message,
             )
             for project, count in rows
         )
@@ -93,6 +96,9 @@ class PostgresProductCatalog:
             created_at=project.created_at,
             run_count=count,
             workspace_ready=False,
+            provision_status=project.provision_status,
+            provision_error_code=project.provision_error_code,
+            provision_error_message=project.provision_error_message,
         )
 
     async def list_runs(

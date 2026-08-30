@@ -294,10 +294,14 @@ class PostgresTaskLeaseStore:
             if run_exists is None:
                 raise ValueError(f"unknown persistence run: {run_id}")
             tasks = (
-                await session.execute(
-                    select(TaskRow).where(TaskRow.run_id == run_id).order_by(TaskRow.task_id)
+                (
+                    await session.execute(
+                        select(TaskRow).where(TaskRow.run_id == run_id).order_by(TaskRow.task_id)
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             observed_at = await database_time(session)
             return tuple(self._snapshot(task, observed_at=observed_at) for task in tasks)
 
@@ -367,9 +371,7 @@ class PostgresTaskLeaseStore:
         else:
             assert task.lease_until is not None
             state = (
-                TaskLeaseState.EXPIRED
-                if task.lease_until <= observed_at
-                else TaskLeaseState.ACTIVE
+                TaskLeaseState.EXPIRED if task.lease_until <= observed_at else TaskLeaseState.ACTIVE
             )
         return TaskLeaseSnapshot(
             run_id=task.run_id,

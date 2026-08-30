@@ -75,9 +75,7 @@ def test_cli_run_prints_terminal_json_and_exit_zero(monkeypatch, capsys, tmp_pat
 
     monkeypatch.setattr(cli, "run_single_task", fake_run_single_task)
 
-    exit_code = cli.main(
-        ["run", "--workspace", str(workspace), "--task", str(task_path)]
-    )
+    exit_code = cli.main(["run", "--workspace", str(workspace), "--task", str(task_path)])
     output = json.loads(capsys.readouterr().out)
 
     assert exit_code == 0
@@ -89,9 +87,7 @@ def test_cli_invalid_task_returns_configuration_error(capsys, tmp_path: Path) ->
     task_path = tmp_path / "task.json"
     task_path.write_text("{not-json", encoding="utf-8")
 
-    exit_code = cli.main(
-        ["run", "--workspace", str(tmp_path), "--task", str(task_path)]
-    )
+    exit_code = cli.main(["run", "--workspace", str(tmp_path), "--task", str(task_path)])
     error = json.loads(capsys.readouterr().err)
 
     assert exit_code == 2

@@ -17,10 +17,7 @@ def require_real_docker_sandbox() -> None:
     if not isinstance(preflight, str):
         return
     if os.environ.get("CI", "").lower() == "true":
-        pytest.fail(
-            "CI must provide the real trusted Docker verification sandbox: "
-            f"{preflight}"
-        )
+        pytest.fail(f"CI must provide the real trusted Docker verification sandbox: {preflight}")
     pytest.skip(f"trusted Docker verification sandbox is unavailable locally: {preflight}")
 
 
@@ -92,7 +89,7 @@ def test_custom_project_command_is_allowed_only_inside_real_sandbox(tmp_path: Pa
     workspace = _repository(tmp_path)
 
     result = DeterministicVerifier(command_timeout_seconds=10).verify(
-        _task('python -c "print(\'sandbox-custom-ok\')"'),
+        _task("python -c \"print('sandbox-custom-ok')\""),
         workspace=workspace,
     )
 
@@ -130,7 +127,7 @@ def test_network_none_blocks_external_connection(tmp_path: Path) -> None:
     command = (
         'python -c "import socket; s=socket.socket(); s.settimeout(0.3); '
         "rc=s.connect_ex(('1.1.1.1', 53)); print('network-blocked', rc); "
-        "raise SystemExit(0 if rc != 0 else 9)\""
+        'raise SystemExit(0 if rc != 0 else 9)"'
     )
 
     result = DeterministicVerifier(command_timeout_seconds=10).verify(

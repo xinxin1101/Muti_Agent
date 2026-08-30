@@ -43,8 +43,7 @@ def _suite() -> tuple[BenchmarkSuite, str]:
             readonly_files=[],
             acceptance_criteria=["result.txt exists."],
             verification_commands=[
-                "python -c \"from pathlib import Path; "
-                "assert Path('result.txt').exists()\""
+                "python -c \"from pathlib import Path; assert Path('result.txt').exists()\""
             ],
             max_retries=1,
         ),
@@ -274,9 +273,7 @@ def test_live_runner_uses_existing_product_api_without_browser_authored_sha() ->
     assert observation.diff.changed_files == ("result.txt",)
 
     run_posts = [
-        body
-        for method, path, body in requests
-        if method == "POST" and path == "/api/v1/runs"
+        body for method, path, body in requests if method == "POST" and path == "/api/v1/runs"
     ]
     assert len(run_posts) == 1
     assert set(run_posts[0]) == {"project_id", "task"}

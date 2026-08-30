@@ -124,15 +124,19 @@ class PostgresDispatchAttemptStore:
         task_name = self._required_text(task_id, "task_id", max_length=128)
         async with self._session_factory() as session:
             rows = (
-                await session.execute(
-                    select(DispatchAttemptRow)
-                    .where(
-                        DispatchAttemptRow.run_id == run_id,
-                        DispatchAttemptRow.task_id == task_name,
+                (
+                    await session.execute(
+                        select(DispatchAttemptRow)
+                        .where(
+                            DispatchAttemptRow.run_id == run_id,
+                            DispatchAttemptRow.task_id == task_name,
+                        )
+                        .order_by(DispatchAttemptRow.attempt_number)
                     )
-                    .order_by(DispatchAttemptRow.attempt_number)
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
         return tuple(self._decode(row) for row in rows)
 
     async def begin_initial_attempt(
@@ -221,10 +225,7 @@ class PostgresDispatchAttemptStore:
             current = self._decode(row)
             self._assert_identity(current, run_id=run_id, task_id=task_name)
             if current.state is DispatchAttemptState.ENQUEUED:
-                if (
-                    current.broker_message_id != message_id
-                    or current.queue_name != queue
-                ):
+                if current.broker_message_id != message_id or current.queue_name != queue:
                     raise PersistenceConflictError(
                         "ENQUEUED dispatch acknowledgement cannot be replaced by different facts"
                     )

@@ -7,6 +7,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from app.agents import DeveloperAgent, RepairAgent, ReviewerAgent
+from app.context import ContextPacketBuilder
 from app.models import (
     AgentResponse,
     AgentRole,
@@ -90,6 +91,7 @@ def test_production_agents_emit_metadata_only_generation_spans(tmp_path: Path) -
 async def _production_agents_emit_metadata_only_generation_spans(tmp_path: Path) -> None:
     workspace = LocalGitWorkspace(_repository(tmp_path))
     task = _task()
+    context_packet = ContextPacketBuilder().build(task, workspace=workspace)
     collector = TaskTraceCollector(
         run_id=uuid4(),
         task_id=task.task_id,
@@ -124,7 +126,12 @@ async def _production_agents_emit_metadata_only_generation_spans(tmp_path: Path)
         ),
         model="test/developer",
     )
-    await developer.run(task, workspace=workspace, trace=collector)
+    await developer.run(
+        task,
+        workspace=workspace,
+        context_packet=context_packet,
+        trace=collector,
+    )
 
     verification = VerificationResult(
         passed=True,
@@ -161,6 +168,7 @@ async def _production_agents_emit_metadata_only_generation_spans(tmp_path: Path)
         task,
         verification,
         workspace=workspace,
+        context_packet=context_packet,
         trace=collector,
     )
     assert decision.decision is ReviewOutcome.PASS
@@ -189,6 +197,7 @@ async def _production_agents_emit_metadata_only_generation_spans(tmp_path: Path)
         ],
         attempt=1,
         workspace=workspace,
+        context_packet=context_packet,
         trace=collector,
     )
 
@@ -207,6 +216,8 @@ async def _production_agents_emit_metadata_only_generation_spans(tmp_path: Path)
     assert tools[0].agent_role is AgentRole.DEVELOPER
     assert tools[0].parent_span_id == turns[0].span_id
     assert turns[3].name == "reviewer.schema_repair_turn"
+    assert all(turn.context_estimated_tokens > 0 for turn in turns)
+    assert all(turn.context_reused_files == 0 for turn in turns)
 
     serialized = batch.model_dump_json()
     assert "developer secret completion" not in serialized

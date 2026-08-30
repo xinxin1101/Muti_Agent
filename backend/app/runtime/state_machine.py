@@ -45,6 +45,4 @@ class TaskStateMachine:
                 f"invalid task-state transition: {self._state.value} -> {next_state.value}"
             )
         self._state = next_state
-        self._events.append(
-            RunEvent(sequence=len(self._events), state=next_state, detail=detail)
-        )
+        self._events.append(RunEvent(sequence=len(self._events), state=next_state, detail=detail))

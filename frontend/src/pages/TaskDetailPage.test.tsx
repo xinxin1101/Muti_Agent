@@ -95,8 +95,8 @@ describe("TaskDetailPage diff viewer", () => {
   it("renders backend-resolved task diff without Git mutation controls", async () => {
     renderTask();
 
-    expect(await screen.findByText(/WORKER_EXECUTION evidence #7/)).toBeInTheDocument();
-    const viewer = await screen.findByLabelText("Read-only Git diff");
+    expect(await screen.findByText(/WORKER_EXECUTION 证据 #7/)).toBeInTheDocument();
+    const viewer = await screen.findByLabelText("只读 Git 差异");
     expect(within(viewer).getByText("src/app.py")).toBeInTheDocument();
     expect(within(viewer).getByText("+new = 2")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /stage/i })).not.toBeInTheDocument();
@@ -105,9 +105,9 @@ describe("TaskDetailPage diff viewer", () => {
 
   it("switches evidence kind while leaving commit selection to the backend", async () => {
     renderTask();
-    await screen.findByText(/WORKER_EXECUTION evidence #7/);
+    await screen.findByText(/WORKER_EXECUTION 证据 #7/);
 
-    fireEvent.click(screen.getByRole("button", { name: "Integration changes" }));
+    fireEvent.click(screen.getByRole("button", { name: "集成变更" }));
 
     await waitFor(() =>
       expect(productApi.getTaskDiff).toHaveBeenLastCalledWith(
@@ -116,6 +116,6 @@ describe("TaskDetailPage diff viewer", () => {
         "INTEGRATION",
       ),
     );
-    expect(await screen.findByText(/MERGE_QUEUE_SNAPSHOT evidence #9/)).toBeInTheDocument();
+    expect(await screen.findByText(/MERGE_QUEUE_SNAPSHOT 证据 #9/)).toBeInTheDocument();
   });
 });

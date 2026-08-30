@@ -63,8 +63,12 @@ class TraceBatchSpan(BaseModel):
     prompt_tokens: int = Field(default=0, ge=0)
     completion_tokens: int = Field(default=0, ge=0)
     total_tokens: int = Field(default=0, ge=0)
+    context_estimated_tokens: int = Field(default=0, ge=0)
+    context_reused_files: int = Field(default=0, ge=0)
+    context_trimmed_files: int = Field(default=0, ge=0)
     finish_reason: str | None = Field(default=None, max_length=128)
     tool_call_count: int | None = Field(default=None, ge=0)
+    enable_thinking: bool = False
     tool_name: str | None = Field(default=None, min_length=1, max_length=128)
     tool_error_code: ToolErrorCode | None = None
     attempt: int | None = Field(default=None, ge=1)
@@ -175,6 +179,10 @@ class CausalTraceSpan(BaseModel):
     prompt_tokens: int = Field(default=0, ge=0)
     completion_tokens: int = Field(default=0, ge=0)
     total_tokens: int = Field(default=0, ge=0)
+    context_estimated_tokens: int = Field(default=0, ge=0)
+    context_reused_files: int = Field(default=0, ge=0)
+    context_trimmed_files: int = Field(default=0, ge=0)
+    enable_thinking: bool = False
 
     @model_validator(mode="after")
     def validate_correlation(self) -> CausalTraceSpan:

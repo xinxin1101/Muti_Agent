@@ -127,6 +127,13 @@ class ManagedProjectProvisioner:
             return
 
         try:
+            if self._is_empty_remote(repository):
+                self._initialize_empty_workspace(
+                    target,
+                    repository_url=repository,
+                    default_branch=branch,
+                )
+                return
             self._git(
                 [
                     "clone",
@@ -170,6 +177,14 @@ class ManagedProjectProvisioner:
         if not state.ready:
             raise ProjectProvisionError(state.detail, code="WORKSPACE_NOT_READY")
         target = self.project_path(project_id)
+        remote_branch = self._git(
+            ["ls-remote", "--heads", repository, f"refs/heads/{branch}"],
+            authenticated=self._is_github(repository),
+        ).strip()
+        if not remote_branch:
+            # An empty remote has no default branch yet.  Its local bootstrap
+            # commit is still valid immutable truth for the first DevFlow run.
+            return LocalGitWorkspace(target).head_commit()
         self._git(
             [
                 "-C",
@@ -182,15 +197,51 @@ class ManagedProjectProvisioner:
             ],
             authenticated=self._is_github(repository),
         )
-        commit = self._git(
-            ["-C", str(target), "rev-parse", f"refs/remotes/origin/{branch}^{{commit}}"]
-        ).strip().lower()
+        commit = (
+            self._git(["-C", str(target), "rev-parse", f"refs/remotes/origin/{branch}^{{commit}}"])
+            .strip()
+            .lower()
+        )
         if _COMMIT_RE.fullmatch(commit) is None:
             raise ProjectProvisionError(
                 "remote branch did not resolve to a valid commit",
                 code="REMOTE_COMMIT_INVALID",
             )
         return commit
+
+    def _is_empty_remote(self, repository_url: str) -> bool:
+        """Return true only when Git can reach a repository with no HEAD/ref."""
+
+        head = self._git(
+            ["ls-remote", "--symref", repository_url, "HEAD"],
+            authenticated=self._is_github(repository_url),
+        )
+        return not head.strip()
+
+    def _initialize_empty_workspace(
+        self,
+        target: Path,
+        *,
+        repository_url: str,
+        default_branch: str,
+    ) -> None:
+        """Create local-only bootstrap truth for a reachable empty remote."""
+
+        self._git(["init", f"--initial-branch={default_branch}", str(target)])
+        self._git(["-C", str(target), "remote", "add", "origin", repository_url])
+        self._git(["-C", str(target), "config", "user.name", "DevFlow"])
+        self._git(["-C", str(target), "config", "user.email", "devflow@local.invalid"])
+        self._git(
+            [
+                "-C",
+                str(target),
+                "commit",
+                "--allow-empty",
+                "-m",
+                "chore: initialize DevFlow workspace",
+            ]
+        )
+        LocalGitWorkspace(target)
 
     @staticmethod
     def _branch(value: str) -> str:

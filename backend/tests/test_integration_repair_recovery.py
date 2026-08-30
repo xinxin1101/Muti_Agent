@@ -359,10 +359,7 @@ def test_persisted_repair_resumes_after_crash_before_git_cas(
 
     assert len(writer.repairs) == 1
     persisted_repair = writer.repairs[0]
-    staging_ref = (
-        f"refs/devflow/integration-repairs/{run_id.hex}/"
-        f"{gate.conflict_marker_commit}"
-    )
+    staging_ref = f"refs/devflow/integration-repairs/{run_id.hex}/{gate.conflict_marker_commit}"
     assert _git(base.root, "rev-parse", stopped.integration_ref) == integration_before
     assert _git(base.root, "rev-parse", staging_ref) == persisted_repair.repair_commit
     assert len(first_driver.requests) == 2
@@ -386,29 +383,38 @@ def test_persisted_repair_resumes_after_crash_before_git_cas(
     assert resumed == persisted_repair
     assert second_driver.requests == []
     assert _git(base.root, "rev-parse", stopped.integration_ref) == persisted_repair.repair_commit
-    assert _git(
-        base.root,
-        "rev-parse",
-        "--verify",
-        f"{staging_ref}^{{commit}}",
-        check=False,
-    ) == ""
-    assert _git(
-        base.root,
-        "show-ref",
-        "--verify",
-        "--quiet",
-        conflict.conflict_ref,
-        check=False,
-    ) == ""
-    assert _git(
-        base.root,
-        "show-ref",
-        "--verify",
-        "--quiet",
-        gate.human_decision.decision_ref,
-        check=False,
-    ) == ""
+    assert (
+        _git(
+            base.root,
+            "rev-parse",
+            "--verify",
+            f"{staging_ref}^{{commit}}",
+            check=False,
+        )
+        == ""
+    )
+    assert (
+        _git(
+            base.root,
+            "show-ref",
+            "--verify",
+            "--quiet",
+            conflict.conflict_ref,
+            check=False,
+        )
+        == ""
+    )
+    assert (
+        _git(
+            base.root,
+            "show-ref",
+            "--verify",
+            "--quiet",
+            gate.human_decision.decision_ref,
+            check=False,
+        )
+        == ""
+    )
 
     recovered = RepairAwareTopologicalMergeQueue(
         scheduler=scheduler,

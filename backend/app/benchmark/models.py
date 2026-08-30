@@ -356,9 +356,7 @@ class BenchmarkExecutionConfig(BenchmarkModel):
     api_base_url: str = "http://127.0.0.1:8000"
     poll_interval_seconds: float = Field(default=1.0, ge=0.05, le=60.0)
     timeout_per_case_seconds: float = Field(default=900.0, ge=1.0, le=7200.0)
-    identity_basis: BenchmarkExperimentIdentityBasis = (
-        BenchmarkExperimentIdentityBasis.NOT_RECORDED
-    )
+    identity_basis: BenchmarkExperimentIdentityBasis = BenchmarkExperimentIdentityBasis.NOT_RECORDED
     runtime_commit: str | None = Field(default=None, pattern=r"^[0-9a-f]{40,64}$")
     provider: str | None = Field(default=None, min_length=1, max_length=128)
     planner_model: str | None = Field(default=None, min_length=1, max_length=256)
@@ -476,9 +474,7 @@ class BenchmarkSummary(BenchmarkModel):
     @model_validator(mode="after")
     def validate_case_totals(self) -> BenchmarkSummary:
         if (
-            self.matched_cases
-            + self.mismatched_cases
-            + self.not_evaluated_cases
+            self.matched_cases + self.mismatched_cases + self.not_evaluated_cases
             != self.total_cases
         ):
             raise ValueError("benchmark summary verdict counts must equal total_cases")

@@ -95,9 +95,7 @@ class IntegrationHumanGate:
         current_evidence = self._assert_current_evidence()
         current_policy = self._evaluate_policy(current_evidence)
         if current_policy != self._policy_decision:
-            raise IntegrationHumanGateError(
-                "integration policy changed after gate construction"
-            )
+            raise IntegrationHumanGateError("integration policy changed after gate construction")
         if integration_policy_fingerprint(current_policy) != self._policy_fingerprint:
             raise IntegrationHumanGateError(
                 "integration policy fingerprint changed after gate construction"
@@ -337,20 +335,20 @@ class IntegrationHumanGate:
         task_ref = f"refs/heads/{attempt.task_branch}"
         transaction = "\n".join(
             [
-                "start",
                 f"verify {self._queue_snapshot.integration_ref} {self._evidence.integration_head}",
                 f"verify {self._evidence.conflict_ref} {self._evidence.marker_commit}",
                 f"verify {task_ref} {attempt.task_commit}",
                 f"create {self._decision_ref} {decision_commit}",
-                "prepare",
-                "commit",
                 "",
             ]
         )
         result = self._git_with_input(["update-ref", "--stdin"], transaction, check=False)
         if result.returncode != 0:
+            detail = (result.stderr or result.stdout).decode("utf-8", errors="replace").strip()
+            suffix = f": {detail}" if detail else ""
             raise IntegrationHumanGateError(
                 "human decision could not be recorded atomically against the expected Git refs"
+                f"{suffix}"
             )
 
     def _decision_message(
@@ -623,14 +621,17 @@ class IntegrationHumanGate:
         input_text: str,
         *,
         check: bool = True,
-    ) -> subprocess.CompletedProcess[str]:
+    ) -> subprocess.CompletedProcess[bytes]:
         command = ["git", "-C", str(self._workspace.root), *arguments]
         try:
             completed = subprocess.run(
                 command,
-                input=input_text,
+                # `git update-ref --stdin` accepts only LF-delimited commands. Passing text
+                # input makes Windows translate those delimiters to CRLF, which Git parses as
+                # an extra byte after each object id.
+                input=input_text.encode("utf-8"),
                 capture_output=True,
-                text=True,
+                text=False,
                 timeout=self._git_timeout_seconds,
                 check=False,
             )

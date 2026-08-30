@@ -3,6 +3,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from app.agents import DeveloperAgent
 from app.models import (
     AgentResponse,
@@ -78,6 +80,54 @@ def test_repository_tools_list_read_and_search_only_visible_files(tmp_path: Path
     assert searched.ok is True
     matches = json.loads(searched.content)["matches"]
     assert matches[0]["path"] == "app/main.py"
+
+
+def test_repository_tools_batch_read_and_search_reduce_exploration_round_trips(
+    tmp_path: Path,
+) -> None:
+    root = _make_repository(tmp_path)
+    toolbox = RepositoryToolbox(workspace=LocalGitWorkspace(root), task=_task())
+
+    read = toolbox.execute(
+        _call(
+            "batch-read",
+            "read_files",
+            {"paths": ["app/main.py", "tests/test_main.py"]},
+        )
+    )
+    searched = toolbox.execute(
+        _call(
+            "batch-search",
+            "search_code_many",
+            {"queries": ["VALUE", "test_value"]},
+        )
+    )
+
+    assert read.ok is True
+    files = json.loads(read.content)["files"]
+    assert [item["path"] for item in files] == ["app/main.py", "tests/test_main.py"]
+    assert files[0]["content"] == "VALUE = 1\n"
+
+    assert searched.ok is True
+    results = json.loads(searched.content)["results"]
+    assert results[0]["query"] == "VALUE"
+    assert results[0]["matches"][0]["path"] == "app/main.py"
+    assert results[1]["query"] == "test_value"
+    assert results[1]["matches"][0]["path"] == "tests/test_main.py"
+
+
+def test_repository_tools_treat_missing_listing_directory_as_empty(tmp_path: Path) -> None:
+    root = _make_repository(tmp_path)
+    toolbox = RepositoryToolbox(workspace=LocalGitWorkspace(root), task=_task())
+
+    listed = toolbox.execute(_call("1", "list_files", {"directory": "new_package"}))
+
+    assert listed.ok is True
+    assert json.loads(listed.content) == {
+        "files": [],
+        "truncated": False,
+        "directory_exists": False,
+    }
 
 
 def test_write_file_enforces_writable_and_readonly_scope_before_disk_mutation(
@@ -157,7 +207,12 @@ def test_apply_patch_requires_unique_exact_context(tmp_path: Path) -> None:
 def test_internal_symlink_cannot_redirect_writable_path_to_readonly_file(tmp_path: Path) -> None:
     root = _make_repository(tmp_path)
     link = root / "app" / "linked_test.py"
-    link.symlink_to(root / "tests" / "test_main.py")
+    try:
+        link.symlink_to(root / "tests" / "test_main.py")
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Windows user does not have permission to create symbolic links")
+        raise
     toolbox = RepositoryToolbox(workspace=LocalGitWorkspace(root), task=_task())
 
     result = toolbox.execute(
@@ -182,6 +237,13 @@ class FakeDriver:
         return self.responses.pop(0)
 
 
+class HangingAfterResponsesDriver(FakeDriver):
+    async def complete(self, request):
+        if self.responses:
+            return await super().complete(request)
+        await asyncio.Event().wait()
+
+
 def _response(*, content: str = "", tool_calls: list[ToolCall] | None = None) -> AgentResponse:
     return AgentResponse(
         model="test/developer",
@@ -200,9 +262,7 @@ def test_developer_agent_uses_tools_then_stops_without_declaring_runtime_success
     workspace = LocalGitWorkspace(root)
     driver = FakeDriver(
         [
-            _response(
-                tool_calls=[_call("read-1", "read_file", {"path": "app/main.py"})]
-            ),
+            _response(tool_calls=[_call("read-1", "read_file", {"path": "app/main.py"})]),
             _response(
                 tool_calls=[
                     _call(
@@ -229,6 +289,13 @@ def test_developer_agent_uses_tools_then_stops_without_declaring_runtime_success
     assert result.changed_files == ["app/main.py"]
     assert result.usage.total_tokens == 45
     assert result.latency_ms == 21
+    assert result.execution_budget is not None
+    assert result.execution_budget.max_iterations == 12
+    assert result.execution_budget.max_duration_seconds == 300.0
+    assert result.execution_budget.max_model_turn_seconds == 120.0
+    assert all(request.max_output_tokens == 1_400 for request in driver.requests)
+    assert "Prefer tool calls over prose" in driver.requests[0].messages[0].content
+    assert "exactly three concise items" in driver.requests[0].messages[0].content
     assert not hasattr(result, "passed")
     assert (root / "app" / "main.py").read_text(encoding="utf-8") == "VALUE = 2\n"
 
@@ -239,7 +306,9 @@ def test_developer_agent_uses_tools_then_stops_without_declaring_runtime_success
     assert {tool.name for tool in second_request.tools} == {
         "list_files",
         "read_file",
+        "read_files",
         "search_code",
+        "search_code_many",
         "write_file",
         "apply_patch",
     }
@@ -268,6 +337,36 @@ def test_developer_agent_is_bounded_by_iteration_budget(tmp_path: Path) -> None:
     assert len(driver.requests) == 2
 
 
+def test_developer_agent_verifies_scoped_changes_after_iteration_budget(tmp_path: Path) -> None:
+    root = _make_repository(tmp_path)
+    workspace = LocalGitWorkspace(root)
+    driver = FakeDriver(
+        [
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-1",
+                        "write_file",
+                        {"path": "app/main.py", "content": "VALUE = 2\n"},
+                    )
+                ]
+            )
+        ]
+    )
+    developer = DeveloperAgent(
+        driver=driver,
+        model="test/developer",
+        max_iterations=1,
+    )
+
+    result = asyncio.run(developer.run(_task(), workspace=workspace))
+
+    assert result.stop_reason is DeveloperStopReason.ITERATION_LIMIT
+    assert result.iterations == 1
+    assert result.changed_files == ["app/main.py"]
+    assert "iteration budget" in result.final_message
+
+
 def test_developer_agent_is_bounded_by_time_budget_before_provider_call(tmp_path: Path) -> None:
     root = _make_repository(tmp_path)
     workspace = LocalGitWorkspace(root)
@@ -285,6 +384,42 @@ def test_developer_agent_is_bounded_by_time_budget_before_provider_call(tmp_path
     assert result.stop_reason is DeveloperStopReason.TIME_LIMIT
     assert result.iterations == 0
     assert driver.requests == []
+    assert result.execution_budget is not None
+    assert result.execution_budget.max_duration_seconds == 1.0
+    assert result.execution_budget.max_model_turn_seconds == 1.0
+
+
+def test_developer_agent_continues_to_verification_when_final_turn_times_out_after_changes(
+    tmp_path: Path,
+) -> None:
+    root = _make_repository(tmp_path)
+    workspace = LocalGitWorkspace(root)
+    driver = HangingAfterResponsesDriver(
+        [
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-1",
+                        "write_file",
+                        {"path": "app/main.py", "content": "VALUE = 2\n"},
+                    )
+                ]
+            )
+        ]
+    )
+    developer = DeveloperAgent(
+        driver=driver,
+        model="test/developer",
+        max_duration_seconds=3.0,
+        max_model_turn_seconds=1.0,
+    )
+
+    result = asyncio.run(developer.run(_task(), workspace=workspace))
+
+    assert result.stop_reason is DeveloperStopReason.TIME_LIMIT
+    assert result.iterations == 1
+    assert result.changed_files == ["app/main.py"]
+    assert "timed out" in result.final_message
 
 
 def test_developer_agent_rejects_tool_call_fanout_before_execution(tmp_path: Path) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from typing import Protocol
 from uuid import UUID
 
@@ -61,6 +62,8 @@ class ProductGitHubPublicationStore(Protocol):
 
 
 class ProductGitHubPublisher(Protocol):
+    async def is_configured(self, project_id: UUID) -> bool: ...
+
     async def publish(
         self,
         *,
@@ -103,7 +106,7 @@ class ProductRuntimeServiceWithGitHubPublication(ProductRuntimeService):
         return build_product_publication(
             intent,
             persisted,
-            publisher_configured=self._github_publisher is not None,
+            publisher_configured=await self._publisher_is_configured(intent.project_id),
         )
 
     async def publish_github_draft(self, run_id: UUID) -> ProductGitHubPublication:
@@ -114,11 +117,13 @@ class ProductRuntimeServiceWithGitHubPublication(ProductRuntimeService):
         current = build_product_publication(
             intent,
             persisted,
-            publisher_configured=self._github_publisher is not None,
+            publisher_configured=await self._publisher_is_configured(intent.project_id),
         )
         if current.state is GitHubPublicationState.PUBLISHED:
             return current
-        if self._github_publisher is None:
+        if self._github_publisher is None or not await self._publisher_is_configured(
+            intent.project_id
+        ):
             raise ProductGitHubPublicationConfigurationError(
                 "GitHub publication is not configured on the backend"
             )
@@ -179,6 +184,17 @@ class ProductRuntimeServiceWithGitHubPublication(ProductRuntimeService):
             raise ProductGitHubPublicationUnavailableError(
                 "managed Git workspace is unavailable or untrustworthy for publication"
             ) from exc
+
+    async def _publisher_is_configured(self, project_id: UUID) -> bool:
+        if self._github_publisher is None:
+            return False
+        configured = getattr(self._github_publisher, "is_configured", None)
+        if not callable(configured):
+            return True
+        result = configured(project_id)
+        if inspect.isawaitable(result):
+            result = await result
+        return bool(result)
 
     @staticmethod
     def _pull_request_body(intent: GitHubPublicationIntent) -> str:

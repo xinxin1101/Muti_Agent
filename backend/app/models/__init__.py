@@ -6,6 +6,7 @@ from app.models.agent import (
     MessageRole,
     TokenUsage,
 )
+from app.models.checkpoint import CheckpointReason, TaskCheckpoint
 from app.models.conflict import (
     MergeConflictEvidence,
     MergeConflictFile,
@@ -16,7 +17,9 @@ from app.models.conflict import (
 )
 from app.models.context import (
     ContextBudget,
+    ContextContinuationState,
     ContextFile,
+    ContextFileDigest,
     ContextPacket,
     ContextScopeKind,
     ContextScopeMatch,
@@ -26,8 +29,13 @@ from app.models.context import (
     ContextTruncationReason,
     ContextUsage,
 )
+from app.models.continuation import TaskContinuationSummary
 from app.models.dag import TaskDAG, TaskNode
-from app.models.developer import DeveloperRunResult, DeveloperStopReason
+from app.models.developer import (
+    DeveloperExecutionBudget,
+    DeveloperRunResult,
+    DeveloperStopReason,
+)
 from app.models.dispatch import (
     TaskDispatchEnvelope,
     TaskDispatchReceipt,
@@ -52,6 +60,7 @@ from app.models.integration_gate import (
     IntegrationPolicyDecision,
     IntegrationPolicyRoute,
 )
+from app.models.interface_contract import InterfaceContractGate, InterfaceContractState
 from app.models.lease import TaskLeaseGrant, TaskLeaseSnapshot, TaskLeaseState
 from app.models.merge import MergeAttemptOutcome, MergeQueueAttempt, MergeQueueSnapshot
 from app.models.reconciliation import (
@@ -64,7 +73,12 @@ from app.models.recovery import (
     RunRecoveryPlan,
     TaskRecoveryAssessment,
 )
-from app.models.repair import RepairRunResult, RepairStopReason
+from app.models.repair import (
+    RepairProgressEvidence,
+    RepairProgressStatus,
+    RepairRunResult,
+    RepairStopReason,
+)
 from app.models.review import (
     ReviewDecision,
     ReviewIssue,
@@ -88,6 +102,16 @@ from app.models.scheduler import (
     TaskScheduleState,
 )
 from app.models.task import TaskContract
+from app.models.token_budget import (
+    PlanningTokenBudget,
+    RoleTokenUsage,
+    RunTokenBudget,
+    RunTokenBudgetStatus,
+    StageTokenBudget,
+    TaskBudgetStatus,
+    TokenBudgetStage,
+    WorkPackageTokenBudget,
+)
 from app.models.tools import (
     ToolCall,
     ToolDefinition,
@@ -100,7 +124,27 @@ from app.models.verification import (
     VerificationBackend,
     VerificationResult,
 )
+from app.models.work_package import (
+    InterfaceContract,
+    PlanningComplexity,
+    PlanningComplexityAssessment,
+    TaskBudgetAllocation,
+    WorkPackage,
+    WorkPackageActivationMode,
+    WorkPackagePlan,
+)
 from app.models.worker import ParallelWorkerWaveResult, WorkerTaskResult
+from app.models.workflow import (
+    WorkflowActivationMode,
+    WorkflowDefinition,
+    WorkflowExecutionMode,
+    WorkflowExecutionRecord,
+    WorkflowId,
+    WorkflowMatch,
+    WorkflowRoute,
+    WorkflowStepResult,
+    WorkflowStepStatus,
+)
 
 __all__ = [
     "AgentMessage",
@@ -110,8 +154,11 @@ __all__ = [
     "AgentUsageSummary",
     "CheckResult",
     "CheckType",
+    "CheckpointReason",
     "ContextBudget",
+    "ContextContinuationState",
     "ContextFile",
+    "ContextFileDigest",
     "ContextPacket",
     "ContextScopeKind",
     "ContextScopeMatch",
@@ -125,11 +172,22 @@ __all__ = [
     "DAGTaskFrontierState",
     "DAGTaskReconciliationRecord",
     "DeveloperRunResult",
+    "DeveloperExecutionBudget",
     "DeveloperStopReason",
     "DockerSandboxPolicy",
     "FailureReport",
     "FailureSource",
     "FailureType",
+    "InterfaceContractGate",
+    "InterfaceContractState",
+    "RoleTokenUsage",
+    "PlanningTokenBudget",
+    "RunTokenBudget",
+    "RunTokenBudgetStatus",
+    "StageTokenBudget",
+    "TaskBudgetStatus",
+    "TokenBudgetStage",
+    "WorkPackageTokenBudget",
     "HumanGateDecision",
     "HumanIntegrationDecision",
     "IntegrationGateSnapshot",
@@ -149,6 +207,8 @@ __all__ = [
     "ParallelWorkerWaveResult",
     "PersistedRuntimeEvent",
     "RecoveryDisposition",
+    "RepairProgressEvidence",
+    "RepairProgressStatus",
     "RepairRunResult",
     "RepairStopReason",
     "ReviewDecision",
@@ -165,6 +225,8 @@ __all__ = [
     "SchedulerSnapshot",
     "SingleTaskRunResult",
     "TaskContract",
+    "TaskCheckpoint",
+    "TaskContinuationSummary",
     "TaskDAG",
     "TaskDispatchEnvelope",
     "TaskDispatchReceipt",
@@ -192,5 +254,21 @@ __all__ = [
     "WorkerDispatchPhase",
     "WorkerExecutionEvidence",
     "WorkerExecutionStatus",
+    "WorkflowDefinition",
+    "WorkflowActivationMode",
+    "WorkflowExecutionMode",
+    "WorkflowExecutionRecord",
+    "WorkflowId",
+    "WorkflowMatch",
+    "WorkflowRoute",
+    "WorkflowStepResult",
+    "WorkflowStepStatus",
     "WorkerTaskResult",
+    "InterfaceContract",
+    "PlanningComplexity",
+    "PlanningComplexityAssessment",
+    "TaskBudgetAllocation",
+    "WorkPackage",
+    "WorkPackageActivationMode",
+    "WorkPackagePlan",
 ]

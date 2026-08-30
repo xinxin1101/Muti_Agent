@@ -56,9 +56,7 @@ class DAGScheduler:
 
     def task_ids_in_state(self, state: TaskScheduleState) -> tuple[str, ...]:
         return tuple(
-            task_id
-            for task_id in self._dag.topological_order()
-            if self._states[task_id] is state
+            task_id for task_id in self._dag.topological_order() if self._states[task_id] is state
         )
 
     def ready_task_ids(self) -> tuple[str, ...]:

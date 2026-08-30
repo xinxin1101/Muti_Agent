@@ -146,8 +146,7 @@ class IntegrationConflictRepairService:
             remaining = self._unmerged_paths(repair_workspace)
             if remaining:
                 raise IntegrationRepairError(
-                    "integration repair left unresolved Git index stages: "
-                    + ", ".join(remaining)
+                    "integration repair left unresolved Git index stages: " + ", ".join(remaining)
                 )
 
             verification = self._verifier.verify(task, workspace=repair_workspace)
@@ -281,8 +280,7 @@ class IntegrationConflictRepairService:
             objective=(
                 "Resolve only the already-classified Git integration conflicts for this task. "
                 "Preserve the intended task behavior and both sides' compatible changes. Do not "
-                "edit non-conflicting files. Original objective: "
-                + task.objective
+                "edit non-conflicting files. Original objective: " + task.objective
             ),
             readable_files=list(
                 dict.fromkeys([*task.readable_files, *task.writable_files, *conflict_paths])
@@ -296,10 +294,7 @@ class IntegrationConflictRepairService:
 
     @staticmethod
     def _repair_staging_ref(run_id: UUID, gate: IntegrationGateSnapshot) -> str:
-        return (
-            f"refs/devflow/integration-repairs/{run_id.hex}/"
-            f"{gate.conflict_marker_commit}"
-        )
+        return f"refs/devflow/integration-repairs/{run_id.hex}/{gate.conflict_marker_commit}"
 
     def _repair_path(self, run_id: UUID, task_id: str) -> Path:
         slug = re.sub(r"[^A-Za-z0-9_-]+", "-", task_id).strip("-_").lower() or "task"
@@ -377,9 +372,7 @@ class IntegrationConflictRepairService:
         if current is None:
             return
         if current != repair_commit:
-            raise PersistenceConflictError(
-                "integration repair staging ref changed before cleanup"
-            )
+            raise PersistenceConflictError("integration repair staging ref changed before cleanup")
         deleted = self._git(
             workspace,
             ["update-ref", "-d", staging_ref, repair_commit],
@@ -485,10 +478,14 @@ class IntegrationConflictRepairService:
         evidence: IntegrationConflictRepairEvidence,
         branch_name: str,
     ) -> None:
-        parents = self._git(
-            workspace,
-            ["show", "-s", "--format=%P", evidence.repair_commit],
-        ).stdout.strip().split()
+        parents = (
+            self._git(
+                workspace,
+                ["show", "-s", "--format=%P", evidence.repair_commit],
+            )
+            .stdout.strip()
+            .split()
+        )
         if tuple(parents) != (evidence.integration_head, evidence.task_commit):
             raise PersistenceCorruptionError("persisted integration repair commit parents changed")
         message = self._git(

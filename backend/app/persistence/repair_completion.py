@@ -92,10 +92,7 @@ class RepairAwarePostgresMultiTaskCompletionStore(PostgresMultiTaskCompletionSto
                     raise PersistenceCorruptionError(
                         f"integration repair evidence {row.id} failed validation"
                     ) from exc
-                if (
-                    repair.conflict_evidence_fingerprint
-                    == attempt.conflict_evidence_fingerprint
-                ):
+                if repair.conflict_evidence_fingerprint == attempt.conflict_evidence_fingerprint:
                     repair_matches.append(repair)
                 continue
 
@@ -137,9 +134,7 @@ class RepairAwarePostgresMultiTaskCompletionStore(PostgresMultiTaskCompletionSto
         }
         for field, expected in expected_repair.items():
             if getattr(repair, field) != expected:
-                raise PersistenceConflictError(
-                    f"terminal repair evidence binding changed: {field}"
-                )
+                raise PersistenceConflictError(f"terminal repair evidence binding changed: {field}")
 
         decision = decision_matches[0]
         if decision.decision is not HumanGateDecision.AUTHORIZE_REPAIR:
