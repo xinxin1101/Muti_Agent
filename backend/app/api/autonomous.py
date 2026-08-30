@@ -21,6 +21,7 @@ from app.api.service import (
     ProductWorkspaceNotReadyError,
     _DiffCommitPair,
 )
+from app.context.token_estimator import TokenEstimator
 from app.dispatch.errors import TaskDispatchBrokerError
 from app.models.agent import AgentRole
 from app.models.dag import TaskDAG
@@ -134,6 +135,7 @@ class AutonomousProductRuntimeService(ProductRuntimeServiceWithGitHubPublication
         *,
         requirement_planner: RequirementPlanner | None,
         planning_budget_store: PostgresPlanningTokenBudgetStore | None = None,
+        token_estimator: TokenEstimator | None = None,
         failure_explainer: FailureExplanationService | None = None,
         run_controller: ProductRunController | None = None,
         **kwargs,
@@ -141,6 +143,7 @@ class AutonomousProductRuntimeService(ProductRuntimeServiceWithGitHubPublication
         super().__init__(**kwargs)
         self._requirement_planner = requirement_planner
         self._planning_budget_store = planning_budget_store
+        self._token_estimator = token_estimator or TokenEstimator()
         self._requirement_workflow_matcher = RequirementWorkflowMatcher()
         self._failure_explainer = failure_explainer
         self._run_controller = run_controller
@@ -327,6 +330,7 @@ class AutonomousProductRuntimeService(ProductRuntimeServiceWithGitHubPublication
                 driver=driver,
                 budget_store=self._planning_budget_store,
                 launch_id=launch_id,
+                token_estimator=self._token_estimator,
             )
         )
 

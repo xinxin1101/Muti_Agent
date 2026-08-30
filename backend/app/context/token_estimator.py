@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.models.agent import AgentRequest
 
 
 def _is_cjk(character: str) -> bool:
@@ -59,3 +64,38 @@ class TokenEstimator:
     def estimate_messages(self, contents: list[str] | tuple[str, ...]) -> int:
         return self.billable_token_estimate("\n".join(contents))
 
+    def estimate_agent_request(self, request: AgentRequest) -> int:
+        """Estimate the complete provider payload before a reservation is made.
+
+        Tool definitions and assistant tool-call arguments are provider input too.  Omitting
+        them under-reserves the very turns that often contain large ``write_file`` or
+        ``apply_patch`` payloads.  This estimate remains advisory; provider ``usage`` is still
+        the sole settlement value.
+        """
+
+        parts = [f"role={request.role.value}", f"model={request.model}"]
+        for message in request.messages:
+            parts.extend((
+                f"message_role={message.role.value}",
+                f"message_content={message.content}",
+                f"tool_call_id={message.tool_call_id or ''}",
+            ))
+            for call in message.tool_calls:
+                parts.extend((
+                    f"tool_call_id={call.id}",
+                    f"tool_call_name={call.name}",
+                    f"tool_call_arguments={call.arguments}",
+                ))
+        for tool in request.tools:
+            parameters = json.dumps(
+                tool.parameters,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            parts.extend((
+                f"tool_name={tool.name}",
+                f"tool_description={tool.description}",
+                f"tool_parameters={parameters}",
+            ))
+        return self.estimate_messages(parts)

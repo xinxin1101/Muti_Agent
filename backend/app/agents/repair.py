@@ -8,6 +8,7 @@ from time import monotonic
 from app.agents.errors import RepairBudgetExhaustedError
 from app.context.projector import AgentContextProjector
 from app.context.retention import AgentContextRetention
+from app.context.token_estimator import TokenEstimator
 from app.models.agent import (
     AgentMessage,
     AgentRequest,
@@ -196,6 +197,7 @@ class RepairAgent:
                     context_compacted_tool_groups=(
                         retention.compacted_group_count if self._context_compaction_enabled else 0
                     ),
+                    estimated_prompt_tokens=TokenEstimator().estimate_agent_request(request),
                 )
 
             prompt_tokens += response.usage.prompt_tokens
@@ -362,19 +364,9 @@ class RepairAgent:
             "Your final message is not a success verdict. Locate failure code with search_code "
             "or search_code_many, then prefer read_symbol or read_range before whole-file reads."
         )
-        evidence_json = json.dumps(
-            [failure.model_dump(mode="json") for failure in failures],
-            ensure_ascii=False,
-            indent=2,
-        )
-        if len(evidence_json) > self._max_evidence_chars:
-            evidence_json = (
-                evidence_json[: self._max_evidence_chars]
-                + "\n...<failure evidence truncated by DevFlow>"
-            )
-
         if context_packet is None:
             task_context = f"Original validated TaskContract:\n{task.model_dump_json(indent=2)}"
+            evidence_section = self._failure_evidence_json(failures)
         else:
             if self._role_context_projection_enabled:
                 context_view = AgentContextProjector.repair(context_packet, failures)
@@ -382,18 +374,35 @@ class RepairAgent:
                     "Role-minimal RepairContextView from the current worktree state:\n"
                     f"{context_view.model_dump_json(indent=2)}"
                 )
+                # ``target_failures`` is already present in RepairContextView. Do not pay for a
+                # second copy of the same untrusted FailureReport payload.
+                evidence_section = "Failure details are included once in target_failures above."
             else:
                 task_context = "ContextPacket:\n" + context_packet.model_dump_json(indent=2)
+                evidence_section = self._failure_evidence_json(failures)
         user_prompt = (
             f"Perform targeted repair attempt {attempt} of {task.max_retries}.\n\n"
             f"{task_context}\n\n"
             "Targeted FailureReport evidence:\n"
-            f"{evidence_json}"
+            f"{evidence_section}"
         )
         return [
             AgentMessage(role=MessageRole.SYSTEM, content=system_prompt),
             AgentMessage(role=MessageRole.USER, content=user_prompt),
         ]
+
+    def _failure_evidence_json(self, failures: Sequence[FailureReport]) -> str:
+        evidence_json = json.dumps(
+            [failure.model_dump(mode="json") for failure in failures],
+            ensure_ascii=False,
+            indent=2,
+        )
+        if len(evidence_json) > self._max_evidence_chars:
+            return (
+                evidence_json[: self._max_evidence_chars]
+                + "\n...<failure evidence truncated by DevFlow>"
+            )
+        return evidence_json
 
     @staticmethod
     def _validate_context_packet(

@@ -27,13 +27,28 @@ def upgrade() -> None:
         sa.Column("used_total_tokens", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("reserved_tokens", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("status", sa.String(length=16), nullable=False, server_default="NORMAL"),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
         sa.ForeignKeyConstraint(["run_id"], ["runs.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("run_id"),
         sa.CheckConstraint("total_budget_tokens > 0", name="ck_run_token_budgets_total_positive"),
-        sa.CheckConstraint("used_prompt_tokens >= 0 AND used_completion_tokens >= 0 AND used_total_tokens >= 0 AND reserved_tokens >= 0", name="ck_run_token_budgets_nonnegative"),
-        sa.CheckConstraint("used_total_tokens = used_prompt_tokens + used_completion_tokens", name="ck_run_token_budgets_total_shape"),
-        sa.CheckConstraint("status IN ('NORMAL', 'WARNING', 'CRITICAL', 'EXHAUSTED')", name="ck_run_token_budgets_status"),
+        sa.CheckConstraint(
+            "used_prompt_tokens >= 0 AND used_completion_tokens >= 0 "
+            "AND used_total_tokens >= 0 AND reserved_tokens >= 0",
+            name="ck_run_token_budgets_nonnegative",
+        ),
+        sa.CheckConstraint(
+            "used_total_tokens = used_prompt_tokens + used_completion_tokens",
+            name="ck_run_token_budgets_total_shape",
+        ),
+        sa.CheckConstraint(
+            "status IN ('NORMAL', 'WARNING', 'CRITICAL', 'EXHAUSTED')",
+            name="ck_run_token_budgets_status",
+        ),
     )
     op.create_table(
         "run_token_reservations",
@@ -43,11 +58,22 @@ def upgrade() -> None:
         sa.Column("role", sa.String(length=16), nullable=False),
         sa.Column("reserved_input_tokens", sa.Integer(), nullable=False),
         sa.Column("reserved_output_tokens", sa.Integer(), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
         sa.ForeignKeyConstraint(["run_id"], ["runs.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("reservation_id"),
-        sa.CheckConstraint("reserved_input_tokens >= 0 AND reserved_output_tokens > 0", name="ck_run_token_reservations_values"),
-        sa.CheckConstraint("role IN ('planner', 'developer', 'reviewer', 'repair')", name="ck_run_token_reservations_role"),
+        sa.CheckConstraint(
+            "reserved_input_tokens >= 0 AND reserved_output_tokens > 0",
+            name="ck_run_token_reservations_values",
+        ),
+        sa.CheckConstraint(
+            "role IN ('planner', 'developer', 'reviewer', 'repair')",
+            name="ck_run_token_reservations_role",
+        ),
     )
     op.create_index("ix_run_token_reservations_run", "run_token_reservations", ["run_id"])
     op.create_table(
@@ -58,12 +84,27 @@ def upgrade() -> None:
         sa.Column("completion_tokens", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("total_tokens", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("call_count", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
         sa.ForeignKeyConstraint(["run_id"], ["runs.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("run_id", "role"),
-        sa.CheckConstraint("prompt_tokens >= 0 AND completion_tokens >= 0 AND total_tokens >= 0 AND call_count >= 0", name="ck_run_token_role_usage_nonnegative"),
-        sa.CheckConstraint("total_tokens = prompt_tokens + completion_tokens", name="ck_run_token_role_usage_total_shape"),
-        sa.CheckConstraint("role IN ('planner', 'developer', 'reviewer', 'repair')", name="ck_run_token_role_usage_role"),
+        sa.CheckConstraint(
+            "prompt_tokens >= 0 AND completion_tokens >= 0 "
+            "AND total_tokens >= 0 AND call_count >= 0",
+            name="ck_run_token_role_usage_nonnegative",
+        ),
+        sa.CheckConstraint(
+            "total_tokens = prompt_tokens + completion_tokens",
+            name="ck_run_token_role_usage_total_shape",
+        ),
+        sa.CheckConstraint(
+            "role IN ('planner', 'developer', 'reviewer', 'repair')",
+            name="ck_run_token_role_usage_role",
+        ),
     )
 
 

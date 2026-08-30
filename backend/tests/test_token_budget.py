@@ -15,6 +15,7 @@ from app.models.agent import (
 from app.models.dag import TaskDAG, TaskNode
 from app.models.failure import FailureType
 from app.models.task import TaskContract
+from app.models.tools import ToolCall, ToolDefinition
 from app.models.work_package import PlanningComplexity, TaskBudgetAllocation
 from app.persistence.planning_budget import (
     PlanningTokenBudgetReservation,
@@ -129,6 +130,37 @@ async def test_budgeted_driver_reserves_before_call_and_settles_actual_usage() -
     assert store.reserved == (200, 400)
     assert store.has_progress is True
     assert store.settled == response.usage
+
+
+@pytest.mark.anyio
+async def test_budgeted_driver_reserves_large_tool_call_arguments() -> None:
+    store = _BudgetStore()
+    request = AgentRequest(
+        role=AgentRole.DEVELOPER,
+        model="example/model",
+        messages=[
+            AgentMessage(
+                role=MessageRole.ASSISTANT,
+                tool_calls=[ToolCall(id="write", name="write_file", arguments="x" * 20_000)],
+            )
+        ],
+        max_output_tokens=400,
+        tools=[
+            ToolDefinition(
+                name="write_file",
+                description="write source",
+                parameters={"type": "object", "properties": {"content": {"type": "string"}}},
+            )
+        ],
+    )
+    driver = BudgetedAgentDriver(
+        driver=_Driver(), budget_store=store, run_id=uuid4(), task_id="task-a"  # type: ignore[arg-type]
+    )
+
+    await driver.complete(request)
+
+    assert store.reserved is not None
+    assert store.reserved[0] > 5_000
 
 
 @pytest.mark.anyio

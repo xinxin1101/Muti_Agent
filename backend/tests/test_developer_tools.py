@@ -9,6 +9,7 @@ from app.agents import DeveloperAgent
 from app.models import (
     AgentResponse,
     DeveloperStopReason,
+    MessageRole,
     TaskContract,
     TokenUsage,
     ToolCall,
@@ -141,6 +142,8 @@ def test_repository_tools_support_bounded_range_and_python_symbol_reads(tmp_path
     assert symbol_result.ok is True
     payload = json.loads(symbol_result.content)
     assert payload["symbol"] == "Game.play"
+    assert payload["requested_start_line"] == 4
+    assert payload["returned_end_line"] == 5
     assert "import os" in payload["content"]
     assert "def play" in payload["content"]
 
@@ -167,6 +170,41 @@ def test_progressive_read_tools_preserve_scope_and_validate_ranges(tmp_path: Pat
     assert internal.error_code is ToolErrorCode.PATH_DENIED
     assert invalid.error_code is ToolErrorCode.INVALID_ARGUMENTS
     assert unsupported.error_code is ToolErrorCode.INVALID_ARGUMENTS
+
+
+def test_progressive_reads_report_actual_visible_ranges_after_truncation(tmp_path: Path) -> None:
+    root = _make_repository(tmp_path)
+    source = "".join(f"VALUE_{index} = {'x' * 200}\n" for index in range(120))
+    (root / "app" / "large.py").write_text(source, encoding="utf-8")
+    toolbox = RepositoryToolbox(workspace=LocalGitWorkspace(root), task=_task())
+
+    result = toolbox.execute(
+        _call(
+            "large-range",
+            "read_range",
+            {"path": "app/large.py", "start_line": 1, "end_line": 120},
+        )
+    )
+
+    assert result.ok is True
+    payload = json.loads(result.content)
+    assert payload["requested_start_line"] == 1
+    assert payload["requested_end_line"] == 120
+    assert payload["returned_end_line"] < payload["requested_end_line"]
+    assert payload["truncated"] is True
+
+    symbol_source = "def huge():\n" + "".join(
+        f"    item_{index} = {'x' * 200}\n" for index in range(120)
+    )
+    (root / "app" / "large.py").write_text(symbol_source, encoding="utf-8")
+    symbol = toolbox.execute(
+        _call("huge-symbol", "read_symbol", {"path": "app/large.py", "symbol": "huge"})
+    )
+
+    assert symbol.ok is True
+    symbol_payload = json.loads(symbol.content)
+    assert symbol_payload["requested_end_line"] > symbol_payload["returned_end_line"]
+    assert symbol_payload["truncated"] is True
 
 
 def test_repository_tools_treat_missing_listing_directory_as_empty(tmp_path: Path) -> None:
@@ -430,6 +468,40 @@ def test_developer_compacts_old_complete_tool_groups_without_orphans(tmp_path: P
     assert [message.tool_call_id for message in tool_messages] == ["read-2", "read-3"]
     assert [message.tool_calls[0].id for message in assistant_calls] == ["read-2", "read-3"]
     assert any("compact working state" in message.content for message in final_request.messages)
+
+
+def test_developer_retains_only_two_of_ten_tool_groups_with_bounded_digest(tmp_path: Path) -> None:
+    root = _make_repository(tmp_path)
+    workspace = LocalGitWorkspace(root)
+    responses = [
+        _response(tool_calls=[_call(f"read-{index}", "read_file", {"path": "app/main.py"})])
+        for index in range(1, 12)
+    ] + [_response(content="done")]
+    driver = FakeDriver(responses)
+
+    result = asyncio.run(
+        DeveloperAgent(driver=driver, model="test/developer", max_iterations=12).run(
+            _task(), workspace=workspace
+        )
+    )
+
+    assert result.stop_reason is DeveloperStopReason.MODEL_STOP
+    final_request = driver.requests[-1]
+    tool_messages = [
+        message for message in final_request.messages if message.role is MessageRole.TOOL
+    ]
+    assistant_messages = [
+        message
+        for message in final_request.messages
+        if message.role is MessageRole.ASSISTANT and message.tool_calls
+    ]
+    assert [item.tool_call_id for item in tool_messages] == ["read-10", "read-11"]
+    assert [item.tool_calls[0].id for item in assistant_messages] == ["read-10", "read-11"]
+    digest_message = next(
+        message for message in final_request.messages if "compact working state" in message.content
+    )
+    assert '"source_hash"' in digest_message.content
+    assert len(final_request.messages) < 10
 
 
 def test_developer_agent_verifies_scoped_changes_after_iteration_budget(tmp_path: Path) -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from hashlib import sha256
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -16,6 +17,7 @@ class AgentWorkingState(BaseModel):
 
     task_id: str = Field(min_length=1, max_length=128)
     inspected_files: tuple[str, ...] = Field(default_factory=tuple, max_length=100)
+    inspected_file_hashes: tuple[str, ...] = Field(default_factory=tuple, max_length=100)
     relevant_symbols: tuple[str, ...] = Field(default_factory=tuple, max_length=100)
     observed_ranges: tuple[str, ...] = Field(default_factory=tuple, max_length=100)
     changed_files: tuple[str, ...] = Field(default_factory=tuple, max_length=100)
@@ -23,6 +25,27 @@ class AgentWorkingState(BaseModel):
     pending_actions: tuple[str, ...] = Field(default_factory=tuple, max_length=30)
     unresolved_questions: tuple[str, ...] = Field(default_factory=tuple, max_length=30)
     recent_errors: tuple[str, ...] = Field(default_factory=tuple, max_length=12)
+    observations: tuple[ToolObservationDigest, ...] = Field(default_factory=tuple, max_length=40)
+
+
+class ToolObservationDigest(BaseModel):
+    """Bounded, non-authoritative summary of a Tool result used after compaction.
+
+    Source code and raw Tool results deliberately remain out of this digest and out of Trace.
+    Git remains code truth and deterministic verification remains correctness evidence.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    tool: str = Field(min_length=1, max_length=128)
+    path: str | None = Field(default=None, max_length=500)
+    symbol: str | None = Field(default=None, max_length=300)
+    requested_range: str | None = Field(default=None, max_length=64)
+    returned_range: str | None = Field(default=None, max_length=64)
+    source_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    truncated: bool = False
+    error: str | None = Field(default=None, max_length=128)
+    search_hits: tuple[str, ...] = Field(default_factory=tuple, max_length=5)
 
 
 @dataclass(frozen=True)
@@ -35,16 +58,21 @@ class ToolCallGroup:
 class _StateBuilder:
     task_id: str
     inspected_files: set[str] = field(default_factory=set)
+    inspected_file_hashes: dict[str, str] = field(default_factory=dict)
     relevant_symbols: set[str] = field(default_factory=set)
     observed_ranges: set[str] = field(default_factory=set)
     changed_files: set[str] = field(default_factory=set)
     confirmed_facts: list[str] = field(default_factory=list)
     recent_errors: list[str] = field(default_factory=list)
+    observations: list[ToolObservationDigest] = field(default_factory=list)
 
     def snapshot(self) -> AgentWorkingState:
         return AgentWorkingState(
             task_id=self.task_id,
             inspected_files=tuple(sorted(self.inspected_files))[:100],
+            inspected_file_hashes=tuple(
+                f"{path}:{digest}" for path, digest in sorted(self.inspected_file_hashes.items())
+            )[:100],
             relevant_symbols=tuple(sorted(self.relevant_symbols))[:100],
             observed_ranges=tuple(sorted(self.observed_ranges))[:100],
             changed_files=tuple(sorted(self.changed_files))[:100],
@@ -52,6 +80,7 @@ class _StateBuilder:
             pending_actions=(),
             unresolved_questions=(),
             recent_errors=tuple(self.recent_errors[-12:]),
+            observations=tuple(self.observations[-40:]),
         )
 
 
@@ -120,13 +149,24 @@ class AgentContextRetention:
         return messages
 
     def _observe(self, call: ToolCall, result: ToolExecutionResult) -> None:
+        source_hash = sha256(result.content.encode("utf-8")).hexdigest()
         if not result.ok:
             self._state.recent_errors.append(f"{call.name}: {result.error_code or 'ERROR'}")
+            self._state.observations.append(
+                ToolObservationDigest(
+                    tool=call.name,
+                    source_hash=source_hash,
+                    error=(result.error_code.value if result.error_code is not None else "ERROR"),
+                )
+            )
             return
         try:
             payload = json.loads(result.content)
         except json.JSONDecodeError:
             self._state.confirmed_facts.append(f"{call.name} completed")
+            self._state.observations.append(
+                ToolObservationDigest(tool=call.name, source_hash=source_hash)
+            )
             return
         if not isinstance(payload, dict):
             return
@@ -134,17 +174,51 @@ class AgentContextRetention:
             for item in payload.get("files", []):
                 if isinstance(item, dict) and isinstance(item.get("path"), str):
                     self._state.inspected_files.add(item["path"])
+                    self._state.inspected_file_hashes[item["path"]] = source_hash
         elif isinstance(payload.get("path"), str):
             self._state.inspected_files.add(payload["path"])
+            self._state.inspected_file_hashes[payload["path"]] = source_hash
         if isinstance(payload.get("symbol"), str):
             self._state.relevant_symbols.add(payload["symbol"])
-        if isinstance(payload.get("start_line"), int) and isinstance(payload.get("end_line"), int):
+        if isinstance(payload.get("returned_start_line"), int) and isinstance(
+            payload.get("returned_end_line"), int
+        ):
             path = payload.get("path", "")
             self._state.observed_ranges.add(
-                f"{path}:{payload['start_line']}-{payload['end_line']}"
+                f"{path}:{payload['returned_start_line']}-{payload['returned_end_line']}"
             )
         if call.name in {"write_file", "apply_patch"} and isinstance(payload.get("path"), str):
             self._state.changed_files.add(payload["path"])
         if call.name.startswith("search_code"):
             self._state.confirmed_facts.append(f"{call.name} completed")
+        requested_range = self._range(payload, "requested")
+        returned_range = self._range(payload, "returned")
+        self._state.observations.append(
+            ToolObservationDigest(
+                tool=call.name,
+                path=payload.get("path") if isinstance(payload.get("path"), str) else None,
+                symbol=payload.get("symbol") if isinstance(payload.get("symbol"), str) else None,
+                requested_range=requested_range,
+                returned_range=returned_range,
+                source_hash=source_hash,
+                truncated=bool(payload.get("truncated", False)),
+                search_hits=self._search_hits(payload),
+            )
+        )
 
+    @staticmethod
+    def _range(payload: dict[str, object], prefix: str) -> str | None:
+        start = payload.get(f"{prefix}_start_line")
+        end = payload.get(f"{prefix}_end_line")
+        return f"{start}-{end}" if isinstance(start, int) and isinstance(end, int) else None
+
+    @staticmethod
+    def _search_hits(payload: dict[str, object]) -> tuple[str, ...]:
+        matches = payload.get("matches")
+        if not isinstance(matches, list):
+            return ()
+        hits = []
+        for item in matches[:5]:
+            if isinstance(item, dict) and isinstance(item.get("path"), str):
+                hits.append(f"{item['path']}:{item.get('line', '?')}")
+        return tuple(hits)

@@ -8,6 +8,7 @@ from app.api.catalog import PostgresProductCatalog
 from app.api.failure_explanation import FailureExplanationService
 from app.api.hardened import HardenedOperatorAwareAutonomousProductRuntimeService
 from app.api.repository_context import RepositoryPlanningContextBuilder
+from app.context.token_estimator import TokenEstimator
 from app.core.settings import Settings
 from app.dispatch import DurableDramatiqTaskDispatcher
 from app.models.sandbox import DockerSandboxPolicy
@@ -290,6 +291,7 @@ def build_product_service(
         token_budget_store=token_budget_store,
         interface_contract_registry=interface_contract_registry,
         planning_budget_store=planning_budget_store,
+        token_estimator=TokenEstimator(safety_factor=settings.token_estimate_safety_factor),
         workflow_activation_mode=settings.workflow_activation_mode,
         work_package_activation_mode=settings.work_package_activation_mode,
         publication_store=publication_store,

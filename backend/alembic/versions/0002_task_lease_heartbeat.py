@@ -41,7 +41,7 @@ def upgrade() -> None:
     op.create_check_constraint(
         "ck_tasks_lease_shape",
         "tasks",
-        "(" 
+        "("
         "lease_owner IS NULL AND lease_dispatch_id IS NULL "
         "AND lease_acquired_at IS NULL AND heartbeat_at IS NULL "
         "AND lease_until IS NULL AND lease_released_at IS NULL"

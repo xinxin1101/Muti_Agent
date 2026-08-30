@@ -7,6 +7,7 @@ from functools import lru_cache
 from uuid import UUID, uuid4
 
 from app.agents import DeveloperAgent, RepairAgent, ReviewerAgent
+from app.context.token_estimator import TokenEstimator
 from app.core.settings import Settings, get_settings
 from app.models.dispatch import TaskDispatchEnvelope, WorkerExecutionEvidence
 from app.models.sandbox import DockerSandboxPolicy
@@ -172,6 +173,9 @@ def build_budgeted_runner_factory(
                     budget_store=budget_store,
                     run_id=run_id,
                     task_id=task.task_id,
+                    token_estimator=TokenEstimator(
+                        safety_factor=settings.token_estimate_safety_factor
+                    ),
                 ),
             )
 
@@ -309,6 +313,9 @@ async def execute_task_from_settings(
                     budget_store=token_budget_store,
                     run_id=envelope.run_id,
                     task_id="integration",
+                    token_estimator=TokenEstimator(
+                        safety_factor=settings.token_estimate_safety_factor
+                    ),
                 ),
                 model=settings.developer_model,
                 max_iterations=settings.developer_max_iterations,

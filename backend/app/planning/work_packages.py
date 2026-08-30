@@ -67,18 +67,15 @@ class WorkPackagePlanValidator:
                 f"WorkPackagePlan contains {len(plan.packages)} packages; maximum is {max_tasks}."
             )
         delivery_layers = self._delivery_layers(requirement)
-        requires_multi = (
-            self._requires_multi_package(delivery_layers)
-            if self._adaptive_routing_enabled
-            else len(requirement.strip()) > 180 or len(delivery_layers) >= 2
-        )
-        if requires_multi and len(plan.packages) < 3:
+        if (
+            not self._adaptive_routing_enabled
+            and len(requirement.strip()) > 180
+            and len(plan.packages) < 3
+        ):
             raise WorkPackagePlanError(
-                "The requirement spans multiple delivery layers and must be split into at least "
-                "core, interface, and test/integration work packages."
+                "Legacy routing requires a long requirement to be split into at least three "
+                "packages."
             )
-        if requires_multi:
-            self._validate_required_package_roles(plan)
         produced_by = {
             interface: package.package_id
             for package in plan.packages
@@ -175,10 +172,6 @@ class WorkPackagePlanValidator:
         )
 
     @staticmethod
-    def _requires_multi_package(delivery_layers: tuple[str, ...]) -> bool:
-        return len(delivery_layers) >= 2
-
-    @staticmethod
     def _routing_audit(
         plan: WorkPackagePlan,
         delivery_layers: tuple[str, ...],
@@ -190,14 +183,26 @@ class WorkPackagePlanValidator:
             if "/" in path
         }
         dependencies = sum(len(package.consumes) for package in plan.packages)
+        verification_sets = {
+            tuple(sorted(package.verification_commands)) for package in plan.packages
+        }
+        parallel_packages = sum(not package.consumes for package in plan.packages)
+        readable_by_package = [set(package.readable_paths) for package in plan.packages]
+        overlap = sum(
+            bool(left & right)
+            for index, left in enumerate(readable_by_package)
+            for right in readable_by_package[index + 1 :]
+        )
         reasons = [f"delivery_layers={','.join(delivery_layers) or 'none'}"]
         reasons.append(f"owned_path_roots={len(owned_roots)}")
         reasons.append(f"declared_interface_dependencies={dependencies}")
+        reasons.append(f"independent_verification_sets={len(verification_sets)}")
+        reasons.append(f"parallel_candidates={parallel_packages}; readable_overlap={overlap}")
         if len(plan.packages) == 1:
-            reasons.append("one bounded deliverable; kept as a single package")
+            reasons.append("one bounded ownership/interface boundary; kept as a single package")
             mode = WorkPackageRoutingMode.SINGLE
         else:
-            reasons.append("independent file/interface boundaries require multiple packages")
+            reasons.append("Planner declared independent ownership/interface boundaries")
             mode = WorkPackageRoutingMode.MULTI
         return WorkPackageRoutingAudit(
             mode=mode,

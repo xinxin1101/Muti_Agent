@@ -146,6 +146,10 @@ jobs:
             echo "API unexpectedly started against an unmigrated database"
             exit 1
           fi
+          # Preserve the actual startup failure in Actions logs. This gate specifically proves
+          # the schema guard, rather than hiding an earlier import/configuration exception.
+          echo "$output"
+          echo "$output" | grep -F "DatabaseSchemaNotReadyError"
           echo "$output" | grep -F "alembic upgrade head"
 
       - name: Apply migrations from backend cwd using repository .env

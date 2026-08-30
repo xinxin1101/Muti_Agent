@@ -169,6 +169,8 @@ def _stage_performance_metrics(snapshot: PersistedRunSnapshot) -> ProductStagePe
     repository_tool_latency_ms = 0
     verification_latency_ms = 0
     context_estimated_tokens = 0
+    estimated_prompt_tokens = 0
+    actual_prompt_tokens = 0
     context_reused_files = 0
     context_trimmed_files = 0
     context_compacted_tool_groups = 0
@@ -181,6 +183,8 @@ def _stage_performance_metrics(snapshot: PersistedRunSnapshot) -> ProductStagePe
             for span in decoded.spans:
                 if span.kind is TraceSpanKind.AGENT_TURN:
                     context_estimated_tokens += span.context_estimated_tokens
+                    estimated_prompt_tokens += span.estimated_prompt_tokens
+                    actual_prompt_tokens += span.prompt_tokens
                     context_reused_files += span.context_reused_files
                     context_trimmed_files += span.context_trimmed_files
                     context_compacted_tool_groups += span.context_compacted_tool_groups
@@ -199,6 +203,11 @@ def _stage_performance_metrics(snapshot: PersistedRunSnapshot) -> ProductStagePe
         repository_tool_latency_ms=repository_tool_latency_ms,
         verification_latency_ms=verification_latency_ms,
         context_estimated_tokens=context_estimated_tokens,
+        estimated_prompt_tokens=estimated_prompt_tokens,
+        actual_prompt_tokens=actual_prompt_tokens,
+        prompt_estimate_error_ratio=(
+            abs(estimated_prompt_tokens - actual_prompt_tokens) / max(1, actual_prompt_tokens)
+        ),
         context_reused_files=context_reused_files,
         context_trimmed_files=context_trimmed_files,
         context_compacted_tool_groups=context_compacted_tool_groups,

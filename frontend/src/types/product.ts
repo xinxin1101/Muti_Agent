@@ -196,6 +196,9 @@ export type ProductStagePerformanceMetrics = Readonly<{
   repository_tool_latency_ms: number;
   verification_latency_ms: number;
   context_estimated_tokens: number;
+  estimated_prompt_tokens?: number;
+  actual_prompt_tokens?: number;
+  prompt_estimate_error_ratio?: number;
   context_reused_files: number;
   context_trimmed_files: number;
   context_compacted_tool_groups?: number;

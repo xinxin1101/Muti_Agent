@@ -21,10 +21,12 @@ class PlanningBudgetedAgentDriver:
         driver: AgentDriver,
         budget_store: PostgresPlanningTokenBudgetStore,
         launch_id: UUID,
+        token_estimator: TokenEstimator | None = None,
     ) -> None:
         self._driver = driver
         self._budget_store = budget_store
         self._launch_id = launch_id
+        self._token_estimator = token_estimator or TokenEstimator()
 
     async def complete(self, request: AgentRequest) -> AgentResponse:
         estimate = max(request.context_estimated_tokens, self._estimate_request_tokens(request))
@@ -49,12 +51,5 @@ class PlanningBudgetedAgentDriver:
         await self._budget_store.settle(reservation, response.usage)
         return response
 
-    @staticmethod
-    def _estimate_request_tokens(request: AgentRequest) -> int:
-        estimator = TokenEstimator()
-        return estimator.estimate_messages(
-            [
-                *(message.content for message in request.messages),
-                *(f"{tool.name}\n{tool.description}" for tool in request.tools),
-            ]
-        )
+    def _estimate_request_tokens(self, request: AgentRequest) -> int:
+        return self._token_estimator.estimate_agent_request(request)

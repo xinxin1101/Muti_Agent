@@ -10,7 +10,6 @@ import sqlalchemy as sa
 
 from alembic import op
 
-
 revision: str = "0014_flex_work_package_budgets"
 down_revision: str | None = "0013_contract_budgets"
 branch_labels: str | Sequence[str] | None = None
@@ -72,8 +71,12 @@ def upgrade() -> None:
         sa.Column("borrowed_tokens", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("decision", sa.String(length=64), nullable=False),
         sa.Column("reason", sa.String(length=512), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-        sa.ForeignKeyConstraint(["run_id", "task_id"], ["tasks.run_id", "tasks.task_id"], ondelete="CASCADE"),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
+        sa.ForeignKeyConstraint(
+            ["run_id", "task_id"], ["tasks.run_id", "tasks.task_id"], ondelete="CASCADE"
+        ),
     )
     op.create_index(
         "ix_run_token_budget_decisions_run_task",

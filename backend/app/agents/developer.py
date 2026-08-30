@@ -6,6 +6,7 @@ from time import monotonic
 
 from app.context.projector import AgentContextProjector
 from app.context.retention import AgentContextRetention
+from app.context.token_estimator import TokenEstimator
 from app.models.agent import (
     AgentMessage,
     AgentRequest,
@@ -190,6 +191,7 @@ class DeveloperAgent:
                     context_compacted_tool_groups=(
                         retention.compacted_group_count if self._context_compaction_enabled else 0
                     ),
+                    estimated_prompt_tokens=TokenEstimator().estimate_agent_request(request),
                 )
 
             prompt_tokens += response.usage.prompt_tokens

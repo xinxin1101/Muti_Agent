@@ -118,6 +118,7 @@ class Settings(BaseSettings):
     run_token_budget_tokens: int = Field(default=30_000, ge=1_000, le=10_000_000)
     planner_token_budget_tokens: int = Field(default=4_000, ge=256, le=1_000_000)
     planner_max_attempts: int = Field(default=2, ge=1, le=4)
+    token_estimate_safety_factor: float = Field(default=1.15, ge=1.0, le=2.0)
 
     verification_sandbox_image: str = "devflow-verifier:py311"
     verification_node_sandbox_image: str = "devflow-verifier:node24"

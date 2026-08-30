@@ -89,15 +89,25 @@ def test_converter_rejects_cross_layer_delivery_in_one_package() -> None:
         )
 
 
-def test_multi_layer_requirement_requires_core_interface_and_integration_packages() -> None:
-    plan = WorkPackagePlan(packages=(_package(), _package(package_id="api", produces=("app.Api",))))
+def test_cross_layer_single_subsystem_remains_single_package() -> None:
+    result = WorkPackagePlanValidator().validate_and_convert(
+        WorkPackagePlan(
+            packages=(
+                _package(
+                    package_id="auth",
+                    objective="实现认证模块。",
+                    deliverable="认证服务",
+                    owned_paths=("app/auth.py", "tests/test_auth.py"),
+                    produces=("app.auth.authenticate",),
+                    verification_commands=("pytest tests/test_auth.py -q",),
+                ),
+            )
+        ),
+        requirement="实现 auth.py 与 test_auth.py，包含数据库访问和 API 描述。",
+        max_tasks=8,
+    )
 
-    with pytest.raises(WorkPackagePlanError, match="core, interface, and test/integration"):
-        WorkPackagePlanValidator().validate_and_convert(
-            plan,
-            requirement="实现一个包含 UI、API 和数据库的游戏。",
-            max_tasks=8,
-        )
+    assert result.routing_audit.mode is WorkPackageRoutingMode.SINGLE
 
 
 def test_long_single_deliverable_requirement_does_not_force_multi_package() -> None:
@@ -111,7 +121,7 @@ def test_long_single_deliverable_requirement_does_not_force_multi_package() -> N
     assert result.routing_audit.delivery_layers == ()
 
 
-def test_multi_layer_requirement_rejects_three_packages_without_integration_role() -> None:
+def test_independent_subsystems_with_interface_remain_multi_package() -> None:
     core = _package()
     interface = _package(
         package_id="game-api",
@@ -119,6 +129,7 @@ def test_multi_layer_requirement_rejects_three_packages_without_integration_role
         deliverable="游戏接口路由",
         owned_paths=("app/routes/game.py",),
         produces=("app.GameApi",),
+        consumes=("gomoku.core.GomokuGame",),
     )
     extra = _package(
         package_id="game-ui",
@@ -126,11 +137,14 @@ def test_multi_layer_requirement_rejects_three_packages_without_integration_role
         deliverable="游戏界面组件",
         owned_paths=("web/game.ts",),
         produces=("web.GameView",),
+        consumes=("app.GameApi",),
     )
 
-    with pytest.raises(WorkPackagePlanError, match="core, interface, and test/integration"):
-        WorkPackagePlanValidator().validate_and_convert(
-            WorkPackagePlan(packages=(core, interface, extra)),
-            requirement="实现一个包含 UI、API 和数据库的游戏。",
-            max_tasks=8,
-        )
+    result = WorkPackagePlanValidator().validate_and_convert(
+        WorkPackagePlan(packages=(core, interface, extra)),
+        requirement="实现独立核心、API 接口和前端页面，并通过明确接口连接。",
+        max_tasks=8,
+    )
+
+    assert result.routing_audit.mode is WorkPackageRoutingMode.MULTI
+    assert any("declared_interface_dependencies=" in item for item in result.routing_audit.reasons)

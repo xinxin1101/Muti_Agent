@@ -30,9 +30,8 @@ class RequestRecorder:
 
     def record(self, payload: dict[str, Any]) -> None:
         line = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-        with self._lock:
-            with self._path.open("a", encoding="utf-8") as handle:
-                handle.write(line + "\n")
+        with self._lock, self._path.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
 
 
 class FakeOpenAIHandler(BaseHTTPRequestHandler):
@@ -41,7 +40,7 @@ class FakeOpenAIHandler(BaseHTTPRequestHandler):
     def log_message(self, _format: str, *_args: Any) -> None:
         return
 
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         if self.path == "/healthz":
             self._json_response(200, {"status": "ok"})
             return
@@ -65,7 +64,7 @@ class FakeOpenAIHandler(BaseHTTPRequestHandler):
             return
         self._json_response(404, {"error": {"message": "not found"}})
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         if self.path != "/v1/chat/completions":
             self._json_response(404, {"error": {"message": "not found"}})
             return

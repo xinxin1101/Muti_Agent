@@ -354,18 +354,25 @@ class RepositoryToolbox:
                 ToolErrorCode.NOT_FOUND,
                 f"start_line is outside the file: {args.start_line}",
             )
-        end_line = min(args.end_line, len(lines))
-        content = "".join(lines[args.start_line - 1 : end_line])
-        if len(content) > _MAX_READ_FILE_CHARS:
+        available_end_line = min(args.end_line, len(lines))
+        content = "".join(lines[args.start_line - 1 : available_end_line])
+        character_truncated = len(content) > _MAX_READ_FILE_CHARS
+        if character_truncated:
             content = content[:_MAX_READ_FILE_CHARS]
-            truncated = True
-        else:
-            truncated = end_line < args.end_line
+        # The last line can be partial after the character guard.  It is still visible to the
+        # model, so expose the concrete returned range separately from the requested range.
+        returned_end_line = min(
+            available_end_line,
+            args.start_line + max(0, content.count("\n")),
+        )
+        truncated = character_truncated or available_end_line < args.end_line
         return json.dumps(
             {
                 "path": relative,
-                "start_line": args.start_line,
-                "end_line": end_line,
+                "requested_start_line": args.start_line,
+                "requested_end_line": args.end_line,
+                "returned_start_line": args.start_line,
+                "returned_end_line": returned_end_line,
                 "content": content,
                 "truncated": truncated,
             },
@@ -396,15 +403,26 @@ class RepositoryToolbox:
         preamble = "".join(lines[:preamble_end]) if preamble_end else ""
         body = "".join(lines[region.start_line - 1 : region.end_line])
         content = preamble + ("\n" if preamble and body else "") + body
-        truncated = len(content) > _MAX_READ_FILE_CHARS
+        character_truncated = len(content) > _MAX_READ_FILE_CHARS
+        visible_content = content[:_MAX_READ_FILE_CHARS]
+        # Preamble and body are intentionally disjoint.  For a truncated response the model
+        # cannot be assumed to have seen the declared symbol's end line.
+        body_offset = len(preamble) + (1 if preamble and body else 0)
+        visible_body = visible_content[body_offset:] if len(visible_content) > body_offset else ""
+        returned_end_line = min(
+            region.end_line,
+            region.start_line + max(0, visible_body.count("\n")),
+        )
         return json.dumps(
             {
                 "path": relative,
                 "symbol": region.symbol,
-                "start_line": region.start_line,
-                "end_line": region.end_line,
-                "content": content[:_MAX_READ_FILE_CHARS],
-                "truncated": truncated,
+                "requested_start_line": region.start_line,
+                "requested_end_line": region.end_line,
+                "returned_start_line": region.start_line,
+                "returned_end_line": returned_end_line,
+                "content": visible_content,
+                "truncated": character_truncated,
             },
             ensure_ascii=False,
         )

@@ -7,7 +7,7 @@ from app.context.relevance import (
     RelevantFileSelection,
     RelevantRegionKind,
 )
-from app.context.retention import AgentContextRetention, AgentWorkingState
+from app.context.retention import AgentContextRetention, AgentWorkingState, ToolObservationDigest
 from app.context.token_estimator import TokenEstimator
 
 __all__ = [
@@ -16,6 +16,7 @@ __all__ = [
     "TokenEstimator",
     "AgentContextRetention",
     "AgentWorkingState",
+    "ToolObservationDigest",
     "AgentContextProjector",
     "RelevanceCandidate",
     "RelevantCodeExtractor",
