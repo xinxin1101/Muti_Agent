@@ -164,6 +164,7 @@ def build_product_service(
     token_budget_store = PostgresRunTokenBudgetStore.from_url(
         settings.database_url,
         default_total_budget_tokens=settings.run_token_budget_tokens,
+        adaptive_package_budget_enabled=settings.adaptive_package_budget_enabled,
         echo=settings.database_echo,
     )
     planning_budget_store = PostgresPlanningTokenBudgetStore.from_url(
@@ -198,6 +199,8 @@ def build_product_service(
                 max_model_turn_seconds=settings.developer_max_model_turn_seconds,
                 max_output_tokens=settings.developer_max_output_tokens,
                 enable_thinking=settings.developer_enable_thinking,
+                context_compaction_enabled=settings.context_compaction_enabled,
+                role_context_projection_enabled=settings.role_context_projection_enabled,
             ),
             verifier=DeterministicVerifier(
                 command_timeout_seconds=settings.verification_sandbox_timeout_seconds,
@@ -250,6 +253,7 @@ def build_product_service(
             max_schema_repair_attempts=settings.planner_max_attempts - 1,
             max_output_tokens=settings.planner_max_output_tokens,
             enable_thinking=settings.planner_enable_thinking,
+            adaptive_work_package_routing_enabled=settings.adaptive_work_package_routing_enabled,
         )
     )
     publication_token = settings.effective_github_publication_token

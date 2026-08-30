@@ -384,6 +384,7 @@ class CausalTraceProjector:
                     context_estimated_tokens=item.context_estimated_tokens,
                     context_reused_files=item.context_reused_files,
                     context_trimmed_files=item.context_trimmed_files,
+                    context_compacted_tool_groups=item.context_compacted_tool_groups,
                 )
                 existing_ids.add(item.span_id)
 
@@ -718,6 +719,8 @@ class CausalTraceProjector:
         context_estimated_tokens: int = 0,
         context_reused_files: int = 0,
         context_trimmed_files: int = 0,
+        context_compacted_tool_groups: int = 0,
+        enable_thinking: bool = False,
     ) -> None:
         spans.append(
             CausalTraceSpan(
@@ -751,5 +754,7 @@ class CausalTraceProjector:
                 context_estimated_tokens=context_estimated_tokens,
                 context_reused_files=context_reused_files,
                 context_trimmed_files=context_trimmed_files,
+                context_compacted_tool_groups=context_compacted_tool_groups,
+                enable_thinking=enable_thinking,
             )
         )

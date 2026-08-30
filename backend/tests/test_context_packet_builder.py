@@ -5,7 +5,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from app.context import ContextPacketBuilder
+from app.context import AgentContextProjector, ContextPacketBuilder
 from app.models import (
     ContextBudget,
     ContextContinuationState,
@@ -94,7 +94,7 @@ def test_builder_orders_changed_writable_readonly_readable_and_records_provenanc
     assert len(changed.source_sha256) == 64
     assert packet.usage.candidate_files == 3
     assert packet.usage.selected_files == 3
-    assert packet.token_estimator == "utf8_bytes_upper_bound"
+    assert packet.token_estimator == "utf8_bytes_upper_bound+provider_neutral_billable_v1"
 
 
 def test_same_state_and_budget_produce_same_fingerprint_content_change_changes_it(
@@ -115,6 +115,21 @@ def test_same_state_and_budget_produce_same_fingerprint_content_change_changes_i
 
     assert changed.fingerprint != first.fingerprint
     assert changed.changed_files == ["src/a.py"]
+
+
+def test_role_projection_keeps_runtime_audit_metadata_out_of_model_view(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    packet = ContextPacketBuilder().build(_task(), workspace=LocalGitWorkspace(root))
+
+    developer_view = AgentContextProjector.developer(packet).model_dump_json()
+    reviewer_view = AgentContextProjector.reviewer(packet).model_dump_json()
+
+    assert "fingerprint" not in developer_view
+    assert "selection_strategy" not in developer_view
+    assert "budget" not in developer_view
+    assert "src/b.py" in developer_view
+    assert "relevant_files" not in reviewer_view
+    assert "scope_summary" in reviewer_view
 
 
 def test_resumed_packet_reuses_unchanged_files_and_keeps_checkpoint_changes(

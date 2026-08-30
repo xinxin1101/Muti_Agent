@@ -28,6 +28,7 @@ class MultiTaskPlannerAgent:
         temperature: float = 0.1,
         max_output_tokens: int = 1_200,
         enable_thinking: bool = False,
+        adaptive_work_package_routing_enabled: bool = True,
     ) -> None:
         normalized_model = model.strip()
         if not normalized_model:
@@ -48,6 +49,7 @@ class MultiTaskPlannerAgent:
         self._temperature = temperature
         self._max_output_tokens = max_output_tokens
         self._enable_thinking = enable_thinking
+        self._adaptive_work_package_routing_enabled = adaptive_work_package_routing_enabled
         self.last_usage = TokenUsage()
         self.last_work_package_plan: WorkPackagePlan | None = None
         self.last_planning_result: WorkPackagePlanningResult | None = None
@@ -67,6 +69,7 @@ class MultiTaskPlannerAgent:
             temperature=self._temperature,
             max_output_tokens=self._max_output_tokens,
             enable_thinking=self._enable_thinking,
+            adaptive_work_package_routing_enabled=self._adaptive_work_package_routing_enabled,
         )
 
     async def plan(
@@ -237,7 +240,9 @@ class MultiTaskPlannerAgent:
         except ValueError as exc:
             return None, str(exc)
         try:
-            result = WorkPackagePlanValidator().validate_and_convert(
+            result = WorkPackagePlanValidator(
+                adaptive_routing_enabled=self._adaptive_work_package_routing_enabled
+            ).validate_and_convert(
                 plan,
                 requirement=requirement,
                 max_tasks=self._max_tasks,

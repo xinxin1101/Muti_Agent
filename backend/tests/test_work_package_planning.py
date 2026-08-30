@@ -1,6 +1,11 @@
 import pytest
 
-from app.models.work_package import PlanningComplexity, WorkPackage, WorkPackagePlan
+from app.models.work_package import (
+    PlanningComplexity,
+    WorkPackage,
+    WorkPackagePlan,
+    WorkPackageRoutingMode,
+)
 from app.planning.work_packages import WorkPackagePlanError, WorkPackagePlanValidator
 
 
@@ -51,6 +56,7 @@ def test_converter_derives_dependency_and_interface_contract() -> None:
         item for item in result.interface_contracts if item.interface_id == "gomoku.core.GomokuGame"
     )
     assert core_contract.consumer_package_ids == ("game-api",)
+    assert result.routing_audit.mode is WorkPackageRoutingMode.MULTI
     assert result.budget_allocations[0].recommended_token_budget == 6000
 
 
@@ -92,6 +98,17 @@ def test_multi_layer_requirement_requires_core_interface_and_integration_package
             requirement="实现一个包含 UI、API 和数据库的游戏。",
             max_tasks=8,
         )
+
+
+def test_long_single_deliverable_requirement_does_not_force_multi_package() -> None:
+    result = WorkPackagePlanValidator().validate_and_convert(
+        WorkPackagePlan(packages=(_package(),)),
+        requirement="编写一个 Python 命令行脚本，" * 80,
+        max_tasks=8,
+    )
+
+    assert result.routing_audit.mode is WorkPackageRoutingMode.SINGLE
+    assert result.routing_audit.delivery_layers == ()
 
 
 def test_multi_layer_requirement_rejects_three_packages_without_integration_role() -> None:

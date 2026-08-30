@@ -1,6 +1,7 @@
 from pydantic import ValidationError
 
 from app.agents.errors import InvalidReviewerOutputError
+from app.context.projector import AgentContextProjector
 from app.models import (
     AgentMessage,
     AgentRequest,
@@ -32,6 +33,7 @@ class ReviewerAgent:
         max_diff_chars: int = 30_000,
         max_output_tokens: int = 800,
         enable_thinking: bool = False,
+        role_context_projection_enabled: bool = True,
     ) -> None:
         normalized_model = model.strip()
         if not normalized_model:
@@ -52,6 +54,7 @@ class ReviewerAgent:
         self._max_diff_chars = max_diff_chars
         self._max_output_tokens = max_output_tokens
         self._enable_thinking = enable_thinking
+        self._role_context_projection_enabled = role_context_projection_enabled
 
     async def review(
         self,
@@ -145,7 +148,7 @@ class ReviewerAgent:
             max_output_tokens=self._max_output_tokens,
             enable_thinking=self._enable_thinking,
             context_estimated_tokens=(
-                context_packet.usage.prompt_estimated_tokens if context_packet is not None else 0
+                context_packet.usage.billable_prompt_tokens if context_packet is not None else 0
             ),
             tools=[],
             messages=[
@@ -189,7 +192,7 @@ class ReviewerAgent:
             max_output_tokens=self._max_output_tokens,
             enable_thinking=self._enable_thinking,
             context_estimated_tokens=(
-                context_packet.usage.prompt_estimated_tokens if context_packet is not None else 0
+                context_packet.usage.billable_prompt_tokens if context_packet is not None else 0
             ),
             tools=[],
             messages=[
@@ -226,7 +229,12 @@ class ReviewerAgent:
         if context_packet is None:
             task_context = f"TaskContract:\n{task.model_dump_json(indent=2)}"
         else:
-            task_context = f"ContextPacket:\n{context_packet.model_dump_json(indent=2)}"
+            task_context = (
+                "ReviewerContextView:\n"
+                f"{AgentContextProjector.reviewer(context_packet).model_dump_json(indent=2)}"
+                if self._role_context_projection_enabled
+                else "ContextPacket:\n" + context_packet.model_dump_json(indent=2)
+            )
         return (
             "Review the implementation against the validated task using only the evidence "
             "packet below. Deterministic verification has already passed, but that does not prove "

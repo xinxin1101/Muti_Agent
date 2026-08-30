@@ -4,8 +4,9 @@ import json
 from collections.abc import Callable
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from app.context.relevance import RelevantCodeExtractor
 from app.models.task import TaskContract
 from app.models.tools import ToolCall, ToolDefinition, ToolErrorCode, ToolExecutionResult
 from app.workspace import LocalGitWorkspace, ScopeEnforcer
@@ -14,6 +15,11 @@ _MAX_FILE_BYTES = 1_000_000
 _MAX_SCAN_FILES = 1_000
 _MAX_LIST_ENTRIES = 200
 _MAX_SEARCH_RESULTS = 50
+_MAX_READ_RANGE_LINES = 400
+_DEFAULT_READ_FILE_CHARS = 8_000
+_MAX_READ_FILE_CHARS = 12_000
+_DEFAULT_READ_FILES_CHARS = 4_000
+_MAX_READ_FILES_CHARS = 8_000
 
 
 class ListFilesArgs(BaseModel):
@@ -26,14 +32,18 @@ class ReadFileArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     path: str = Field(min_length=1, max_length=500)
-    max_chars: int = Field(default=20_000, ge=1, le=20_000)
+    max_chars: int = Field(default=_DEFAULT_READ_FILE_CHARS, ge=1, le=_MAX_READ_FILE_CHARS)
 
 
 class ReadFilesArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    paths: list[str] = Field(min_length=1, max_length=8)
-    max_chars_per_file: int = Field(default=12_000, ge=1, le=20_000)
+    paths: list[str] = Field(min_length=1, max_length=4)
+    max_chars_per_file: int = Field(
+        default=_DEFAULT_READ_FILES_CHARS,
+        ge=1,
+        le=_MAX_READ_FILES_CHARS,
+    )
 
     @field_validator("paths")
     @classmethod
@@ -59,6 +69,37 @@ class SearchCodeArgs(BaseModel):
         normalized = value.strip()
         if not normalized:
             raise ValueError("query must not be empty")
+        return normalized
+
+
+class ReadRangeArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1, max_length=500)
+    start_line: int = Field(ge=1)
+    end_line: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def validate_range(self) -> ReadRangeArgs:
+        if self.end_line < self.start_line:
+            raise ValueError("end_line must be greater than or equal to start_line")
+        if self.end_line - self.start_line + 1 > _MAX_READ_RANGE_LINES:
+            raise ValueError(f"read_range is limited to {_MAX_READ_RANGE_LINES} lines")
+        return self
+
+
+class ReadSymbolArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1, max_length=500)
+    symbol: str = Field(min_length=1, max_length=300)
+
+    @field_validator("symbol")
+    @classmethod
+    def normalize_symbol(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("symbol must not be empty")
         return normalized
 
 
@@ -117,10 +158,13 @@ class RepositoryToolbox:
         self.workspace = workspace
         self.task = task
         self.scope_enforcer = scope_enforcer or ScopeEnforcer()
+        self._relevance_extractor = RelevantCodeExtractor()
         self._handlers: dict[str, Callable[[dict], str]] = {
             "list_files": self._list_files,
             "read_file": self._read_file,
             "read_files": self._read_files,
+            "read_range": self._read_range,
+            "read_symbol": self._read_symbol,
             "search_code": self._search_code,
             "search_code_many": self._search_code_many,
             "write_file": self._write_file,
@@ -153,6 +197,22 @@ class RepositoryToolbox:
                     "for initial exploration of related files to reduce model round trips."
                 ),
                 parameters=ReadFilesArgs.model_json_schema(),
+            ),
+            ToolDefinition(
+                name="read_range",
+                description=(
+                    "Read a bounded line range from one visible UTF-8 repository file. "
+                    "Use after search_code to avoid reading a whole file."
+                ),
+                parameters=ReadRangeArgs.model_json_schema(),
+            ),
+            ToolDefinition(
+                name="read_symbol",
+                description=(
+                    "Read a named Python class, function, or method from one visible file, "
+                    "including its import/module preamble when available."
+                ),
+                parameters=ReadSymbolArgs.model_json_schema(),
             ),
             ToolDefinition(
                 name="search_code",
@@ -284,6 +344,70 @@ class RepositoryToolbox:
                 }
             )
         return json.dumps({"files": files}, ensure_ascii=False)
+
+    def _read_range(self, arguments: dict) -> str:
+        args = ReadRangeArgs.model_validate(arguments)
+        relative, path = self._resolve_file_for_read(args.path)
+        lines = self._read_text_file(path).splitlines(keepends=True)
+        if args.start_line > len(lines):
+            raise RepositoryToolError(
+                ToolErrorCode.NOT_FOUND,
+                f"start_line is outside the file: {args.start_line}",
+            )
+        end_line = min(args.end_line, len(lines))
+        content = "".join(lines[args.start_line - 1 : end_line])
+        if len(content) > _MAX_READ_FILE_CHARS:
+            content = content[:_MAX_READ_FILE_CHARS]
+            truncated = True
+        else:
+            truncated = end_line < args.end_line
+        return json.dumps(
+            {
+                "path": relative,
+                "start_line": args.start_line,
+                "end_line": end_line,
+                "content": content,
+                "truncated": truncated,
+            },
+            ensure_ascii=False,
+        )
+
+    def _read_symbol(self, arguments: dict) -> str:
+        args = ReadSymbolArgs.model_validate(arguments)
+        relative, path = self._resolve_file_for_read(args.path)
+        if not relative.endswith(".py"):
+            raise RepositoryToolError(
+                ToolErrorCode.INVALID_ARGUMENTS,
+                "read_symbol currently supports Python files only; use read_range instead",
+            )
+        source = self._read_text_file(path)
+        located = self._relevance_extractor.resolve_symbol(
+            path=relative,
+            source=source,
+            symbol=args.symbol,
+        )
+        if located is None:
+            raise RepositoryToolError(
+                ToolErrorCode.NOT_FOUND,
+                f"Python symbol was not found or is ambiguous: {args.symbol}",
+            )
+        preamble_end, region = located
+        lines = source.splitlines(keepends=True)
+        preamble = "".join(lines[:preamble_end]) if preamble_end else ""
+        body = "".join(lines[region.start_line - 1 : region.end_line])
+        content = preamble + ("\n" if preamble and body else "") + body
+        truncated = len(content) > _MAX_READ_FILE_CHARS
+        return json.dumps(
+            {
+                "path": relative,
+                "symbol": region.symbol,
+                "start_line": region.start_line,
+                "end_line": region.end_line,
+                "content": content[:_MAX_READ_FILE_CHARS],
+                "truncated": truncated,
+            },
+            ensure_ascii=False,
+        )
 
     def _search_code(self, arguments: dict) -> str:
         args = SearchCodeArgs.model_validate(arguments)

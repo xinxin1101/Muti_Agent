@@ -135,6 +135,7 @@ class ProductStagePerformanceMetrics(ProductModel):
     context_estimated_tokens: int = Field(default=0, ge=0)
     context_reused_files: int = Field(default=0, ge=0)
     context_trimmed_files: int = Field(default=0, ge=0)
+    context_compacted_tool_groups: int = Field(default=0, ge=0)
 
 
 class ProductRoleTokenUsage(ProductModel):
@@ -176,12 +177,12 @@ class ProductWorkPackageTokenBudget(ProductModel):
 
 
 class ProductRunTokenBudget(ProductModel):
-    total_budget_tokens: int = Field(ge=1)
-    used_prompt_tokens: int = Field(ge=0)
-    used_completion_tokens: int = Field(ge=0)
-    used_total_tokens: int = Field(ge=0)
-    reserved_tokens: int = Field(ge=0)
-    status: RunTokenBudgetStatus
+    total_budget_tokens: int = Field(default=30_000, ge=1)
+    used_prompt_tokens: int = Field(default=0, ge=0)
+    used_completion_tokens: int = Field(default=0, ge=0)
+    used_total_tokens: int = Field(default=0, ge=0)
+    reserved_tokens: int = Field(default=0, ge=0)
+    status: RunTokenBudgetStatus = RunTokenBudgetStatus.NORMAL
     roles: tuple[ProductRoleTokenUsage, ...] = ()
     stages: tuple[ProductStageTokenBudget, ...] = ()
     work_packages: tuple[ProductWorkPackageTokenBudget, ...] = ()
@@ -219,7 +220,7 @@ class ProductRunMetrics(ProductModel):
     terminal_duration_ms: int | None = Field(default=None, ge=0)
     evidence: ProductEvidenceMetrics
     runtime_events: ProductRuntimeEventMetrics
-    token_budget: ProductRunTokenBudget
+    token_budget: ProductRunTokenBudget = Field(default_factory=ProductRunTokenBudget)
     planning_budget: ProductPlanningTokenBudget | None = None
     workflow: ProductWorkflowMetrics = Field(
         default_factory=lambda: ProductWorkflowMetrics(

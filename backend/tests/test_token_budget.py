@@ -149,7 +149,7 @@ async def test_budgeted_driver_does_not_contact_provider_when_reservation_is_rej
     assert exc_info.value.to_failure_report().failure_type is FailureType.TOKEN_BUDGET_EXHAUSTED
 
 
-def test_medium_work_package_reserves_three_developer_rounds_before_repair() -> None:
+def test_medium_work_package_reserves_two_startup_turns_before_flex_borrowing() -> None:
     task = TaskContract(
         task_id="core",
         objective="实现棋盘领域模型和胜负规则。",
@@ -169,11 +169,35 @@ def test_medium_work_package_reserves_three_developer_rounds_before_repair() -> 
 
     _, developer, repair = store._initial_package_allocation(node, 1_400)
 
-    assert developer >= 3 * (1_000 + 1_400)
-    assert repair >= 1_000
+    assert developer >= 2 * (1_200 + 1_400)
+    assert repair >= 800
 
 
-def test_budget_plan_rejects_packages_that_cannot_fund_minimum_turns() -> None:
+def test_budget_plan_allows_three_medium_packages_with_flex_remaining() -> None:
+    def package(task_id: str) -> TaskNode:
+        return TaskNode(
+            task=TaskContract(
+                task_id=task_id,
+                objective="实现复杂核心算法、交互界面和集成测试。",
+                writable_files=("src/a.py", "src/b.py", "src/c.py"),
+                acceptance_criteria=("交付可运行功能。",),
+                verification_commands=("pytest -q",),
+            ),
+            complexity=PlanningComplexity.MEDIUM,
+            budget_allocation=TaskBudgetAllocation(
+                package_id=task_id,
+                recommended_token_budget=4_000,
+            ),
+        )
+
+    store = object.__new__(PostgresRunTokenBudgetStore)
+    store._default_total_budget_tokens = 30_000
+    dag = TaskDAG(tasks=(package("core"), package("ui"), package("integration")))
+
+    store.validate_hierarchy_plan(dag=dag, developer_max_output_tokens=1_400)
+
+
+def test_budget_plan_rejects_only_when_safe_startup_cannot_be_funded() -> None:
     def package(task_id: str) -> TaskNode:
         return TaskNode(
             task=TaskContract(
@@ -192,10 +216,12 @@ def test_budget_plan_rejects_packages_that_cannot_fund_minimum_turns() -> None:
 
     store = object.__new__(PostgresRunTokenBudgetStore)
     store._default_total_budget_tokens = 30_000
-    dag = TaskDAG(tasks=(package("core"), package("ui")))
 
     with pytest.raises(TokenBudgetPlanError, match="预算计划不可执行"):
-        store.validate_hierarchy_plan(dag=dag, developer_max_output_tokens=1_400)
+        store.validate_hierarchy_plan(
+            dag=TaskDAG(tasks=tuple(package(f"package-{index}") for index in range(5))),
+            developer_max_output_tokens=1_400,
+        )
 
 
 def test_flex_borrow_denial_needs_progress_and_is_bounded() -> None:

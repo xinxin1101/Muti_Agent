@@ -527,12 +527,10 @@ class SingleTaskOrchestrator:
         resume: ContextContinuationState | None = None,
     ):
         try:
-            packet = await asyncio.to_thread(
-                self._context_builder.build,
-                task,
-                workspace=workspace,
-                resume=resume,
-            )
+            kwargs = {"workspace": workspace}
+            if resume is not None:
+                kwargs["resume"] = resume
+            packet = await asyncio.to_thread(self._context_builder.build, task, **kwargs)
             self._latest_context_packet = packet
             return packet
         except ContextBuildError:

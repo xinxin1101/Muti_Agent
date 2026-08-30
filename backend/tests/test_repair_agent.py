@@ -178,9 +178,11 @@ def test_repair_agent_uses_repair_role_targeted_evidence_and_same_tools(
     assert request.role is models.AgentRole.REPAIR
     assert {tool.name for tool in request.tools} == {
         "list_files",
-        "read_file",
-        "read_files",
-        "search_code",
+            "read_file",
+            "read_files",
+            "read_range",
+            "read_symbol",
+            "search_code",
         "search_code_many",
         "write_file",
         "apply_patch",

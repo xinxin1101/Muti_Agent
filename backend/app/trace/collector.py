@@ -60,6 +60,7 @@ class TaskTraceCollector:
         name: str | None = None,
         context_usage: ContextUsage | None = None,
         enable_thinking: bool = False,
+        context_compacted_tool_groups: int = 0,
     ) -> UUID:
         span_id = uuid4()
         self._spans.append(
@@ -80,12 +81,13 @@ class TaskTraceCollector:
                 tool_call_count=len(response.tool_calls),
                 enable_thinking=enable_thinking,
                 context_estimated_tokens=(
-                    context_usage.prompt_estimated_tokens if context_usage is not None else 0
+                    context_usage.billable_prompt_tokens if context_usage is not None else 0
                 ),
                 context_reused_files=context_usage.reused_files if context_usage is not None else 0,
                 context_trimmed_files=(
                     context_usage.trimmed_files if context_usage is not None else 0
                 ),
+                context_compacted_tool_groups=context_compacted_tool_groups,
             )
         )
         return span_id

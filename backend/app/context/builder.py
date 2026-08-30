@@ -10,6 +10,7 @@ from app.context.relevance import (
     RelevantCodeExtractor,
     RelevantCodeRegion,
 )
+from app.context.token_estimator import TokenEstimator
 from app.models.context import (
     ContextBudget,
     ContextContinuationState,
@@ -67,10 +68,12 @@ class ContextPacketBuilder:
         budget: ContextBudget | None = None,
         scope_enforcer: ScopeEnforcer | None = None,
         relevance_extractor: RelevantCodeExtractor | None = None,
+        token_estimator: TokenEstimator | None = None,
     ) -> None:
         self._budget = budget or ContextBudget()
         self._scope_enforcer = scope_enforcer or ScopeEnforcer()
         self._relevance_extractor = relevance_extractor or RelevantCodeExtractor()
+        self._token_estimator = token_estimator or TokenEstimator()
 
     @property
     def budget(self) -> ContextBudget:
@@ -192,13 +195,24 @@ class ContextPacketBuilder:
             selected_files=len(selected_files),
             selected_chars=sum(item.selected_chars for item in selected_files),
             estimated_tokens=sum(item.estimated_tokens for item in selected_files),
+            context_window_units=sum(item.estimated_tokens for item in selected_files),
+            billable_content_tokens=sum(
+                item.billable_token_estimate for item in selected_files
+            ),
+            billable_prompt_tokens=(
+                sum(item.billable_token_estimate for item in selected_files)
+                + self._token_estimator.billable_token_estimate(repository_summary)
+                + self._resume_billable_tokens(resume)
+            ),
             truncated_files=sum(1 for item in selected_files if item.truncated),
             omitted_files=omitted_files,
             reused_files=reused_files,
             trimmed_files=sum(1 for item in selected_files if item.truncated),
             prompt_estimated_tokens=(
+                # Deprecated compatibility field. It remains the safety-bound estimate for
+                # old read-only consumers and must not be passed to token reservations.
                 sum(item.estimated_tokens for item in selected_files)
-                + len(repository_summary.encode("utf-8"))
+                + self._token_estimator.context_window_units(repository_summary)
                 + self._resume_estimated_tokens(resume)
             ),
         )
@@ -226,7 +240,7 @@ class ContextPacketBuilder:
                 "python_ast_import_relevance_v1>changed>writable>read_only>readable>path"
             ),
             "snippet_strategy": ("python_ast_symbol_regions_v1+deterministic_prefix_fallback"),
-            "token_estimator": "utf8_bytes_upper_bound",
+            "token_estimator": "utf8_bytes_upper_bound+provider_neutral_billable_v1",
         }
         fingerprint = sha256(
             json.dumps(
@@ -261,8 +275,7 @@ class ContextPacketBuilder:
         )
         return isinstance(source, _LoadedSource) and sha256(source.raw).hexdigest() == expected_hash
 
-    @staticmethod
-    def _resume_estimated_tokens(resume: ContextContinuationState | None) -> int:
+    def _resume_estimated_tokens(self, resume: ContextContinuationState | None) -> int:
         if resume is None:
             return 0
         text = "\n".join(
@@ -273,7 +286,21 @@ class ContextPacketBuilder:
                 resume.failure_summary,
             )
         )
-        return len(text.encode("utf-8"))
+        return self._token_estimator.context_window_units(text)
+
+    def _resume_billable_tokens(self, resume: ContextContinuationState | None) -> int:
+        if resume is None:
+            return 0
+        return self._token_estimator.billable_token_estimate(
+            "\n".join(
+                (
+                    resume.completed_summary,
+                    resume.remaining_summary,
+                    resume.verification_summary,
+                    resume.failure_summary,
+                )
+            )
+        )
 
     @staticmethod
     def _repository_summary(repository_head: str, inventory: list[str]) -> str:
@@ -620,12 +647,13 @@ class ContextPacketBuilder:
                     ),
                     content=selected,
                     char_count=len(selected),
-                    estimated_tokens=len(selected.encode("utf-8")),
+                    estimated_tokens=self._token_estimator.context_window_units(selected),
+                    billable_token_estimate=self._token_estimator.billable_token_estimate(selected),
                 )
             )
             per_file_remaining -= len(selected)
             total_remaining -= len(selected)
-            token_remaining -= len(selected.encode("utf-8"))
+            token_remaining -= self._token_estimator.context_window_units(selected)
 
         if not snippets:
             desired_chars = sum(
@@ -644,6 +672,7 @@ class ContextPacketBuilder:
 
         selected_chars = sum(snippet.char_count for snippet in snippets)
         selected_tokens = sum(snippet.estimated_tokens for snippet in snippets)
+        billable_tokens = sum(snippet.billable_token_estimate for snippet in snippets)
         context_file = ContextFile(
             path=candidate.path,
             tracked=candidate.tracked,
@@ -656,6 +685,7 @@ class ContextPacketBuilder:
             snippets=snippets,
             selected_chars=selected_chars,
             estimated_tokens=selected_tokens,
+            billable_token_estimate=billable_tokens,
             truncated=bool(reason_omissions),
         )
         return context_file, self._region_truncations(candidate.path, reason_omissions)
@@ -749,7 +779,7 @@ class ContextPacketBuilder:
                 omitted_files=1,
             )
 
-        selected_tokens = len(selected.encode("utf-8"))
+        selected_tokens = self._token_estimator.context_window_units(selected)
         line_count = max(1, len(selected.splitlines()))
         snippet = ContextSnippet(
             start_line=1,
@@ -757,6 +787,7 @@ class ContextPacketBuilder:
             content=selected,
             char_count=len(selected),
             estimated_tokens=selected_tokens,
+            billable_token_estimate=self._token_estimator.billable_token_estimate(selected),
         )
         truncated = len(selected) < len(source.text)
         context_file = ContextFile(
@@ -771,6 +802,7 @@ class ContextPacketBuilder:
             snippets=[snippet],
             selected_chars=len(selected),
             estimated_tokens=selected_tokens,
+            billable_token_estimate=snippet.billable_token_estimate,
             truncated=truncated,
         )
 
@@ -814,19 +846,18 @@ class ContextPacketBuilder:
 
         return context_file, file_truncations
 
-    @staticmethod
-    def _fit_prefix(text: str, *, max_chars: int, max_token_units: int) -> str:
+    def _fit_prefix(self, text: str, *, max_chars: int, max_token_units: int) -> str:
         if not text or max_chars <= 0 or max_token_units <= 0:
             return ""
         candidate = text[:max_chars]
-        if len(candidate.encode("utf-8")) <= max_token_units:
+        if self._token_estimator.context_window_units(candidate) <= max_token_units:
             return candidate
 
         low = 0
         high = len(candidate)
         while low < high:
             midpoint = (low + high + 1) // 2
-            if len(candidate[:midpoint].encode("utf-8")) <= max_token_units:
+            if self._token_estimator.context_window_units(candidate[:midpoint]) <= max_token_units:
                 low = midpoint
             else:
                 high = midpoint - 1

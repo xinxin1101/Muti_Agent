@@ -98,12 +98,15 @@ def build_single_task_runner(
         max_model_turn_seconds=settings.developer_max_model_turn_seconds,
         max_output_tokens=settings.developer_max_output_tokens,
         enable_thinking=settings.developer_enable_thinking,
+        context_compaction_enabled=settings.context_compaction_enabled,
+        role_context_projection_enabled=settings.role_context_projection_enabled,
     )
     reviewer = ReviewerAgent(
         driver=driver,
         model=settings.reviewer_model,
         max_output_tokens=settings.reviewer_max_output_tokens,
         enable_thinking=settings.reviewer_enable_thinking,
+        role_context_projection_enabled=settings.role_context_projection_enabled,
     )
     repair = RepairAgent(
         driver=driver,
@@ -113,6 +116,8 @@ def build_single_task_runner(
         max_model_turn_seconds=settings.repair_max_model_turn_seconds,
         max_output_tokens=settings.repair_max_output_tokens,
         enable_thinking=settings.repair_enable_thinking,
+        context_compaction_enabled=settings.context_compaction_enabled,
+        role_context_projection_enabled=settings.role_context_projection_enabled,
     )
     return SingleTaskOrchestrator(
         developer=developer,
@@ -208,6 +213,7 @@ async def execute_task_from_settings(
     token_budget_store = PostgresRunTokenBudgetStore.from_url(
         settings.database_url,
         default_total_budget_tokens=settings.run_token_budget_tokens,
+        adaptive_package_budget_enabled=settings.adaptive_package_budget_enabled,
         echo=settings.database_echo,
     )
     interface_contract_registry = PostgresInterfaceContractRegistry.from_url(
@@ -310,6 +316,8 @@ async def execute_task_from_settings(
                 max_model_turn_seconds=settings.developer_max_model_turn_seconds,
                 max_output_tokens=settings.developer_max_output_tokens,
                 enable_thinking=settings.developer_enable_thinking,
+                context_compaction_enabled=settings.context_compaction_enabled,
+                role_context_projection_enabled=settings.role_context_projection_enabled,
             ),
             verifier=build_verifier(settings),
             repair_root=settings.workspace_root / "integration-repairs",

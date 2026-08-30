@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     work_package_activation_mode: WorkPackageActivationMode = (
         WorkPackageActivationMode.WORK_PACKAGE_FIRST
     )
+    # Context-economy rollout controls. They default on, but each can be disabled
+    # independently for a safe rollback without changing execution authority.
+    context_compaction_enabled: bool = True
+    role_context_projection_enabled: bool = True
+    adaptive_package_budget_enabled: bool = True
+    adaptive_work_package_routing_enabled: bool = True
 
     siliconflow_api_key: SecretStr | None = Field(
         default=None,

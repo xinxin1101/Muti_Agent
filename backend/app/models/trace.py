@@ -66,6 +66,7 @@ class TraceBatchSpan(BaseModel):
     context_estimated_tokens: int = Field(default=0, ge=0)
     context_reused_files: int = Field(default=0, ge=0)
     context_trimmed_files: int = Field(default=0, ge=0)
+    context_compacted_tool_groups: int = Field(default=0, ge=0)
     finish_reason: str | None = Field(default=None, max_length=128)
     tool_call_count: int | None = Field(default=None, ge=0)
     enable_thinking: bool = False
@@ -182,6 +183,7 @@ class CausalTraceSpan(BaseModel):
     context_estimated_tokens: int = Field(default=0, ge=0)
     context_reused_files: int = Field(default=0, ge=0)
     context_trimmed_files: int = Field(default=0, ge=0)
+    context_compacted_tool_groups: int = Field(default=0, ge=0)
     enable_thinking: bool = False
 
     @model_validator(mode="after")

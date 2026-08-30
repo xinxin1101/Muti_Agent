@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from app.context.token_estimator import TokenEstimator
 from app.models.agent import AgentRequest, AgentResponse
 from app.persistence.planning_budget import (
     PlanningTokenBudgetReservationError,
@@ -50,6 +51,10 @@ class PlanningBudgetedAgentDriver:
 
     @staticmethod
     def _estimate_request_tokens(request: AgentRequest) -> int:
-        chars = sum(len(message.content) for message in request.messages)
-        chars += sum(len(tool.name) + len(tool.description) for tool in request.tools)
-        return max(1, (chars + 2) // 3)
+        estimator = TokenEstimator()
+        return estimator.estimate_messages(
+            [
+                *(message.content for message in request.messages),
+                *(f"{tool.name}\n{tool.description}" for tool in request.tools),
+            ]
+        )

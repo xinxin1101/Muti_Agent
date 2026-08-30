@@ -70,7 +70,9 @@ class ContextSnippet(BaseModel):
     end_line: int = Field(ge=1)
     content: str
     char_count: int = Field(ge=0)
+    # Kept as the conservative UTF-8 byte upper bound for ContextPacket trimming.
     estimated_tokens: int = Field(ge=0)
+    billable_token_estimate: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def validate_evidence(self) -> ContextSnippet:
@@ -98,7 +100,9 @@ class ContextFile(BaseModel):
     source_bytes: int = Field(ge=0)
     snippets: list[ContextSnippet] = Field(min_length=1)
     selected_chars: int = Field(ge=0)
+    # Context-window safety units, not a provider billing estimate.
     estimated_tokens: int = Field(ge=0)
+    billable_token_estimate: int = Field(default=0, ge=0)
     truncated: bool = False
 
     @field_validator("path")
@@ -112,6 +116,10 @@ class ContextFile(BaseModel):
             raise ValueError("selected_chars must equal the sum of snippet char counts")
         if self.estimated_tokens != sum(snippet.estimated_tokens for snippet in self.snippets):
             raise ValueError("estimated_tokens must equal the sum of snippet token estimates")
+        if self.billable_token_estimate != sum(
+            snippet.billable_token_estimate for snippet in self.snippets
+        ):
+            raise ValueError("billable_token_estimate must equal the sum of snippet estimates")
         if self.selected_chars > self.source_chars:
             raise ValueError("selected_chars cannot exceed source_chars")
         if self.estimated_tokens > self.source_bytes:
@@ -159,12 +167,18 @@ class ContextUsage(BaseModel):
     omitted_files: int = Field(ge=0)
     reused_files: int = Field(default=0, ge=0)
     trimmed_files: int = Field(default=0, ge=0)
+    # ``estimated_tokens`` remains the backwards-compatible name for context-window units.
+    context_window_units: int = Field(default=0, ge=0)
+    billable_content_tokens: int = Field(default=0, ge=0)
+    billable_prompt_tokens: int = Field(default=0, ge=0)
     prompt_estimated_tokens: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def validate_prompt_estimate(self) -> ContextUsage:
-        if self.prompt_estimated_tokens and self.prompt_estimated_tokens < self.estimated_tokens:
-            raise ValueError("prompt token estimate cannot be smaller than selected content")
+        if self.context_window_units and self.context_window_units != self.estimated_tokens:
+            raise ValueError("context_window_units must match the safety estimate")
+        if self.billable_content_tokens > self.billable_prompt_tokens:
+            raise ValueError("billable prompt estimate cannot be smaller than selected content")
         return self
 
 

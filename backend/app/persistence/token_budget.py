@@ -8,6 +8,7 @@ from pydantic import SecretStr
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from app.context.token_estimator import TokenEstimator
 from app.models.agent import AgentRole, TokenUsage
 from app.models.dag import TaskDAG
 from app.models.token_budget import (
@@ -52,12 +53,14 @@ class PostgresRunTokenBudgetStore:
         *,
         engine: AsyncEngine,
         default_total_budget_tokens: int,
+        adaptive_package_budget_enabled: bool = True,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
         owns_engine: bool = False,
     ) -> None:
         self._engine = engine
         self._session_factory = session_factory or create_session_factory(engine)
         self._default_total_budget_tokens = default_total_budget_tokens
+        self._adaptive_package_budget_enabled = adaptive_package_budget_enabled
         self._owns_engine = owns_engine
 
     @classmethod
@@ -66,11 +69,13 @@ class PostgresRunTokenBudgetStore:
         database_url: SecretStr | str,
         *,
         default_total_budget_tokens: int,
+        adaptive_package_budget_enabled: bool = True,
         echo: bool = False,
     ) -> PostgresRunTokenBudgetStore:
         return cls(
             engine=create_postgres_engine(database_url, echo=echo),
             default_total_budget_tokens=default_total_budget_tokens,
+            adaptive_package_budget_enabled=adaptive_package_budget_enabled,
             owns_engine=True,
         )
 
@@ -635,38 +640,39 @@ class PostgresRunTokenBudgetStore:
         ]
         return max(lower, min(upper, recommended))
 
-    @classmethod
     def _initial_package_allocation(
-        cls, node, developer_max_output_tokens: int
+        self, node, developer_max_output_tokens: int
     ) -> tuple[object, int, int]:
-        """Fund enough Developer turns before reserving a separate bounded repair pool.
+        """Fund a bounded startup, then let evidence-backed FLEX pay for further work.
 
-        A request cannot be viable merely because its nominal Planner recommendation is nonzero:
-        the agent must be able to return after at least one tool call.  We use a conservative
-        1k input floor for the system prompt/tool schema and then apply the declared complexity
-        turn count.  Actual usage continues to be settled from the provider response.
+        Preallocating every theoretical Developer turn makes a multi-package Run impossible
+        before any package has demonstrated progress.  Each package instead receives two normal
+        turns (an inspection/tool turn and a follow-up turn) plus a small independent repair
+        pool. Further work remains subject to the existing progress, threshold, ceiling and
+        atomic FLEX borrowing controls.
         """
 
         if node.execution_mode is WorkflowExecutionMode.WORKFLOW:
             return node, 0, 0
-        complexity = node.complexity.value if node.complexity is not None else "MEDIUM"
-        minimum_turns = {"LOW": 2, "MEDIUM": 3, "HIGH": 5}[complexity]
-        # Task shape contributes only to the input prediction; the floor accounts for platform
-        # instructions and controlled tool definitions even in an empty repository.
+        if not getattr(self, "_adaptive_package_budget_enabled", True):
+            bounded = self._bounded_package_budget(node)
+            return node, int(bounded * 0.7), bounded - int(bounded * 0.7)
+        # The estimate mirrors the provider-neutral billing heuristic rather than treating
+        # UTF-8 bytes as tokens. The floor accounts for role prompts and tool definitions.
+        estimator = TokenEstimator()
         predicted_input = max(
-            1_000,
-            650
-            + len(node.task.objective.encode("utf-8")) // 3
+            1_200,
+            700
+            + estimator.billable_token_estimate(node.task.objective)
             + 150 * len(node.task.writable_files)
             + 120 * len(node.task.acceptance_criteria)
             + 120 * len(node.task.verification_commands),
         )
-        minimum_developer = minimum_turns * (predicted_input + developer_max_output_tokens)
-        recommended = cls._bounded_package_budget(node)
-        developer = max(minimum_developer, int(recommended * 0.70))
-        # Keep recovery independent, but do not starve it merely because the Planner requested
-        # a small initial package.  A repair turn can be shorter than a full implementation turn.
-        repair = max(1_000, min(developer // 4, max(1_500, recommended // 2)))
+        startup_turns = 2
+        developer = startup_turns * (predicted_input + developer_max_output_tokens)
+        # Repair has its own starter amount so a first verification failure can be diagnosed,
+        # while long repair loops must make progress and borrow from FLEX.
+        repair = max(800, min(1_500, predicted_input))
         return node, developer, repair
 
     async def _reserve_hierarchy(

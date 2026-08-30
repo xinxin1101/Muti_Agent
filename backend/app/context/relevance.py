@@ -212,6 +212,40 @@ class RelevantCodeExtractor:
 
         return sorted(selections, key=lambda item: (-item.score, item.path))
 
+    def resolve_symbol(
+        self,
+        *,
+        path: str,
+        source: str,
+        symbol: str,
+    ) -> tuple[int, RelevantCodeRegion] | None:
+        """Resolve one Python symbol for progressive tool reads.
+
+        This reuses the same AST index used by context selection.  Exact qualified names are
+        preferred; a bare name is accepted only when it maps to exactly one symbol.
+        """
+
+        index = self._index_python(path, source)
+        if index is None:
+            return None
+        requested = symbol.strip()
+        exact = [item for item in index.symbols if item.qualname == requested]
+        matches = exact or [item for item in index.symbols if item.name == requested]
+        if len(matches) != 1:
+            return None
+        match = matches[0]
+        return (
+            index.preamble_end_line,
+            RelevantCodeRegion(
+                start_line=match.start_line,
+                end_line=match.end_line,
+                kind=RelevantRegionKind.SYMBOL,
+                symbol=match.qualname,
+                score=0,
+                evidence=("explicit_tool_symbol_request",),
+            ),
+        )
+
     def _initial_indexes(
         self,
         candidates: Sequence[RelevanceCandidate],

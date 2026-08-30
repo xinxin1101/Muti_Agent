@@ -1,4 +1,5 @@
 from app.context.builder import ContextBuildError, ContextPacketBuilder
+from app.context.projector import AgentContextProjector
 from app.context.relevance import (
     RelevanceCandidate,
     RelevantCodeExtractor,
@@ -6,10 +7,16 @@ from app.context.relevance import (
     RelevantFileSelection,
     RelevantRegionKind,
 )
+from app.context.retention import AgentContextRetention, AgentWorkingState
+from app.context.token_estimator import TokenEstimator
 
 __all__ = [
     "ContextBuildError",
     "ContextPacketBuilder",
+    "TokenEstimator",
+    "AgentContextRetention",
+    "AgentWorkingState",
+    "AgentContextProjector",
     "RelevanceCandidate",
     "RelevantCodeExtractor",
     "RelevantCodeRegion",

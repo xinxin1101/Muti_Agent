@@ -116,6 +116,59 @@ def test_repository_tools_batch_read_and_search_reduce_exploration_round_trips(
     assert results[1]["matches"][0]["path"] == "tests/test_main.py"
 
 
+def test_repository_tools_support_bounded_range_and_python_symbol_reads(tmp_path: Path) -> None:
+    root = _make_repository(tmp_path)
+    (root / "app" / "main.py").write_text(
+        (
+            "import os\n\nclass Game:\n    def play(self):\n        return 1\n\n"
+            "def helper():\n    return 2\n"
+        ),
+        encoding="utf-8",
+    )
+    toolbox = RepositoryToolbox(workspace=LocalGitWorkspace(root), task=_task())
+
+    range_result = toolbox.execute(
+        _call("range", "read_range", {"path": "app/main.py", "start_line": 3, "end_line": 5})
+    )
+    symbol_result = toolbox.execute(
+        _call("symbol", "read_symbol", {"path": "app/main.py", "symbol": "Game.play"})
+    )
+
+    assert range_result.ok is True
+    assert json.loads(range_result.content)["content"] == (
+        "class Game:\n    def play(self):\n        return 1\n"
+    )
+    assert symbol_result.ok is True
+    payload = json.loads(symbol_result.content)
+    assert payload["symbol"] == "Game.play"
+    assert "import os" in payload["content"]
+    assert "def play" in payload["content"]
+
+
+def test_progressive_read_tools_preserve_scope_and_validate_ranges(tmp_path: Path) -> None:
+    root = _make_repository(tmp_path)
+    (root / "app" / "main.js").write_text("export const value = 1;\n", encoding="utf-8")
+    toolbox = RepositoryToolbox(workspace=LocalGitWorkspace(root), task=_task())
+
+    denied = toolbox.execute(
+        _call("denied", "read_range", {"path": "docs/secret.md", "start_line": 1, "end_line": 2})
+    )
+    internal = toolbox.execute(
+        _call("internal", "read_symbol", {"path": ".git/config", "symbol": "config"})
+    )
+    invalid = toolbox.execute(
+        _call("invalid", "read_range", {"path": "app/main.py", "start_line": 4, "end_line": 2})
+    )
+    unsupported = toolbox.execute(
+        _call("unsupported", "read_symbol", {"path": "app/main.js", "symbol": "value"})
+    )
+
+    assert denied.error_code is ToolErrorCode.PATH_DENIED
+    assert internal.error_code is ToolErrorCode.PATH_DENIED
+    assert invalid.error_code is ToolErrorCode.INVALID_ARGUMENTS
+    assert unsupported.error_code is ToolErrorCode.INVALID_ARGUMENTS
+
+
 def test_repository_tools_treat_missing_listing_directory_as_empty(tmp_path: Path) -> None:
     root = _make_repository(tmp_path)
     toolbox = RepositoryToolbox(workspace=LocalGitWorkspace(root), task=_task())
@@ -307,6 +360,8 @@ def test_developer_agent_uses_tools_then_stops_without_declaring_runtime_success
         "list_files",
         "read_file",
         "read_files",
+        "read_range",
+        "read_symbol",
         "search_code",
         "search_code_many",
         "write_file",
@@ -335,6 +390,46 @@ def test_developer_agent_is_bounded_by_iteration_budget(tmp_path: Path) -> None:
     assert result.iterations == 2
     assert result.tool_calls == 2
     assert len(driver.requests) == 2
+
+
+def test_developer_compacts_old_complete_tool_groups_without_orphans(tmp_path: Path) -> None:
+    root = _make_repository(tmp_path)
+    workspace = LocalGitWorkspace(root)
+    driver = FakeDriver(
+        [
+            _response(tool_calls=[_call("read-1", "read_file", {"path": "app/main.py"})]),
+            _response(
+                tool_calls=[
+                    _call(
+                        "read-2",
+                        "read_range",
+                        {"path": "app/main.py", "start_line": 1, "end_line": 1},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call("read-3", "read_symbol", {"path": "app/main.py", "symbol": "VALUE"})
+                ]
+            ),
+            _response(content="No code changes required."),
+        ]
+    )
+    developer = DeveloperAgent(driver=driver, model="test/developer", max_iterations=4)
+
+    result = asyncio.run(developer.run(_task(), workspace=workspace))
+
+    assert result.stop_reason is DeveloperStopReason.MODEL_STOP
+    final_request = driver.requests[3]
+    tool_messages = [message for message in final_request.messages if message.role.value == "tool"]
+    assistant_calls = [
+        message
+        for message in final_request.messages
+        if message.role.value == "assistant" and message.tool_calls
+    ]
+    assert [message.tool_call_id for message in tool_messages] == ["read-2", "read-3"]
+    assert [message.tool_calls[0].id for message in assistant_calls] == ["read-2", "read-3"]
+    assert any("compact working state" in message.content for message in final_request.messages)
 
 
 def test_developer_agent_verifies_scoped_changes_after_iteration_budget(tmp_path: Path) -> None:

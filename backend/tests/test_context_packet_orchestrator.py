@@ -171,10 +171,10 @@ def test_orchestrator_rebuilds_context_from_current_worktree_for_each_agent_stag
     developer_prompt = developer_driver.requests[0].messages[-1].content
     repair_prompt = repair_driver.requests[0].messages[-1].content
     reviewer_prompt = reviewer_driver.requests[0].messages[-1].content
-    assert "ContextPacket" in developer_prompt
+    assert "DeveloperContextView" in developer_prompt
     assert "VALUE = 1" in developer_prompt
-    assert "ContextPacket" in repair_prompt
+    assert "RepairContextView" in repair_prompt
     assert "VALUE = 3" in repair_prompt
-    assert "ContextPacket" in reviewer_prompt
+    assert "ReviewerContextView" in reviewer_prompt
     assert "VALUE = 2" in reviewer_prompt
     assert reviewer_driver.requests[0].tools == []

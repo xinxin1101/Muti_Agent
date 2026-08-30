@@ -198,6 +198,7 @@ export type ProductStagePerformanceMetrics = Readonly<{
   context_estimated_tokens: number;
   context_reused_files: number;
   context_trimmed_files: number;
+  context_compacted_tool_groups?: number;
 }>;
 
 export type ProductDAGNodeState =

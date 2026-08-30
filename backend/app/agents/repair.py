@@ -6,6 +6,8 @@ from collections.abc import Callable, Sequence
 from time import monotonic
 
 from app.agents.errors import RepairBudgetExhaustedError
+from app.context.projector import AgentContextProjector
+from app.context.retention import AgentContextRetention
 from app.models.agent import (
     AgentMessage,
     AgentRequest,
@@ -41,6 +43,8 @@ class RepairAgent:
         temperature: float = 0.1,
         max_output_tokens: int = 1_000,
         enable_thinking: bool = False,
+        context_compaction_enabled: bool = True,
+        role_context_projection_enabled: bool = True,
         max_evidence_chars: int = 20_000,
         clock: Callable[[], float] = monotonic,
     ) -> None:
@@ -71,6 +75,8 @@ class RepairAgent:
         self._temperature = temperature
         self._max_output_tokens = max_output_tokens
         self._enable_thinking = enable_thinking
+        self._context_compaction_enabled = context_compaction_enabled
+        self._role_context_projection_enabled = role_context_projection_enabled
         self._max_evidence_chars = max_evidence_chars
         self._clock = clock
 
@@ -107,12 +113,16 @@ class RepairAgent:
             )
 
         toolbox = RepositoryToolbox(workspace=workspace, task=task)
-        messages = self._initial_messages(
-            task,
-            repairable,
-            attempt=attempt,
-            context_packet=context_packet,
+        retention = AgentContextRetention(
+            task_id=task.task_id,
+            base_messages=self._initial_messages(
+                task,
+                repairable,
+                attempt=attempt,
+                context_packet=context_packet,
+            ),
         )
+        messages = retention.messages()
         started_at = self._clock()
         prompt_tokens = 0
         completion_tokens = 0
@@ -148,7 +158,7 @@ class RepairAgent:
                 enable_thinking=self._enable_thinking,
                 budget_progress=tool_call_count > 0 or bool(workspace.changed_files()),
                 context_estimated_tokens=(
-                    context_packet.usage.prompt_estimated_tokens
+                    context_packet.usage.billable_prompt_tokens
                     if context_packet is not None
                     else 0
                 ),
@@ -183,6 +193,9 @@ class RepairAgent:
                     response=response,
                     enable_thinking=self._enable_thinking,
                     context_usage=context_packet.usage if context_packet is not None else None,
+                    context_compacted_tool_groups=(
+                        retention.compacted_group_count if self._context_compaction_enabled else 0
+                    ),
                 )
 
             prompt_tokens += response.usage.prompt_tokens
@@ -190,12 +203,10 @@ class RepairAgent:
             total_tokens += response.usage.total_tokens
             total_latency_ms += response.latency_ms
 
-            messages.append(
-                AgentMessage(
-                    role=MessageRole.ASSISTANT,
-                    content=response.content,
-                    tool_calls=response.tool_calls,
-                )
+            assistant_message = AgentMessage(
+                role=MessageRole.ASSISTANT,
+                content=response.content,
+                tool_calls=response.tool_calls,
             )
 
             if not response.tool_calls:
@@ -234,6 +245,7 @@ class RepairAgent:
                     latency_ms=total_latency_ms,
                 )
 
+            tool_results = []
             for call in response.tool_calls:
                 tool_started = trace.clock() if trace is not None else 0.0
                 try:
@@ -267,12 +279,24 @@ class RepairAgent:
                         result=tool_result,
                         duration_ms=trace.duration_ms(tool_started),
                     )
-                messages.append(
+                tool_results.append(tool_result)
+
+            if self._context_compaction_enabled:
+                retention.add_group(
+                    assistant=assistant_message,
+                    calls=response.tool_calls,
+                    results=tool_results,
+                )
+                messages = retention.messages()
+            else:
+                messages.append(assistant_message)
+                messages.extend(
                     AgentMessage(
                         role=MessageRole.TOOL,
-                        content=tool_result.model_dump_json(),
-                        tool_call_id=call.id,
+                        content=result.model_dump_json(),
+                        tool_call_id=result.tool_call_id,
                     )
+                    for result in tool_results
                 )
 
             if self._clock() - started_at >= self._max_duration_seconds:
@@ -335,8 +359,8 @@ class RepairAgent:
             "conflict. Do not repeat an unchanged repair strategy without new evidence. "
             "Prefer tool calls over prose while work remains. When the targeted repair is "
             "finished, return exactly three concise items: 已修改文件, 已执行验证, 遗留事项. "
-            "Your final message is not a success verdict. Prefer read_files and search_code_many "
-            "when locating related failure code, instead of serial exploratory reads."
+            "Your final message is not a success verdict. Locate failure code with search_code "
+            "or search_code_many, then prefer read_symbol or read_range before whole-file reads."
         )
         evidence_json = json.dumps(
             [failure.model_dump(mode="json") for failure in failures],
@@ -352,10 +376,14 @@ class RepairAgent:
         if context_packet is None:
             task_context = f"Original validated TaskContract:\n{task.model_dump_json(indent=2)}"
         else:
-            task_context = (
-                "Runtime-built ContextPacket from the current worktree state:\n"
-                f"{context_packet.model_dump_json(indent=2)}"
-            )
+            if self._role_context_projection_enabled:
+                context_view = AgentContextProjector.repair(context_packet, failures)
+                task_context = (
+                    "Role-minimal RepairContextView from the current worktree state:\n"
+                    f"{context_view.model_dump_json(indent=2)}"
+                )
+            else:
+                task_context = "ContextPacket:\n" + context_packet.model_dump_json(indent=2)
         user_prompt = (
             f"Perform targeted repair attempt {attempt} of {task.max_retries}.\n\n"
             f"{task_context}\n\n"

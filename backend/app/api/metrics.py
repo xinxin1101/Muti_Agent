@@ -171,6 +171,7 @@ def _stage_performance_metrics(snapshot: PersistedRunSnapshot) -> ProductStagePe
     context_estimated_tokens = 0
     context_reused_files = 0
     context_trimmed_files = 0
+    context_compacted_tool_groups = 0
 
     for item in snapshot.evidence:
         if item.kind is PersistenceEvidenceKind.TRACE_BATCH:
@@ -182,6 +183,7 @@ def _stage_performance_metrics(snapshot: PersistedRunSnapshot) -> ProductStagePe
                     context_estimated_tokens += span.context_estimated_tokens
                     context_reused_files += span.context_reused_files
                     context_trimmed_files += span.context_trimmed_files
+                    context_compacted_tool_groups += span.context_compacted_tool_groups
                     if span.agent_role is AgentRole.DEVELOPER:
                         developer_model_latency_ms += span.duration_ms
                     elif span.agent_role is AgentRole.REPAIR:
@@ -199,6 +201,7 @@ def _stage_performance_metrics(snapshot: PersistedRunSnapshot) -> ProductStagePe
         context_estimated_tokens=context_estimated_tokens,
         context_reused_files=context_reused_files,
         context_trimmed_files=context_trimmed_files,
+        context_compacted_tool_groups=context_compacted_tool_groups,
     )
 
 

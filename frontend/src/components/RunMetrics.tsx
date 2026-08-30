@@ -73,6 +73,7 @@ export function RunMetrics({ metrics }: { metrics: ProductRunMetrics }) {
           <Metric label="上下文估算" value={`${metrics.performance.context_estimated_tokens.toLocaleString()} Token`} />
           <Metric label="复用文件" value={metrics.performance.context_reused_files} />
           <Metric label="裁剪文件" value={metrics.performance.context_trimmed_files} />
+          <Metric label="已压缩工具组" value={metrics.performance.context_compacted_tool_groups ?? 0} />
         </dl>
       </div>
 

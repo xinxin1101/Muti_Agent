@@ -12,6 +12,8 @@ from app.models.work_package import (
     TaskBudgetAllocation,
     WorkPackage,
     WorkPackagePlan,
+    WorkPackageRoutingAudit,
+    WorkPackageRoutingMode,
 )
 
 _DELIVERY_LAYERS = {
@@ -44,10 +46,14 @@ class WorkPackagePlanningResult:
     interface_contracts: tuple[InterfaceContract, ...]
     budget_allocations: tuple[TaskBudgetAllocation, ...]
     complexity_assessments: tuple[PlanningComplexityAssessment, ...]
+    routing_audit: WorkPackageRoutingAudit
 
 
 class WorkPackagePlanValidator:
     """Apply deterministic package boundaries before accepting a Planner proposal."""
+
+    def __init__(self, *, adaptive_routing_enabled: bool = True) -> None:
+        self._adaptive_routing_enabled = adaptive_routing_enabled
 
     def validate_and_convert(
         self,
@@ -60,12 +66,18 @@ class WorkPackagePlanValidator:
             raise WorkPackagePlanError(
                 f"WorkPackagePlan contains {len(plan.packages)} packages; maximum is {max_tasks}."
             )
-        if self._requires_multi_package(requirement) and len(plan.packages) < 3:
+        delivery_layers = self._delivery_layers(requirement)
+        requires_multi = (
+            self._requires_multi_package(delivery_layers)
+            if self._adaptive_routing_enabled
+            else len(requirement.strip()) > 180 or len(delivery_layers) >= 2
+        )
+        if requires_multi and len(plan.packages) < 3:
             raise WorkPackagePlanError(
                 "The requirement spans multiple delivery layers and must be split into at least "
                 "core, interface, and test/integration work packages."
             )
-        if self._requires_multi_package(requirement):
+        if requires_multi:
             self._validate_required_package_roles(plan)
         produced_by = {
             interface: package.package_id
@@ -150,13 +162,49 @@ class WorkPackagePlanValidator:
             complexity_assessments=tuple(
                 assessments[package.package_id] for package in plan.packages
             ),
+            routing_audit=self._routing_audit(plan, delivery_layers),
         )
 
     @staticmethod
-    def _requires_multi_package(requirement: str) -> bool:
+    def _delivery_layers(requirement: str) -> tuple[str, ...]:
+        """Return explicit delivery concerns; prose length is deliberately ignored."""
+
         text = requirement.strip()
-        layer_count = sum(bool(pattern.search(text)) for pattern in _DELIVERY_LAYERS.values())
-        return len(text) > 180 or layer_count >= 2
+        return tuple(
+            name for name, pattern in _DELIVERY_LAYERS.items() if pattern.search(text)
+        )
+
+    @staticmethod
+    def _requires_multi_package(delivery_layers: tuple[str, ...]) -> bool:
+        return len(delivery_layers) >= 2
+
+    @staticmethod
+    def _routing_audit(
+        plan: WorkPackagePlan,
+        delivery_layers: tuple[str, ...],
+    ) -> WorkPackageRoutingAudit:
+        owned_roots = {
+            path.split("/", 1)[0]
+            for package in plan.packages
+            for path in package.owned_paths
+            if "/" in path
+        }
+        dependencies = sum(len(package.consumes) for package in plan.packages)
+        reasons = [f"delivery_layers={','.join(delivery_layers) or 'none'}"]
+        reasons.append(f"owned_path_roots={len(owned_roots)}")
+        reasons.append(f"declared_interface_dependencies={dependencies}")
+        if len(plan.packages) == 1:
+            reasons.append("one bounded deliverable; kept as a single package")
+            mode = WorkPackageRoutingMode.SINGLE
+        else:
+            reasons.append("independent file/interface boundaries require multiple packages")
+            mode = WorkPackageRoutingMode.MULTI
+        return WorkPackageRoutingAudit(
+            mode=mode,
+            reasons=tuple(reasons),
+            delivery_layers=delivery_layers,
+            package_count=len(plan.packages),
+        )
 
     @staticmethod
     def _validate_single_deliverable(package: WorkPackage) -> None:
