@@ -12,6 +12,20 @@ class AgentRole(StrEnum):
     REPAIR = "repair"
 
 
+class LivenessCredit(StrEnum):
+    """Explicit, bounded exceptions to the normal evidence-backed FLEX gate.
+
+    These are runtime facts assigned by DevFlow, never model-provided values.  They
+    do not bypass the Run reservation, package ceiling, or borrow-count limits.
+    """
+
+    NORMAL = "NORMAL"
+    INITIAL_STARTUP = "INITIAL_STARTUP"
+    TOOL_RECOVERY = "TOOL_RECOVERY"
+    VERIFIED_PROGRESS = "VERIFIED_PROGRESS"
+    CHECKPOINT_RESUME = "CHECKPOINT_RESUME"
+
+
 class MessageRole(StrEnum):
     SYSTEM = "system"
     USER = "user"
@@ -98,6 +112,9 @@ class AgentRequest(BaseModel):
     context_estimated_tokens: int = Field(default=0, ge=0)
     # Local turn ordinal used for durable cost observations. It is never sent to a provider.
     execution_iteration: int = Field(default=0, ge=0, le=100)
+    # A platform-issued liveness reason for a bounded budget exception. It is never
+    # forwarded to a provider and may only relax the no-progress FLEX gate.
+    liveness_credit: LivenessCredit = LivenessCredit.NORMAL
     tools: list[ToolDefinition] = Field(default_factory=list)
 
     @field_validator("model")

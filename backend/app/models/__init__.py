@@ -3,6 +3,7 @@ from app.models.agent import (
     AgentRequest,
     AgentResponse,
     AgentRole,
+    LivenessCredit,
     MessageRole,
     TokenUsage,
 )
@@ -178,6 +179,7 @@ __all__ = [
     "AgentRequest",
     "AgentResponse",
     "AgentRole",
+    "LivenessCredit",
     "AgentUsageSummary",
     "CheckResult",
     "CheckType",

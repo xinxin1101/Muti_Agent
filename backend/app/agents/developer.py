@@ -12,6 +12,7 @@ from app.models.agent import (
     AgentMessage,
     AgentRequest,
     AgentRole,
+    LivenessCredit,
     MessageRole,
     TokenUsage,
 )
@@ -111,6 +112,8 @@ class DeveloperAgent:
         last_tool_failure: tuple[str, ToolErrorCode, str] | None = None
         repeated_tool_failure_count = 0
         tool_recovery_instruction: str | None = None
+        tool_recovery_credit_pending = False
+        tool_recovery_credit_used = False
 
         for iteration in range(1, self._max_iterations + 1):
             remaining = self._max_duration_seconds - (self._clock() - started_at)
@@ -144,6 +147,12 @@ class DeveloperAgent:
 
             effective_max_output_tokens = self._max_output_tokens
             request_messages = messages
+            liveness_credit = self._liveness_credit_for_turn(
+                iteration=iteration,
+                context_packet=context_packet,
+                has_verified_progress=(successful_tool_progress or bool(workspace.changed_files())),
+                tool_recovery_pending=tool_recovery_credit_pending,
+            )
             if tool_recovery_instruction is not None:
                 # A function-call argument is part of the completion.  A normal 1,400-token
                 # cap is intentionally economical for ordinary turns but can truncate a new
@@ -155,6 +164,8 @@ class DeveloperAgent:
                     AgentMessage(role=MessageRole.USER, content=tool_recovery_instruction),
                 ]
                 tool_recovery_instruction = None
+                tool_recovery_credit_pending = False
+                tool_recovery_credit_used = True
 
             request = AgentRequest(
                 role=AgentRole.DEVELOPER,
@@ -170,6 +181,7 @@ class DeveloperAgent:
                     else 0
                 ),
                 execution_iteration=iteration,
+                liveness_credit=liveness_credit,
                 tools=toolbox.definitions(),
             )
 
@@ -370,10 +382,15 @@ class DeveloperAgent:
                         ),
                         latency_ms=total_latency_ms,
                     )
-                tool_recovery_instruction = self._tool_recovery_instruction(
-                    call=call,
-                    result=tool_result,
-                )
+                if (
+                    not tool_recovery_credit_used
+                    and self._is_recoverable_tool_error(call=call, result=tool_result)
+                ):
+                    tool_recovery_instruction = self._tool_recovery_instruction(
+                        call=call,
+                        result=tool_result,
+                    )
+                    tool_recovery_credit_pending = True
 
             if self._context_compaction_enabled:
                 compacted_code_mutation = retention.add_group(
@@ -663,3 +680,37 @@ class DeveloperAgent:
             "The previous repository-tool call was rejected. Correct its JSON arguments exactly "
             "once according to the tool schema. Return a tool call, not Markdown or prose."
         )
+
+    @staticmethod
+    def _is_recoverable_tool_error(*, call, result: ToolExecutionResult) -> bool:
+        """Only bounded argument/patch/IO corrections earn a one-turn credit.
+
+        Scope denial and unknown tools are policy/configuration failures; NOT_FOUND is
+        already a normal repository observation. Neither may be used to bypass the
+        evidence gate.
+        """
+
+        del call
+        return result.error_code in {
+            ToolErrorCode.INVALID_ARGUMENTS,
+            ToolErrorCode.AMBIGUOUS_PATCH,
+            ToolErrorCode.IO_ERROR,
+        }
+
+    @staticmethod
+    def _liveness_credit_for_turn(
+        *,
+        iteration: int,
+        context_packet: ContextPacket | None,
+        has_verified_progress: bool,
+        tool_recovery_pending: bool,
+    ) -> LivenessCredit:
+        if tool_recovery_pending:
+            return LivenessCredit.TOOL_RECOVERY
+        if iteration == 1 and context_packet is not None and context_packet.resume is not None:
+            return LivenessCredit.CHECKPOINT_RESUME
+        if iteration == 1:
+            return LivenessCredit.INITIAL_STARTUP
+        if has_verified_progress:
+            return LivenessCredit.VERIFIED_PROGRESS
+        return LivenessCredit.NORMAL

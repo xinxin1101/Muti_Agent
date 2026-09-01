@@ -3,7 +3,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from app.context.token_estimator import TokenEstimator
-from app.models.agent import AgentRequest, AgentResponse
+from app.models.agent import AgentRequest, AgentResponse, LivenessCredit
 from app.models.tools import ToolExecutionResult
 from app.persistence.token_budget import (
     PostgresRunTokenBudgetStore,
@@ -39,6 +39,14 @@ class BudgetedAgentDriver:
             request.context_estimated_tokens,
             self._estimate_request_tokens(request),
         )
+        # DeveloperAgent supplies the most specific value. This fallback keeps the
+        # budget boundary safe for direct callers and older execution paths.
+        liveness_credit = request.liveness_credit
+        if liveness_credit is LivenessCredit.NORMAL:
+            if request.execution_iteration == 1:
+                liveness_credit = LivenessCredit.INITIAL_STARTUP
+            elif request.budget_progress:
+                liveness_credit = LivenessCredit.VERIFIED_PROGRESS
         try:
             reservation = await self._budget_store.reserve(
                 run_id=self._run_id,
@@ -47,7 +55,7 @@ class BudgetedAgentDriver:
                 estimated_input_tokens=estimated_input,
                 max_output_tokens=request.max_output_tokens,
                 has_progress=request.budget_progress,
-                allow_initial_credit=request.execution_iteration == 1,
+                liveness_credit=liveness_credit,
             )
         except WorkPackageBudgetAllocationError as exc:
             raise AgentProviderError(

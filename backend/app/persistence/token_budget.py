@@ -12,7 +12,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.context.token_estimator import TokenEstimator
-from app.models.agent import AgentRole, TokenUsage
+from app.models.agent import AgentRole, LivenessCredit, TokenUsage
 from app.models.dag import TaskDAG
 from app.models.token_budget import (
     RoleTokenUsage,
@@ -275,7 +275,7 @@ class PostgresRunTokenBudgetStore:
         estimated_input_tokens: int,
         max_output_tokens: int,
         has_progress: bool = False,
-        allow_initial_credit: bool = False,
+        liveness_credit: LivenessCredit = LivenessCredit.NORMAL,
     ) -> TokenBudgetReservation:
         if estimated_input_tokens < 0 or max_output_tokens < 1:
             raise ValueError("token reservation values must be non-negative and non-empty")
@@ -329,7 +329,7 @@ class PostgresRunTokenBudgetStore:
                     estimated_input_tokens=estimated_input_tokens,
                     max_output_tokens=max_output_tokens,
                     has_progress=has_progress,
-                    allow_initial_credit=allow_initial_credit,
+                    liveness_credit=liveness_credit,
                 )
                 await session.execute(
                     text(
@@ -711,7 +711,7 @@ class PostgresRunTokenBudgetStore:
             package_rows = (
                 await session.execute(
                     text(
-                        "SELECT task_id, complexity, total_budget_tokens, developer_budget_tokens, repair_budget_tokens, developer_used_tokens, repair_used_tokens, developer_reserved_tokens, repair_reserved_tokens, developer_borrowed_tokens, repair_borrowed_tokens, developer_reclaimed_tokens, repair_reclaimed_tokens, developer_observed_prompt_tokens, repair_observed_prompt_tokens, developer_predicted_next_input_tokens, repair_predicted_next_input_tokens, developer_estimated_executable_turns, repair_estimated_executable_turns, developer_startup_reserve_tokens, complexity_upgrade_count, borrow_count, last_required_tokens, last_available_tokens, last_flex_available_tokens, last_downstream_available_tokens, last_borrowed_tokens, last_budget_decision, last_budget_reason, last_recovery_action, last_cost_prediction_reason, status FROM run_task_token_budgets WHERE run_id = :run_id ORDER BY task_id"
+                        "SELECT task_id, complexity, total_budget_tokens, developer_budget_tokens, repair_budget_tokens, developer_used_tokens, repair_used_tokens, developer_reserved_tokens, repair_reserved_tokens, developer_borrowed_tokens, repair_borrowed_tokens, developer_reclaimed_tokens, repair_reclaimed_tokens, developer_observed_prompt_tokens, repair_observed_prompt_tokens, developer_predicted_next_input_tokens, repair_predicted_next_input_tokens, developer_estimated_executable_turns, repair_estimated_executable_turns, developer_startup_reserve_tokens, complexity_upgrade_count, borrow_count, tool_recovery_credit_used, last_liveness_credit, last_required_tokens, last_available_tokens, last_flex_available_tokens, last_downstream_available_tokens, last_borrowed_tokens, last_budget_decision, last_budget_reason, last_recovery_action, last_cost_prediction_reason, status FROM run_task_token_budgets WHERE run_id = :run_id ORDER BY task_id"
                     ),
                     {"run_id": run_id},
                 )
@@ -772,6 +772,8 @@ class PostgresRunTokenBudgetStore:
                     developer_startup_reserve_tokens=int(item.developer_startup_reserve_tokens),
                     complexity_upgrade_count=int(item.complexity_upgrade_count),
                     borrow_count=int(item.borrow_count),
+                    tool_recovery_credit_used=bool(item.tool_recovery_credit_used),
+                    last_liveness_credit=LivenessCredit(str(item.last_liveness_credit)),
                     last_required_tokens=int(item.last_required_tokens),
                     last_available_tokens=int(item.last_available_tokens),
                     last_flex_available_tokens=int(item.last_flex_available_tokens),
@@ -1112,7 +1114,7 @@ class PostgresRunTokenBudgetStore:
         estimated_input_tokens: int,
         max_output_tokens: int,
         has_progress: bool,
-        allow_initial_credit: bool = False,
+        liveness_credit: LivenessCredit = LivenessCredit.NORMAL,
     ) -> None:
         stage = self._stage_for(role)
         stage_row = (
@@ -1147,7 +1149,7 @@ class PostgresRunTokenBudgetStore:
                     "SELECT complexity, developer_budget_tokens, repair_budget_tokens, "
                     "developer_used_tokens, repair_used_tokens, developer_reserved_tokens, "
                     "repair_reserved_tokens, developer_startup_reserve_tokens, "
-                    "complexity_upgrade_count, borrow_count FROM run_task_token_budgets "
+                    "complexity_upgrade_count, borrow_count, tool_recovery_credit_used FROM run_task_token_budgets "
                     "WHERE run_id = :run_id AND task_id = :task_id FOR UPDATE"
                 ),
                 {"run_id": run_id, "task_id": task_id},
@@ -1253,17 +1255,32 @@ class PostgresRunTokenBudgetStore:
                 # stop merely because capacity is parked in a legacy stage or in a
                 # dependant that cannot run until this task succeeds.
                 reason = None
-                if not has_progress and not allow_initial_credit:
+                credit_permits_unverified_borrow = liveness_credit in {
+                    LivenessCredit.INITIAL_STARTUP,
+                    LivenessCredit.TOOL_RECOVERY,
+                    LivenessCredit.CHECKPOINT_RESUME,
+                }
+                if not has_progress and not credit_permits_unverified_borrow:
                     flags.append("NO_VERIFIED_PROGRESS")
                     reason = "本轮前没有可验证的代码、工具或验证进展。"
+                if (
+                    liveness_credit is LivenessCredit.TOOL_RECOVERY
+                    and bool(getattr(task_row, "tool_recovery_credit_used", False))
+                ):
+                    flags.append("TOOL_RECOVERY_CREDIT_CONSUMED")
+                    reason = "该工作包已使用过一次工具纠错活性信用。"
                 if stage_shortfall > flex_available:
                     flags.append("FLEX_STAGE_CAPACITY")
                 if lender_borrow > downstream_available:
                     flags.append("DEPENDENT_DOWNSTREAM_RESERVE")
                 if current_budget + needed > maximum_budget:
                     flags.append("PACKAGE_CEILING")
+                    if reason is None:
+                        reason = f"借款后将超过该工作包的 {maximum_budget} Token 上限。"
                 if int(task_row.borrow_count) >= 3:
                     flags.append("BORROW_LIMIT")
+                    if reason is None:
+                        reason = "已达到该工作包的 3 次 FLEX 借款上限。"
                 if reason is not None:
                     recovery_action = (
                         "continue_from_checkpoint"
@@ -1372,7 +1389,8 @@ class PostgresRunTokenBudgetStore:
                         f"{prefix}_budget_tokens = {prefix}_budget_tokens + :needed, "
                         f"{prefix}_borrowed_tokens = {prefix}_borrowed_tokens + :needed, "
                         "borrow_count = borrow_count + 1, complexity = :complexity, "
-                        "complexity_upgrade_count = complexity_upgrade_count + :upgrade "
+                        "complexity_upgrade_count = complexity_upgrade_count + :upgrade, "
+                        "last_liveness_credit = :liveness_credit "
                         "WHERE run_id = :run_id AND task_id = :task_id"
                     ),
                     {
@@ -1381,6 +1399,7 @@ class PostgresRunTokenBudgetStore:
                         "needed": needed,
                         "complexity": complexity,
                         "upgrade": 1 if upgraded else 0,
+                        "liveness_credit": liveness_credit.value,
                     },
                 )
                 await self._persist_budget_decision(
@@ -1401,7 +1420,8 @@ class PostgresRunTokenBudgetStore:
                             critical_path_expanded=critical_path_expanded,
                             lender_borrow=lender_borrow,
                             global_credit=global_credit,
-                            initial_credit=allow_initial_credit and not has_progress,
+                            liveness_credit=liveness_credit,
+                            has_progress=has_progress,
                         ),
                         limit_flags=tuple(flags),
                     ),
@@ -1430,7 +1450,8 @@ class PostgresRunTokenBudgetStore:
                     "last_available_tokens = :available, last_flex_available_tokens = :flex, "
                     "last_downstream_available_tokens = :downstream, last_borrowed_tokens = :borrowed, "
                     "last_budget_decision = :decision, last_budget_reason = :reason, "
-                    "last_recovery_action = NULL "
+                    "last_recovery_action = NULL, last_liveness_credit = :liveness_credit, "
+                    "tool_recovery_credit_used = tool_recovery_credit_used OR :tool_recovery_credit "
                     "WHERE run_id = :run_id AND task_id = :task_id"
                 ),
                 {
@@ -1438,12 +1459,15 @@ class PostgresRunTokenBudgetStore:
                     "available": available, "flex": flex_available,
                     "downstream": downstream_available, "borrowed": needed,
                     "decision": "BORROWED" if needed else "RESERVED",
+                    "liveness_credit": liveness_credit.value,
+                    "tool_recovery_credit": liveness_credit is LivenessCredit.TOOL_RECOVERY,
                     "reason": (
                         self._credit_decision_reason(
                             critical_path_expanded=critical_path_expanded,
                             lender_borrow=lender_borrow,
                             global_credit=global_credit,
-                            initial_credit=allow_initial_credit and not has_progress,
+                            liveness_credit=liveness_credit,
+                            has_progress=has_progress,
                         )
                         if needed
                         else None
@@ -1477,11 +1501,18 @@ class PostgresRunTokenBudgetStore:
         critical_path_expanded: bool,
         lender_borrow: int,
         global_credit: int,
-        initial_credit: bool,
+        liveness_credit: LivenessCredit,
+        has_progress: bool,
     ) -> str:
         parts: list[str] = []
-        if initial_credit:
-            parts.append("首次受控开发调用使用 Run 启动信用")
+        if not has_progress:
+            credit_reason = {
+                LivenessCredit.INITIAL_STARTUP: "首次受控开发调用使用 Run 启动活性信用",
+                LivenessCredit.TOOL_RECOVERY: "一次可恢复工具错误使用 FLEX 纠错活性信用",
+                LivenessCredit.CHECKPOINT_RESUME: "检查点恢复使用受控活性信用",
+            }.get(liveness_credit)
+            if credit_reason is not None:
+                parts.append(credit_reason)
         if critical_path_expanded:
             parts.append("关键路径已扩展工作包软上限")
         if global_credit:

@@ -385,6 +385,8 @@ def build_run_metrics(
                     developer_startup_reserve_tokens=item.developer_startup_reserve_tokens,
                     complexity_upgrade_count=item.complexity_upgrade_count,
                     borrow_count=item.borrow_count,
+                    tool_recovery_credit_used=item.tool_recovery_credit_used,
+                    last_liveness_credit=item.last_liveness_credit.value,
                     last_required_tokens=item.last_required_tokens,
                     last_available_tokens=item.last_available_tokens,
                     last_flex_available_tokens=item.last_flex_available_tokens,

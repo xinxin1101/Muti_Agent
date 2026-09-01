@@ -5,7 +5,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.models.agent import AgentRole
+from app.models.agent import AgentRole, LivenessCredit
 
 
 class RunTokenBudgetStatus(StrEnum):
@@ -62,6 +62,8 @@ class WorkPackageTokenBudget(BaseModel):
     developer_startup_reserve_tokens: int = Field(default=0, ge=0)
     complexity_upgrade_count: int = Field(default=0, ge=0)
     borrow_count: int = Field(default=0, ge=0)
+    tool_recovery_credit_used: bool = False
+    last_liveness_credit: LivenessCredit = LivenessCredit.NORMAL
     last_required_tokens: int = Field(default=0, ge=0)
     last_available_tokens: int = Field(default=0, ge=0)
     last_flex_available_tokens: int = Field(default=0, ge=0)

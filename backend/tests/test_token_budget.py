@@ -9,6 +9,7 @@ from app.models.agent import (
     AgentRequest,
     AgentResponse,
     AgentRole,
+    LivenessCredit,
     MessageRole,
     TokenUsage,
 )
@@ -58,7 +59,7 @@ class _BudgetStore:
         self.blocked = blocked
         self.reserved: tuple[int, int] | None = None
         self.has_progress: bool | None = None
-        self.allow_initial_credit: bool | None = None
+        self.liveness_credit: LivenessCredit | None = None
         self.settled: TokenUsage | None = None
         self.observations: list[dict[str, object]] = []
         self.tool_outcomes: list[dict[str, object]] = []
@@ -68,7 +69,7 @@ class _BudgetStore:
             raise TokenBudgetReservationError("本次运行模型预算已用尽，未向模型服务发起请求。")
         self.reserved = (kwargs["estimated_input_tokens"], kwargs["max_output_tokens"])
         self.has_progress = kwargs.get("has_progress")
-        self.allow_initial_credit = kwargs.get("allow_initial_credit")
+        self.liveness_credit = kwargs.get("liveness_credit")
         return TokenBudgetReservation(
             reservation_id=uuid4(),
             run_id=kwargs["run_id"],
@@ -284,12 +285,12 @@ async def test_budgeted_driver_reserves_before_call_and_settles_actual_usage() -
     assert driver.calls == 1
     assert store.reserved == (200, 400)
     assert store.has_progress is True
-    assert store.allow_initial_credit is False
+    assert store.liveness_credit is LivenessCredit.VERIFIED_PROGRESS
     assert store.settled == response.usage
 
 
 @pytest.mark.anyio
-async def test_budgeted_driver_allows_only_first_turn_to_use_run_start_credit() -> None:
+async def test_budgeted_driver_marks_first_turn_as_initial_startup_liveness_credit() -> None:
     store = _BudgetStore()
     driver = BudgetedAgentDriver(
         driver=_Driver(), budget_store=store, run_id=uuid4(), task_id="task-a"  # type: ignore[arg-type]
@@ -297,7 +298,23 @@ async def test_budgeted_driver_allows_only_first_turn_to_use_run_start_credit() 
 
     await driver.complete(_request().model_copy(update={"execution_iteration": 1}))
 
-    assert store.allow_initial_credit is True
+    assert store.liveness_credit is LivenessCredit.INITIAL_STARTUP
+
+
+@pytest.mark.anyio
+async def test_budgeted_driver_forwards_explicit_tool_recovery_liveness_credit() -> None:
+    store = _BudgetStore()
+    driver = BudgetedAgentDriver(
+        driver=_Driver(), budget_store=store, run_id=uuid4(), task_id="task-a"  # type: ignore[arg-type]
+    )
+
+    await driver.complete(
+        _request().model_copy(
+            update={"execution_iteration": 2, "liveness_credit": LivenessCredit.TOOL_RECOVERY}
+        )
+    )
+
+    assert store.liveness_credit is LivenessCredit.TOOL_RECOVERY
 
 
 @pytest.mark.anyio
@@ -586,7 +603,7 @@ async def test_flex_borrows_immediately_when_next_call_does_not_fit_and_task_pro
 
 
 @pytest.mark.anyio
-async def test_first_turn_can_use_run_credit_before_any_tool_progress() -> None:
+async def test_initial_startup_credit_can_use_run_credit_before_any_tool_progress() -> None:
     store = object.__new__(PostgresRunTokenBudgetStore)
     session = _BorrowingSession()
 
@@ -599,7 +616,7 @@ async def test_first_turn_can_use_run_credit_before_any_tool_progress() -> None:
         max_output_tokens=1_400,
         required=5_481,
         has_progress=False,
-        allow_initial_credit=True,
+        liveness_credit=LivenessCredit.INITIAL_STARTUP,
     )
 
     decision = next(
@@ -607,7 +624,72 @@ async def test_first_turn_can_use_run_credit_before_any_tool_progress() -> None:
         for statement, values in session.calls
         if "INSERT INTO run_token_budget_decisions" in statement
     )
-    assert "首次受控开发调用使用 Run 启动信用" in str(decision["reason"])
+    assert "首次受控开发调用使用 Run 启动活性信用" in str(decision["reason"])
+
+
+@pytest.mark.anyio
+async def test_tool_recovery_credit_allows_exactly_one_unverified_flex_correction() -> None:
+    store = object.__new__(PostgresRunTokenBudgetStore)
+    session = _BorrowingSession()
+
+    await store._reserve_hierarchy(
+        session=session,  # type: ignore[arg-type]
+        run_id=uuid4(),
+        task_id="gomoku-core",
+        role=AgentRole.DEVELOPER,
+        estimated_input_tokens=4_081,
+        max_output_tokens=1_400,
+        required=5_481,
+        has_progress=False,
+        liveness_credit=LivenessCredit.TOOL_RECOVERY,
+    )
+
+    update = next(
+        values
+        for statement, values in session.calls
+        if "tool_recovery_credit_used = tool_recovery_credit_used" in statement
+    )
+    assert update["tool_recovery_credit"] is True
+    assert update["liveness_credit"] == LivenessCredit.TOOL_RECOVERY.value
+
+    session._package.tool_recovery_credit_used = True
+    with pytest.raises(WorkPackageBudgetAllocationError, match="已使用过一次工具纠错活性信用"):
+        await store._reserve_hierarchy(
+            session=session,  # type: ignore[arg-type]
+            run_id=uuid4(),
+            task_id="gomoku-core",
+            role=AgentRole.DEVELOPER,
+            estimated_input_tokens=4_081,
+            max_output_tokens=1_400,
+            required=5_481,
+            has_progress=False,
+            liveness_credit=LivenessCredit.TOOL_RECOVERY,
+        )
+
+
+@pytest.mark.anyio
+async def test_checkpoint_resume_credit_is_distinct_from_initial_startup_credit() -> None:
+    store = object.__new__(PostgresRunTokenBudgetStore)
+    session = _BorrowingSession()
+
+    await store._reserve_hierarchy(
+        session=session,  # type: ignore[arg-type]
+        run_id=uuid4(),
+        task_id="gomoku-core",
+        role=AgentRole.DEVELOPER,
+        estimated_input_tokens=4_081,
+        max_output_tokens=1_400,
+        required=5_481,
+        has_progress=False,
+        liveness_credit=LivenessCredit.CHECKPOINT_RESUME,
+    )
+
+    decision = next(
+        values
+        for statement, values in session.calls
+        if "INSERT INTO run_token_budget_decisions" in statement
+    )
+    assert "检查点恢复使用受控活性信用" in str(decision["reason"])
 
 
 @pytest.mark.anyio
@@ -635,6 +717,7 @@ async def test_work_package_reservation_without_borrowing_records_zero_downstrea
     )
     assert snapshot_write["downstream"] == 0
     assert snapshot_write["borrowed"] == 0
+    assert snapshot_write["liveness_credit"] == LivenessCredit.NORMAL.value
 
 
 @pytest.mark.anyio

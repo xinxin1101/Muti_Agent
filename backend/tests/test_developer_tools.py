@@ -2,6 +2,7 @@ import asyncio
 import json
 import subprocess
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -9,12 +10,14 @@ from app.agents import DeveloperAgent
 from app.models import (
     AgentResponse,
     DeveloperStopReason,
+    LivenessCredit,
     MessageRole,
     TaskContract,
     TokenUsage,
     ToolCall,
     ToolErrorCode,
 )
+from app.providers.budgeted import BudgetedAgentDriver
 from app.runtime.orchestrator import SingleTaskOrchestrator
 from app.tools import RepositoryToolbox
 from app.workspace import LocalGitWorkspace
@@ -516,6 +519,63 @@ def test_invalid_write_file_gets_one_larger_structured_retry(tmp_path: Path) -> 
         for message in driver.requests[2].messages
     )
     assert (root / "app" / "game.py").is_file()
+
+
+def test_developer_uses_one_tool_recovery_liveness_credit_through_budgeted_driver(
+    tmp_path: Path,
+) -> None:
+    class RecordingBudgetStore:
+        def __init__(self) -> None:
+            self.credits: list[LivenessCredit] = []
+
+        async def reserve(self, **kwargs):  # type: ignore[no-untyped-def]
+            self.credits.append(kwargs["liveness_credit"])
+            return object()
+
+        async def settle(self, _reservation, _usage):  # type: ignore[no-untyped-def]
+            return None
+
+        async def cancel(self, _reservation):  # type: ignore[no-untyped-def]
+            return None
+
+    root = _make_repository(tmp_path)
+    workspace = LocalGitWorkspace(root)
+    invalid_call = ToolCall(id="bad-write", name="write_file", arguments="{")
+    provider = FakeDriver(
+        [
+            _response(tool_calls=[invalid_call]),
+            _response(
+                tool_calls=[
+                    _call(
+                        "fixed-write",
+                        "write_file",
+                        {"path": "app/game.py", "content": "def run():\n    return 'ok'\n"},
+                    )
+                ]
+            ),
+            _response(content="已修改文件: app/game.py\n已执行验证: 无\n遗留事项: 无"),
+        ]
+    )
+    budget_store = RecordingBudgetStore()
+    developer = DeveloperAgent(
+        driver=BudgetedAgentDriver(
+            driver=provider,
+            budget_store=budget_store,  # type: ignore[arg-type]
+            run_id=uuid4(),
+            task_id="DEV-001",
+        ),
+        model="test/developer",
+        max_iterations=6,
+    )
+
+    result = asyncio.run(developer.run(_task(), workspace=workspace))
+
+    assert result.stop_reason is DeveloperStopReason.MODEL_STOP
+    assert budget_store.credits == [
+        LivenessCredit.INITIAL_STARTUP,
+        LivenessCredit.TOOL_RECOVERY,
+        LivenessCredit.VERIFIED_PROGRESS,
+    ]
 
 
 def test_different_invalid_argument_shapes_do_not_stop_as_repeated_failure(tmp_path: Path) -> None:
