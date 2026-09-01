@@ -48,7 +48,7 @@ export function TaskComposer({ initialProjectId = "", compact = false }: Props) 
           <span className="rounded-full bg-stone-100 px-2.5 py-1">运行验证</span>
           <span className="rounded-full bg-stone-100 px-2.5 py-1">成功后可创建草稿 PR</span>
         </div>
-        <button type="submit" aria-label="启动多智能体运行" disabled={launch.isPending || !effectiveProjectId || !requirement.trim()} className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-45">
+        <button type="submit" aria-label="启动多智能体运行" disabled={launch.isPending || !effectiveProjectId || !requirement.trim()} className="df-button df-button-primary rounded-xl">
           {launch.isPending ? "正在准备…" : "开始开发 ↑"}
         </button>
       </div>

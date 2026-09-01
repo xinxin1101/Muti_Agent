@@ -8,20 +8,20 @@ type DiffViewerProps = {
 export function DiffViewer({ diff }: DiffViewerProps) {
   return (
     <div className="space-y-4" aria-label="只读 Git 差异">
-      <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-5">
+      <div className="df-surface-card p-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <h2 className="text-xl font-semibold text-white">Git 差异</h2>
-            <p className="mt-1 text-sm text-slate-400">
+            <h2 className="text-xl font-semibold text-stone-900">Git 差异</h2>
+            <p className="mt-1 text-sm text-stone-600">
               {labelFor(diff.diff_kind)} · {diff.evidence_basis} 证据 #{diff.source_evidence_id}
             </p>
           </div>
-          <p className="font-mono text-sm text-slate-300">
+          <p className="font-mono text-sm text-stone-700">
             <span className="text-emerald-300">+{diff.additions}</span>{" "}
             <span className="text-rose-300">-{diff.deletions}</span>
           </p>
         </div>
-        <div className="mt-4 grid gap-2 text-xs text-slate-400 md:grid-cols-2">
+        <div className="mt-4 grid gap-2 text-xs text-stone-600 md:grid-cols-2">
           <p className="break-all font-mono">基线 {diff.base_commit}</p>
           <p className="break-all font-mono">目标 {diff.head_commit}</p>
           <p>{diff.changed_file_count} 个变更文件</p>
@@ -35,7 +35,7 @@ export function DiffViewer({ diff }: DiffViewerProps) {
       </div>
 
       {diff.changed_file_count === 0 ? (
-        <p className="text-slate-500">已验证的提交对不存在文件树差异。</p>
+        <p className="text-stone-600">已验证的提交对不存在文件树差异。</p>
       ) : null}
 
       {diff.files.map((file) => (
@@ -47,7 +47,7 @@ export function DiffViewer({ diff }: DiffViewerProps) {
 
 function DiffFile({ file }: { file: ProductDiffFile }) {
   return (
-    <article className="overflow-hidden rounded-xl border border-slate-800 bg-slate-950/70">
+    <article className="df-technical-panel overflow-hidden">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 px-4 py-3">
         <div className="flex min-w-0 items-center gap-3">
           <span className="rounded bg-slate-800 px-2 py-1 font-mono text-xs text-slate-300">

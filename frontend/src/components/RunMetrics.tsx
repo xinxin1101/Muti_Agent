@@ -6,8 +6,8 @@ export function RunMetrics({ metrics }: { metrics: ProductRunMetrics }) {
   return (
     <section className="space-y-4" aria-label="运行指标">
       <div>
-        <h2 className="text-xl font-semibold text-white">运行指标</h2>
-        <p className="mt-1 text-sm text-slate-500">
+        <h2 className="text-xl font-semibold text-stone-900">运行指标</h2>
+        <p className="mt-1 text-sm text-stone-600">
           来自已接受持久化记录和运行时事件的描述性计数。状态仍来自 {labelFor(metrics.status_basis)}；这些数字不用于判定成功。
         </p>
       </div>
@@ -26,10 +26,10 @@ export function RunMetrics({ metrics }: { metrics: ProductRunMetrics }) {
         />
       </dl>
 
-      <div className="rounded-xl border border-blue-400/20 bg-blue-400/5 p-5">
+      <div className="rounded-xl border border-blue-200 bg-blue-50 p-5">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <h3 className="font-semibold text-blue-100">执行路径</h3>
-          <span className="font-mono text-sm text-blue-200">
+          <h3 className="font-semibold text-blue-900">执行路径</h3>
+          <span className="font-mono text-sm text-blue-800">
             策略：{metrics.workflow.activation_mode}
           </span>
         </div>
@@ -43,19 +43,19 @@ export function RunMetrics({ metrics }: { metrics: ProductRunMetrics }) {
           <Metric label="预计节省" value={`${metrics.workflow.estimated_tokens_saved.toLocaleString()} Token`} />
           <Metric label="升级至 Agent" value={metrics.workflow.agent_escalations} />
         </dl>
-        <p className="mt-4 text-xs text-blue-100/70">
+        <p className="mt-4 text-xs text-blue-700">
           “预计节省”基于被 Workflow 跳过的 Developer 输出上限估算，不等同于供应商账单；实际 Token 以预算统计为准。
         </p>
       </div>
 
-      <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-5">
+      <div className="rounded-xl border border-stone-200 bg-white p-5">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <h3 className="font-semibold text-slate-200">模型预算</h3>
-          <span className="font-mono text-sm text-slate-300">
+          <h3 className="font-semibold text-stone-900">模型预算</h3>
+          <span className="font-mono text-sm text-stone-700">
             {metrics.token_budget.used_total_tokens.toLocaleString()} / {metrics.token_budget.total_budget_tokens.toLocaleString()} Token · {metrics.token_budget.status}
           </span>
         </div>
-        <p className="mt-1 text-sm text-slate-500">
+        <p className="mt-1 text-sm text-stone-600">
           预算在每次请求前预留，响应后按实际用量结算；超额请求会在本地拦截。
         </p>
         <dl className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -79,8 +79,8 @@ export function RunMetrics({ metrics }: { metrics: ProductRunMetrics }) {
       </div>
 
       <div className="grid gap-4 xl:grid-cols-2">
-        <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-5">
-          <h3 className="font-semibold text-slate-200">已接受的执行证据</h3>
+        <div className="rounded-xl border border-stone-200 bg-white p-5">
+          <h3 className="font-semibold text-stone-900">已接受的执行证据</h3>
           <dl className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <Metric label="开发智能体执行" value={metrics.evidence.developer_runs} />
             <Metric label="验证尝试" value={metrics.evidence.verification_attempts} />
@@ -94,8 +94,8 @@ export function RunMetrics({ metrics }: { metrics: ProductRunMetrics }) {
           </dl>
         </div>
 
-        <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-5">
-          <h3 className="font-semibold text-slate-200">运行时可观测性</h3>
+        <div className="rounded-xl border border-stone-200 bg-white p-5">
+          <h3 className="font-semibold text-stone-900">运行时可观测性</h3>
           <dl className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <Metric label="警告事件" value={metrics.runtime_events.warning_events} />
             <Metric label="错误事件" value={metrics.runtime_events.error_events} />
@@ -114,9 +114,9 @@ export function RunMetrics({ metrics }: { metrics: ProductRunMetrics }) {
         </div>
       </div>
 
-      <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-5">
-        <h3 className="font-semibold text-slate-200">阶段耗时（已持久化）</h3>
-        <p className="mt-1 text-sm text-slate-500">
+      <div className="rounded-xl border border-stone-200 bg-white p-5">
+        <h3 className="font-semibold text-stone-900">阶段耗时（已持久化）</h3>
+        <p className="mt-1 text-sm text-stone-600">
           来自模型、工具、验证与 Worker 执行证据，用于识别耗时瓶颈，不参与成功判定。
         </p>
         <dl className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -149,9 +149,9 @@ function MetricCard({
   mono?: boolean;
 }) {
   return (
-    <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
-      <dt className="text-xs uppercase tracking-wide text-slate-500">{label}</dt>
-      <dd className={`mt-2 text-xl text-slate-100 ${mono ? "font-mono" : ""}`}>{value}</dd>
+    <div className="rounded-xl border border-stone-200 bg-stone-50 p-4">
+      <dt className="text-xs uppercase tracking-wide text-stone-500">{label}</dt>
+      <dd className={`mt-2 text-xl text-stone-900 ${mono ? "font-mono" : ""}`}>{value}</dd>
     </div>
   );
 }
@@ -159,8 +159,8 @@ function MetricCard({
 function Metric({ label, value }: { label: string; value: number | string }) {
   return (
     <div>
-      <dt className="text-xs text-slate-500">{label}</dt>
-      <dd className="mt-1 font-mono text-lg text-slate-200">{value}</dd>
+      <dt className="text-xs text-stone-500">{label}</dt>
+      <dd className="mt-1 font-mono text-lg text-stone-800">{value}</dd>
     </div>
   );
 }

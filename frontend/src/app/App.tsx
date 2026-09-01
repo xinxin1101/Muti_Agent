@@ -1,6 +1,7 @@
 import { Route, Routes } from "react-router";
 
 import { AppShell } from "../components/AppShell";
+import { DevelopmentSessionPage } from "../pages/DevelopmentSessionPage";
 import { FoundationPage } from "../pages/FoundationPage";
 import { NewRunPage } from "../pages/NewRunPage";
 import { PlaceholderPage } from "../pages/PlaceholderPage";
@@ -19,6 +20,7 @@ export function App() {
         <Route path="runs/new" element={<NewRunPage />} />
         <Route path="runs/:runId" element={<RunDashboardPage />} />
         <Route path="runs/:runId/tasks/:taskId" element={<TaskDetailPage />} />
+        <Route path="development-sessions/:sessionId" element={<DevelopmentSessionPage />} />
         <Route
           path="*"
           element={

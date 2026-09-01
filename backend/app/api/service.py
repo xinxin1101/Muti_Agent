@@ -102,13 +102,16 @@ class ProductMetricsUnavailableError(RuntimeError):
 
 
 class ProductCatalog(Protocol):
-    async def list_projects(self, *, limit: int = 100) -> tuple[ProductProject, ...]: ...
+    async def list_projects(
+        self, *, limit: int = 100, include_archived: bool = False
+    ) -> tuple[ProductProject, ...]: ...
     async def get_project(self, project_id: UUID) -> ProductProject: ...
     async def list_runs(
         self,
         *,
         project_id: UUID | None = None,
         limit: int = 100,
+        include_archived: bool = False,
     ) -> tuple[ProductRun, ...]: ...
     async def dispose(self) -> None: ...
 
@@ -323,8 +326,12 @@ class ProductRuntimeService:
             )
         )
 
-    async def list_projects(self) -> tuple[ProductProject, ...]:
-        projects = await self._catalog.list_projects()
+    async def list_projects(self, *, include_archived: bool = False) -> tuple[ProductProject, ...]:
+        projects = (
+            await self._catalog.list_projects(include_archived=True)
+            if include_archived
+            else await self._catalog.list_projects()
+        )
         return tuple(await asyncio.gather(*(self._with_workspace_state(item) for item in projects)))
 
     async def create_project(self, request: ProjectCreateRequest) -> ProductProject:
@@ -344,9 +351,16 @@ class ProductRuntimeService:
     async def get_project(self, project_id: UUID) -> ProductProject:
         return await self._with_workspace_state(await self._catalog.get_project(project_id))
 
-    async def list_runs(self, *, project_id: UUID | None = None) -> tuple[ProductRun, ...]:
+    async def list_runs(
+        self, *, project_id: UUID | None = None, include_archived: bool = False
+    ) -> tuple[ProductRun, ...]:
         if project_id is not None:
             await self._catalog.get_project(project_id)
+        if include_archived:
+            return await self._catalog.list_runs(
+                project_id=project_id,
+                include_archived=True,
+            )
         return await self._catalog.list_runs(project_id=project_id)
 
     async def create_run(self, request: RunCreateRequest) -> RunLaunchResponse:
@@ -488,6 +502,9 @@ class ProductRuntimeService:
             repository_url=snapshot.repository_url,
             default_branch=snapshot.default_branch,
             status=snapshot.status,
+            display_status=snapshot.display_status,
+            recovery_reason=snapshot.recovery_reason,
+            recovery_checked_at=snapshot.recovery_checked_at,
             base_commit=snapshot.base_commit,
             task_count=len(tasks),
             started_at=snapshot.started_at,

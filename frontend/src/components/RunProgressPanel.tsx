@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 
 import {
   getOperatorRecovery,
+  getRunRecoveryPreview,
   getRuntimeDependencyHealth,
   recoverInterruptedRun,
 } from "../api/product";
@@ -31,6 +32,12 @@ export function RunProgressPanel({ run, events, onRecovered }: Props) {
     queryFn: () => getOperatorRecovery(run.run_id),
     enabled: run.status === "RUNNING",
   });
+  const recoveryPreview = useQuery({
+    queryKey: ["run-recovery-preview", run.run_id],
+    queryFn: () => getRunRecoveryPreview(run.run_id),
+    enabled: run.status === "RUNNING" && run.display_status === "RECOVERY_REQUIRED",
+    refetchInterval: run.status === "RUNNING" && run.display_status === "RECOVERY_REQUIRED" ? 15_000 : false,
+  });
   const dependencies = useQuery({
     queryKey: ["runtime-dependency-health"],
     queryFn: getRuntimeDependencyHealth,
@@ -48,11 +55,11 @@ export function RunProgressPanel({ run, events, onRecovered }: Props) {
   const elapsed = elapsedLabel(run.started_at, run.finished_at, now);
 
   return (
-    <section aria-label="运行进展" className="rounded-xl border border-slate-800 bg-slate-900/50 p-5">
+    <section aria-label="运行进展" className="df-surface-card p-5">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h2 className="text-xl font-semibold text-white">运行进展</h2>
-          <p className="mt-1 text-sm text-slate-400">{experience.detail}</p>
+          <h2 className="text-xl font-semibold text-stone-900">运行进展</h2>
+          <p className="mt-1 text-sm text-stone-600">{experience.detail}</p>
         </div>
         <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${badgeClass(experience.state)}`}>
           {labelFor(experience.state)}
@@ -73,17 +80,17 @@ export function RunProgressPanel({ run, events, onRecovered }: Props) {
         />
       </dl>
 
-      <div className="mt-4 rounded-lg border border-slate-800 bg-slate-950/40 p-4 text-sm text-slate-300">
+      <div className="mt-4 rounded-lg border border-stone-200 bg-stone-50 p-4 text-sm text-stone-800">
         <p>
-          <span className="text-slate-500">当前任务：</span>
+          <span className="text-stone-500">当前任务：</span>
           {experience.taskId ?? "等待调度"}
         </p>
-        <p className="mt-2 text-xs leading-5 text-slate-500">
+        <p className="mt-2 text-xs leading-5 text-stone-600">
           租约心跳仅说明 Worker 仍持有执行权；“最近有效进展”只计算运行开始、分派、证据、验证、审查、修复和终态事件，不将租约续期计入进度。
         </p>
       </div>
 
-      <p className={`mt-3 text-xs ${dependencies.data?.dispatch_available ? "text-emerald-200/70" : "text-amber-200/80"}`}>
+      <p className={`mt-3 text-xs ${dependencies.data?.dispatch_available ? "text-emerald-700" : "text-amber-700"}`}>
         {dependencies.data
           ? dependencies.data.dispatch_available
             ? "运行依赖正常：PostgreSQL 与 Redis 消息队列可用。"
@@ -93,13 +100,13 @@ export function RunProgressPanel({ run, events, onRecovered }: Props) {
             : "正在检查 PostgreSQL 与 Redis 消息队列状态…"}
       </p>
 
-      <ol aria-label="任务阶段" className="mt-4 flex flex-wrap gap-2 text-xs text-slate-400">
+      <ol aria-label="任务阶段" className="mt-4 flex flex-wrap gap-2 text-xs text-stone-600">
         {STAGES.map((stage) => (
           <li
             key={stage}
             className={[
               "rounded-full border px-2.5 py-1",
-              stage === experience.phase ? "border-cyan-300/40 bg-cyan-300/10 text-cyan-100" : "border-slate-800 bg-slate-950/30",
+              stage === experience.phase ? "border-blue-200 bg-blue-50 text-blue-800" : "border-stone-200 bg-stone-50",
             ].join(" ")}
           >
             {stage}
@@ -108,15 +115,15 @@ export function RunProgressPanel({ run, events, onRecovered }: Props) {
       </ol>
 
       {activity ? (
-        <div className="mt-4 rounded-lg border border-slate-800 bg-slate-950/40 p-4">
-          <p className="text-sm font-medium text-slate-200">最近已持久化的开发活动</p>
+        <div className="mt-4 rounded-lg border border-stone-200 bg-stone-50 p-4">
+          <p className="text-sm font-medium text-stone-900">最近已持久化的开发活动</p>
           <div className="mt-3 grid gap-3 text-sm sm:grid-cols-3">
-            <p><span className="text-slate-500">模型轮次：</span>{activity.iterations}</p>
-            <p><span className="text-slate-500">工具调用：</span>{activity.toolCalls}</p>
-            <p><span className="text-slate-500">模型响应：</span>{activity.latencyMs} ms</p>
+            <p><span className="text-stone-500">模型轮次：</span>{activity.iterations}</p>
+            <p><span className="text-stone-500">工具调用：</span>{activity.toolCalls}</p>
+            <p><span className="text-stone-500">模型响应：</span>{activity.latencyMs} ms</p>
           </div>
-          <p className="mt-3 text-sm text-slate-300">
-            <span className="text-slate-500">最近修改文件：</span>
+          <p className="mt-3 text-sm text-stone-800">
+            <span className="text-stone-500">最近修改文件：</span>
             {activity.changedFiles.length > 0 ? activity.changedFiles.join("、") : "本轮未修改文件"}
             {activity.changedFileCount > activity.changedFiles.length
               ? `（另有 ${activity.changedFileCount - activity.changedFiles.length} 个）`
@@ -126,28 +133,35 @@ export function RunProgressPanel({ run, events, onRecovered }: Props) {
       ) : null}
 
       {continuation ? (
-        <div className="mt-4 rounded-lg border border-cyan-300/20 bg-cyan-300/5 p-4 text-sm text-cyan-50">
+        <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
           已从检查点自动续接：累计 {formatElapsedMs(continuation.elapsedMs)}。
           {continuation.remainingSummary ? ` 下一切片：${continuation.remainingSummary}` : ""}
         </div>
       ) : null}
 
       {experience.state === "RECOVERY_REQUIRED" ? (
-        <div className="mt-4 rounded-lg border border-amber-300/30 bg-amber-300/5 p-4">
-          <p className="font-medium text-amber-100">该运行已异常中断，不能安全地在原记录中重试。</p>
-          <p className="mt-1 text-sm text-amber-100/80">
-            Worker 已释放租约但没有保存终态执行证据。新建恢复运行会使用服务器保存的任务图和最新仓库基线，不修改这条旧记录。
+        <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4">
+          <p className="font-medium text-amber-900">该运行已异常中断，不能安全地在原记录中重试。</p>
+          <p className="mt-1 text-sm text-amber-800">
+            {recoveryPreview.data?.reason ?? run.recovery_reason ?? "Worker 已释放租约但没有保存终态执行证据。"}
+            新建恢复运行会使用服务器保存的任务图和最新仓库基线，不修改这条旧记录。
           </p>
+          {recoveryPreview.data ? (
+            <p className="mt-2 text-xs text-amber-700">
+              将复用 {recoveryPreview.data.reusable_task_ids.length} 个已完成工作包，剩余 {recoveryPreview.data.remaining_task_ids.length} 个；预计新增 {recoveryPreview.data.estimated_new_budget_tokens.toLocaleString()} Token。
+              {recoveryPreview.data.baseline_changed ? " 当前仓库基线已变化，请确认基于旧基线继续。" : " 当前基线未变化，可安全复用。"}
+            </p>
+          ) : null}
           <button
             type="button"
             onClick={() => recover.mutate()}
             disabled={recover.isPending}
-            className="mt-3 rounded-lg border border-amber-300/40 bg-amber-300/10 px-4 py-2 text-sm font-medium text-amber-50 disabled:cursor-not-allowed disabled:opacity-60"
+            className="df-button mt-3 border border-amber-300 bg-amber-50 text-amber-900"
           >
             {recover.isPending ? "正在创建恢复运行…" : "新建恢复运行"}
           </button>
           {recover.error instanceof Error ? (
-            <p className="mt-3 text-sm text-rose-200">创建恢复运行失败：{recover.error.message}</p>
+            <p className="mt-3 text-sm text-rose-700">创建恢复运行失败：{recover.error.message}</p>
           ) : null}
         </div>
       ) : null}
@@ -157,9 +171,9 @@ export function RunProgressPanel({ run, events, onRecovered }: Props) {
 
 function Metric({ label, value }: Readonly<{ label: string; value: string }>) {
   return (
-    <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
-      <dt className="text-xs text-slate-500">{label}</dt>
-      <dd className="mt-1 text-sm font-medium text-slate-200">{value}</dd>
+    <div className="rounded-lg border border-stone-200 bg-stone-50 p-3">
+      <dt className="text-xs text-stone-500">{label}</dt>
+      <dd className="mt-1 text-sm font-medium text-stone-900">{value}</dd>
     </div>
   );
 }
@@ -170,6 +184,24 @@ function describeExperience(
   events: readonly RuntimeEventSummary[],
   now: number,
 ): Readonly<{ state: DisplayState; completed: number; taskId: string | null; phase: string; detail: string }> {
+  if (run.display_status === "RECOVERY_REQUIRED") {
+    return {
+      state: "RECOVERY_REQUIRED",
+      completed: recovery?.reconciliation.completed_task_ids.length ?? 0,
+      taskId: recovery?.reconciliation.reconcile_task_ids[0] ?? null,
+      phase: "异常中断",
+      detail: run.recovery_reason ?? "检测到运行缺少有效 Worker 终态证据。",
+    };
+  }
+  if (run.display_status === "WAITING_EXTERNAL") {
+    return {
+      state: "WAITING_EXTERNAL",
+      completed: recovery?.reconciliation.completed_task_ids.length ?? 0,
+      taskId: null,
+      phase: "等待外部响应",
+      detail: run.recovery_reason ?? "正在等待模型、消息队列或外部服务响应。",
+    };
+  }
   if (run.status === "SUCCEEDED" || run.status === "FAILED") {
     return {
       state: run.status,
@@ -325,8 +357,8 @@ function useRefreshClock(enabled: boolean): number {
 }
 
 function badgeClass(state: DisplayState): string {
-  if (state === "SUCCEEDED") return "border-emerald-300/40 bg-emerald-300/10 text-emerald-100";
-  if (state === "FAILED" || state === "RECOVERY_REQUIRED") return "border-rose-300/40 bg-rose-300/10 text-rose-100";
-  if (state === "WAITING_EXTERNAL") return "border-amber-300/40 bg-amber-300/10 text-amber-100";
-  return "border-cyan-300/40 bg-cyan-300/10 text-cyan-100";
+  if (state === "SUCCEEDED") return "border-emerald-200 bg-emerald-50 text-emerald-800";
+  if (state === "FAILED" || state === "RECOVERY_REQUIRED") return "border-rose-200 bg-rose-50 text-rose-800";
+  if (state === "WAITING_EXTERNAL") return "border-amber-200 bg-amber-50 text-amber-800";
+  return "border-blue-200 bg-blue-50 text-blue-800";
 }

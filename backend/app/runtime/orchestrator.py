@@ -23,7 +23,7 @@ from app.models import (
 )
 from app.models.context import ContextContinuationState, ContextFileDigest, ContextPacket
 from app.models.run import AgentUsageSummary, SingleTaskRunResult, TaskRunState
-from app.providers.errors import AgentProviderError
+from app.providers.errors import AgentProviderError, ProviderErrorCode
 from app.runtime.failure_classifier import FailureClassifier
 from app.runtime.state_machine import TaskStateMachine
 from app.trace.collector import TaskTraceCollector
@@ -115,7 +115,15 @@ class SingleTaskOrchestrator:
                     trace=trace,
                 )
         except AgentProviderError as exc:
-            machine.transition(TaskRunState.FAILED, detail="Developer model provider failed.")
+            machine.transition(
+                TaskRunState.FAILED,
+                detail=(
+                    "Developer work-package budget allocation was blocked; "
+                    "recovery can reuse the persisted DAG."
+                    if exc.code is ProviderErrorCode.WORK_PACKAGE_BUDGET_ALLOCATION_BLOCKED
+                    else "Developer model provider failed."
+                ),
+            )
             return self._result(
                 task=task,
                 machine=machine,
@@ -474,7 +482,15 @@ class SingleTaskOrchestrator:
                 failures=exc.failures,
             )
         except AgentProviderError as exc:
-            machine.transition(TaskRunState.FAILED, detail="Repair model provider failed.")
+            machine.transition(
+                TaskRunState.FAILED,
+                detail=(
+                    "Repair work-package budget allocation was blocked; "
+                    "recovery can reuse the persisted DAG."
+                    if exc.code is ProviderErrorCode.WORK_PACKAGE_BUDGET_ALLOCATION_BLOCKED
+                    else "Repair model provider failed."
+                ),
+            )
             return self._result(
                 task=task,
                 machine=machine,
@@ -768,6 +784,11 @@ class SingleTaskOrchestrator:
                 for item in packet.selected_files
             ),
             changed_files=tuple(workspace.changed_files()),
+            changed_file_hashes=tuple(
+                ContextFileDigest(path=path, source_sha256=digest)
+                for path, digest in workspace.change_snapshot().file_hashes
+                if digest != "<missing>"
+            ),
             completed_summary=(
                 developer.final_message[:512]
                 if developer is not None and developer.final_message
@@ -820,6 +841,19 @@ class SingleTaskOrchestrator:
                 ]
             )
         evidence.append(f"developer_model_latency_ms={developer_result.latency_ms}")
+        evidence.extend(developer_result.tool_failure_evidence)
+
+        if developer_result.stop_reason is DeveloperStopReason.REPEATED_TOOL_FAILURE:
+            return FailureReport(
+                failure_type=FailureType.INVALID_TOOL_ARGUMENTS,
+                source=FailureSource.TOOL,
+                message=(
+                    "开发智能体连续两次以无效参数调用同一仓库工具，"
+                    "已停止当前开发切片，未继续请求模型。"
+                ),
+                retryable=False,
+                evidence=evidence,
+            )
 
         if developer_result.stop_reason is DeveloperStopReason.TIME_LIMIT:
             return FailureReport(

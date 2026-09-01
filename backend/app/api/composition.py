@@ -7,6 +7,7 @@ from app.agents.developer import DeveloperAgent
 from app.api.catalog import PostgresProductCatalog
 from app.api.failure_explanation import FailureExplanationService
 from app.api.hardened import HardenedOperatorAwareAutonomousProductRuntimeService
+from app.api.lifecycle_rollout import LifecycleRolloutGate
 from app.api.repository_context import RepositoryPlanningContextBuilder
 from app.context.token_estimator import TokenEstimator
 from app.core.settings import Settings
@@ -14,15 +15,20 @@ from app.dispatch import DurableDramatiqTaskDispatcher
 from app.models.sandbox import DockerSandboxPolicy
 from app.persistence import (
     PostgresDAGStore,
+    PostgresDevelopmentSessionStore,
     PostgresDispatchAttemptStore,
     PostgresFailureExplanationStore,
     PostgresGitHubPublicationStore,
     PostgresInterfaceContractRegistry,
+    PostgresLifecycleStore,
+    PostgresOperationAuditStore,
     PostgresPlanningTokenBudgetStore,
     PostgresProjectCredentialStore,
+    PostgresRunRecoveryStore,
     PostgresRunTokenBudgetStore,
     PostgresTaskLeaseStore,
     PostgresTaskReconciliationStore,
+    ProjectDeletionTokenSigner,
 )
 from app.persistence.operator import OperatorAwarePostgresEvidenceStore
 from app.persistence.project import ProjectAwarePostgresEvidenceStore
@@ -40,6 +46,7 @@ from app.verification.dependency_preflight import DependencyEnvironmentPreflight
 from app.verification.project_profile import ProjectAwareVerificationRunner
 from app.workers.executor import ManagedProjectWorkspaceResolver
 from app.workspace import ManagedProjectProvisioner
+from app.workspace.lifecycle import LocalProjectArtifacts
 
 
 class _ProductRunController:
@@ -160,12 +167,12 @@ def build_product_service(
         # Keep the registry owned by the Product service in every rollout mode; the service
         # only declares/enforces contracts when ``contract_gated`` is selected.
         interface_contract_registry=interface_contract_registry,
-        developer_max_output_tokens=settings.developer_max_output_tokens,
     )
     token_budget_store = PostgresRunTokenBudgetStore.from_url(
         settings.database_url,
         default_total_budget_tokens=settings.run_token_budget_tokens,
         adaptive_package_budget_enabled=settings.adaptive_package_budget_enabled,
+        token_estimate_safety_factor=settings.token_estimate_safety_factor,
         echo=settings.database_echo,
     )
     planning_budget_store = PostgresPlanningTokenBudgetStore.from_url(
@@ -173,6 +180,30 @@ def build_product_service(
         default_total_budget_tokens=settings.planner_token_budget_tokens,
         default_max_attempts=settings.planner_max_attempts,
         echo=settings.database_echo,
+    )
+    development_session_store = PostgresDevelopmentSessionStore.from_url(
+        settings.database_url,
+        echo=settings.database_echo,
+    )
+    operation_audit_store = PostgresOperationAuditStore.from_url(
+        settings.database_url,
+        echo=settings.database_echo,
+    )
+    lifecycle_store = PostgresLifecycleStore.from_url(
+        settings.database_url,
+        echo=settings.database_echo,
+    )
+    run_recovery_store = PostgresRunRecoveryStore.from_url(
+        settings.database_url,
+        echo=settings.database_echo,
+        startup_timeout_seconds=settings.recovery_startup_timeout_seconds,
+        stale_progress_seconds=settings.recovery_stale_progress_seconds,
+    )
+    # Prefer the dedicated local encryption key.  Older local installations that have not yet
+    # configured it still receive a process-local signing secret derived from the database URL;
+    # neither value is returned to the browser or written to audit records.
+    deletion_token_signer = ProjectDeletionTokenSigner(
+        settings.secrets_encryption_key or settings.database_url
     )
 
     driver = (
@@ -199,6 +230,9 @@ def build_product_service(
                 max_duration_seconds=settings.developer_max_duration_seconds,
                 max_model_turn_seconds=settings.developer_max_model_turn_seconds,
                 max_output_tokens=settings.developer_max_output_tokens,
+                invalid_tool_retry_max_output_tokens=(
+                    settings.developer_invalid_tool_retry_max_output_tokens
+                ),
                 enable_thinking=settings.developer_enable_thinking,
                 context_compaction_enabled=settings.context_compaction_enabled,
                 role_context_projection_enabled=settings.role_context_projection_enabled,
@@ -252,7 +286,9 @@ def build_product_service(
             driver=driver,
             model=settings.planner_model,
             max_schema_repair_attempts=settings.planner_max_attempts - 1,
-            max_output_tokens=settings.planner_max_output_tokens,
+            initial_max_output_tokens=settings.planner_initial_max_output_tokens,
+            json_repair_max_output_tokens=settings.planner_json_repair_max_output_tokens,
+            budget_replan_max_output_tokens=settings.planner_budget_replan_max_output_tokens,
             enable_thinking=settings.planner_enable_thinking,
             adaptive_work_package_routing_enabled=settings.adaptive_work_package_routing_enabled,
         )
@@ -291,6 +327,14 @@ def build_product_service(
         token_budget_store=token_budget_store,
         interface_contract_registry=interface_contract_registry,
         planning_budget_store=planning_budget_store,
+        development_session_store=development_session_store,
+        operation_audit_store=operation_audit_store,
+        lifecycle_store=lifecycle_store,
+        deletion_token_signer=deletion_token_signer,
+        local_project_artifacts=LocalProjectArtifacts(
+            repository_root=repository_root,
+            project_cache_root=settings.workspace_root / "project-caches",
+        ),
         token_estimator=TokenEstimator(safety_factor=settings.token_estimate_safety_factor),
         workflow_activation_mode=settings.workflow_activation_mode,
         work_package_activation_mode=settings.work_package_activation_mode,
@@ -303,12 +347,18 @@ def build_product_service(
         trace_dispatch_reader=dispatch_store,
         operator_recovery=operator_recovery,
         operator_audit_resource=operator_audit_store,
-        # A 4k launch budget reserves both prompt and Planner output.  Keep the frozen
-        # repository context intentionally compact so ordinary requests fit before any provider
-        # call; larger/verbose requests fail closed with a clear planner-budget diagnosis.
+        run_recovery_store=run_recovery_store,
+        recovery_check_interval_seconds=settings.recovery_check_interval_seconds,
+        lifecycle_rollout_gate=LifecycleRolloutGate(
+            mode=settings.lifecycle_rollout_mode,
+            environment=settings.environment,
+            test_repository_url=settings.lifecycle_test_repository_url,
+            project_allowlist=settings.lifecycle_project_ids,
+        ),
+        # Planning receives immutable repository metadata only.  The launch budget preflights
+        # one initial plan plus one compact recovery before any provider request is made.
         planning_context_builder=RepositoryPlanningContextBuilder(
-            max_files=12,
-            max_file_chars=2_000,
-            max_context_chars=6_000,
+            max_directory_entries=100,
+            max_context_chars=2_400,
         ),
     )

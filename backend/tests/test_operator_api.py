@@ -67,6 +67,8 @@ class _OperatorService:
         self.plan = plan
         self.plan_calls = 0
         self.action_calls: list[tuple] = []
+        self.recovery_calls = 0
+        self.recovered_run_id = uuid4()
 
     async def get_operator_recovery_plan(self, run_id):
         self.plan_calls += 1
@@ -84,8 +86,9 @@ class _OperatorService:
 
     async def recover_interrupted_run(self, run_id):
         assert run_id == self.plan.run_id
+        self.recovery_calls += 1
         return {
-            "run_id": str(uuid4()),
+            "run_id": str(self.recovered_run_id),
             "project_id": str(uuid4()),
             "base_commit": "b" * 40,
             "dag_sha256": "c" * 64,
@@ -101,6 +104,7 @@ class _OperatorService:
                     "queue_name": "default",
                 }
             ],
+            "reused_existing_run": self.recovery_calls > 1,
         }
 
 
@@ -203,6 +207,22 @@ def test_interrupted_recovery_creates_a_new_server_owned_run() -> None:
     body = response.json()
     assert body["run_id"] != str(plan.run_id)
     assert body["initial_ready_task_ids"] == ["A"]
+
+
+def test_interrupted_recovery_repeat_returns_the_existing_server_owned_run() -> None:
+    plan = _plan()
+    service = _OperatorService(plan)
+    app = FastAPI()
+    attach_operator_routes(app, service)  # type: ignore[arg-type]
+    client = TestClient(app)
+
+    first = client.post(f"/api/v1/runs/{plan.run_id}/recover-as-new")
+    second = client.post(f"/api/v1/runs/{plan.run_id}/recover-as-new")
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert second.json()["run_id"] == first.json()["run_id"]
+    assert second.json()["reused_existing_run"] is True
 
 
 def test_interrupted_recovery_rejects_browser_authored_inputs() -> None:

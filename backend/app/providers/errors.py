@@ -15,6 +15,7 @@ class ProviderErrorCode(StrEnum):
     CONNECTION = "connection"
     UNAVAILABLE = "unavailable"
     TOKEN_BUDGET_EXHAUSTED = "token_budget_exhausted"
+    WORK_PACKAGE_BUDGET_ALLOCATION_BLOCKED = "work_package_budget_allocation_blocked"
     UNKNOWN = "unknown"
 
 
@@ -43,6 +44,8 @@ class AgentProviderError(RuntimeError):
             failure_type = FailureType.RATE_LIMIT
         elif self.code is ProviderErrorCode.TOKEN_BUDGET_EXHAUSTED:
             failure_type = FailureType.TOKEN_BUDGET_EXHAUSTED
+        elif self.code is ProviderErrorCode.WORK_PACKAGE_BUDGET_ALLOCATION_BLOCKED:
+            failure_type = FailureType.WORK_PACKAGE_BUDGET_ALLOCATION_BLOCKED
         else:
             failure_type = FailureType.TOOL_FAILURE
 
@@ -52,7 +55,11 @@ class AgentProviderError(RuntimeError):
 
         return FailureReport(
             failure_type=failure_type,
-            source=FailureSource.PROVIDER,
+            source=(
+                FailureSource.RUNTIME
+                if self.code is ProviderErrorCode.WORK_PACKAGE_BUDGET_ALLOCATION_BLOCKED
+                else FailureSource.PROVIDER
+            ),
             message=str(self),
             retryable=self.retryable,
             evidence=evidence,

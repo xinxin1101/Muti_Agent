@@ -15,6 +15,7 @@ from app.models import (
     ToolCall,
     ToolErrorCode,
 )
+from app.runtime.orchestrator import SingleTaskOrchestrator
 from app.tools import RepositoryToolbox
 from app.workspace import LocalGitWorkspace
 
@@ -428,6 +429,122 @@ def test_developer_agent_is_bounded_by_iteration_budget(tmp_path: Path) -> None:
     assert result.iterations == 2
     assert result.tool_calls == 2
     assert len(driver.requests) == 2
+
+
+def test_repeated_invalid_write_file_stops_without_marking_budget_progress(tmp_path: Path) -> None:
+    root = _make_repository(tmp_path)
+    workspace = LocalGitWorkspace(root)
+    invalid_call = ToolCall(id="bad-write", name="write_file", arguments="{")
+    driver = FakeDriver(
+        [
+            _response(tool_calls=[invalid_call]),
+            _response(tool_calls=[invalid_call.model_copy(update={"id": "bad-write-2"})]),
+        ]
+    )
+
+    result = asyncio.run(
+        DeveloperAgent(driver=driver, model="test/developer", max_iterations=6).run(
+            _task(), workspace=workspace
+        )
+    )
+
+    assert result.stop_reason is DeveloperStopReason.REPEATED_TOOL_FAILURE
+    assert result.tool_calls == 2
+    assert result.changed_files == []
+    assert len(driver.requests) == 2
+    assert driver.requests[1].budget_progress is False
+    assert driver.requests[1].max_output_tokens == 3_200
+    assert "complete JSON object" in driver.requests[1].messages[-1].content
+    assert result.tool_failure_evidence == (
+        "tool=write_file;error_code=INVALID_ARGUMENTS;arguments=invalid_json;fields=-",
+    )
+
+    failure = SingleTaskOrchestrator._developer_stop_failure(result)
+    assert failure.failure_type.value == "INVALID_TOOL_ARGUMENTS"
+    assert failure.source.value == "tool"
+    assert failure.retryable is False
+    assert result.tool_failure_evidence[0] in failure.evidence
+
+
+def test_invalid_write_file_gets_one_larger_structured_retry(tmp_path: Path) -> None:
+    root = _make_repository(tmp_path)
+    workspace = LocalGitWorkspace(root)
+    invalid_call = ToolCall(id="bad-write", name="write_file", arguments="{")
+    driver = FakeDriver(
+        [
+            _response(tool_calls=[invalid_call]),
+            _response(
+                tool_calls=[
+                    _call(
+                        "fixed-write",
+                        "write_file",
+                        {"path": "app/game.py", "content": "def run():\n    return 'ok'\n"},
+                    )
+                ]
+            ),
+            _response(content="已修改文件: app/game.py\n已执行验证: 无\n遗留事项: 无"),
+        ]
+    )
+
+    result = asyncio.run(
+        DeveloperAgent(
+            driver=driver,
+            model="test/developer",
+            max_iterations=6,
+            max_output_tokens=1_400,
+            invalid_tool_retry_max_output_tokens=3_200,
+        ).run(_task(), workspace=workspace)
+    )
+
+    assert result.stop_reason is DeveloperStopReason.MODEL_STOP
+    assert len(driver.requests) == 3
+    assert driver.requests[0].max_output_tokens == 1_400
+    assert driver.requests[1].max_output_tokens == 3_200
+    assert "small runnable skeleton" in driver.requests[1].messages[-1].content
+    assert driver.requests[2].max_output_tokens == 1_400
+    # Successful source writes are represented by the bounded working-state digest
+    # rather than replaying the full write_file arguments into the next model turn.
+    assert all(
+        not message.tool_calls
+        or all(call.id != "fixed-write" for call in message.tool_calls)
+        for message in driver.requests[2].messages
+    )
+    assert any(
+        message.role is MessageRole.USER
+        and "changed_files" in message.content
+        and "app/game.py" in message.content
+        for message in driver.requests[2].messages
+    )
+    assert (root / "app" / "game.py").is_file()
+
+
+def test_different_invalid_argument_shapes_do_not_stop_as_repeated_failure(tmp_path: Path) -> None:
+    root = _make_repository(tmp_path)
+    workspace = LocalGitWorkspace(root)
+    driver = FakeDriver(
+        [
+            _response(tool_calls=[ToolCall(id="invalid-json", name="write_file", arguments="{")]),
+            _response(
+                tool_calls=[
+                    _call(
+                        "missing-content",
+                        "write_file",
+                        {"path": "app/game.py"},
+                    )
+                ]
+            ),
+            _response(content="已修改文件: 无\n已执行验证: 无\n遗留事项: 需要补充文件"),
+        ]
+    )
+
+    result = asyncio.run(
+        DeveloperAgent(driver=driver, model="test/developer", max_iterations=6).run(
+            _task(), workspace=workspace
+        )
+    )
+
+    assert result.stop_reason is DeveloperStopReason.MODEL_STOP
+    assert len(driver.requests) == 3
 
 
 def test_developer_compacts_old_complete_tool_groups_without_orphans(tmp_path: Path) -> None:

@@ -98,6 +98,7 @@ def build_single_task_runner(
         max_duration_seconds=settings.developer_max_duration_seconds,
         max_model_turn_seconds=settings.developer_max_model_turn_seconds,
         max_output_tokens=settings.developer_max_output_tokens,
+        invalid_tool_retry_max_output_tokens=settings.developer_invalid_tool_retry_max_output_tokens,
         enable_thinking=settings.developer_enable_thinking,
         context_compaction_enabled=settings.context_compaction_enabled,
         role_context_projection_enabled=settings.role_context_projection_enabled,
@@ -218,6 +219,7 @@ async def execute_task_from_settings(
         settings.database_url,
         default_total_budget_tokens=settings.run_token_budget_tokens,
         adaptive_package_budget_enabled=settings.adaptive_package_budget_enabled,
+        token_estimate_safety_factor=settings.token_estimate_safety_factor,
         echo=settings.database_echo,
     )
     interface_contract_registry = PostgresInterfaceContractRegistry.from_url(
@@ -322,6 +324,9 @@ async def execute_task_from_settings(
                 max_duration_seconds=settings.developer_max_duration_seconds,
                 max_model_turn_seconds=settings.developer_max_model_turn_seconds,
                 max_output_tokens=settings.developer_max_output_tokens,
+                invalid_tool_retry_max_output_tokens=(
+                    settings.developer_invalid_tool_retry_max_output_tokens
+                ),
                 enable_thinking=settings.developer_enable_thinking,
                 context_compaction_enabled=settings.context_compaction_enabled,
                 role_context_projection_enabled=settings.role_context_projection_enabled,

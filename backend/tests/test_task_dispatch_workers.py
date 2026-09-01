@@ -495,6 +495,26 @@ class _ExplodingBackend:
         raise RuntimeError("simulated worker boundary failure")
 
 
+class _SuccessfulBackend:
+    async def execute(self, *, base_commit, dispatch_id, run_id, task, **_kwargs):
+        return WorkerExecutionEvidence(
+            dispatch_id=dispatch_id,
+            run_id=run_id,
+            task_id=task.task_id,
+            status=WorkerExecutionStatus.SUCCEEDED,
+            base_commit=base_commit,
+            branch_name="devflow/task/success",
+            commit_sha="b" * 40,
+            run_result=_success_result(task.task_id),
+            duration_ms=1,
+        )
+
+
+class _ExplodingBudgetManager:
+    async def reclaim_unused_task_budget(self, **_kwargs) -> None:
+        raise RuntimeError("simulated budget finalization failure")
+
+
 def _time_limited_result(task_id: str) -> SingleTaskRunResult:
     failure = FailureReport(
         failure_type=FailureType.AGENT_TIME_LIMIT,
@@ -617,6 +637,43 @@ def test_worker_persists_terminal_failure_before_returning_an_unhandled_boundary
     assert evidence.status is WorkerExecutionStatus.FAILED
     assert evidence.failures[0].evidence[0] == "terminalization=worker_exception"
     assert any(item[0] is PersistenceEvidenceKind.WORKER_EXECUTION for item in store.appended)
+
+
+def test_worker_keeps_execution_evidence_and_settles_dispatch_when_budget_cleanup_fails() -> None:
+    task = _task("QUEUE-BUDGET-FINALIZATION")
+    run_id = uuid4()
+    snapshot = SimpleNamespace(
+        status=PersistedRunStatus.RUNNING,
+        run_id=run_id,
+        project_id=uuid4(),
+        base_commit="a" * 40,
+        tasks=(SimpleNamespace(task=task),),
+    )
+    store = _RecordingStore(snapshot)
+    worker = QueuedTaskWorker(
+        store=store,
+        backend=_SuccessfulBackend(),
+        token_budget_manager=_ExplodingBudgetManager(),
+    )
+    envelope = TaskDispatchEnvelope(dispatch_id=uuid4(), run_id=run_id, task_id=task.task_id)
+
+    evidence = asyncio.run(worker.execute(envelope, run_token=uuid4()))
+
+    assert evidence.status is WorkerExecutionStatus.SUCCEEDED
+    execution_keys = [
+        key
+        for kind, key, _token in store.appended
+        if kind is PersistenceEvidenceKind.WORKER_EXECUTION
+    ]
+    assert execution_keys == [f"dispatch:{envelope.dispatch_id}:execution"]
+    assert (
+        PersistenceEvidenceKind.FAILURE_REPORT,
+        f"dispatch:{envelope.dispatch_id}:post-execution-finalization-failure",
+    ) in [(kind, key) for kind, key, _token in store.appended]
+    assert (
+        PersistenceEvidenceKind.DISPATCH_EVENT,
+        f"dispatch:{envelope.dispatch_id}:completed",
+    ) in [(kind, key) for kind, key, _token in store.appended]
 
 
 def test_worker_automatically_continues_time_limited_checkpoint_from_its_commit() -> None:

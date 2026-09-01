@@ -20,6 +20,7 @@ from app.models.context import ContextPacket
 from app.models.failure import FailureReport
 from app.models.repair import RepairRunResult, RepairStopReason
 from app.models.task import TaskContract
+from app.models.tools import ToolExecutionResult
 from app.providers.base import AgentDriver
 from app.runtime import FailureClassifier
 from app.tools import RepositoryToolbox
@@ -130,6 +131,7 @@ class RepairAgent:
         total_tokens = 0
         total_latency_ms = 0
         tool_call_count = 0
+        successful_tool_progress = bool(workspace.changed_files())
 
         for iteration in range(1, self._max_iterations + 1):
             remaining = self._max_duration_seconds - (self._clock() - started_at)
@@ -157,12 +159,13 @@ class RepairAgent:
                 temperature=self._temperature,
                 max_output_tokens=self._max_output_tokens,
                 enable_thinking=self._enable_thinking,
-                budget_progress=tool_call_count > 0 or bool(workspace.changed_files()),
+                budget_progress=successful_tool_progress or bool(workspace.changed_files()),
                 context_estimated_tokens=(
                     context_packet.usage.billable_prompt_tokens
                     if context_packet is not None
                     else 0
                 ),
+                execution_iteration=iteration,
                 tools=toolbox.definitions(),
             )
 
@@ -282,15 +285,28 @@ class RepairAgent:
                         duration_ms=trace.duration_ms(tool_started),
                     )
                 tool_results.append(tool_result)
+                if tool_result.ok:
+                    successful_tool_progress = True
 
             if self._context_compaction_enabled:
-                retention.add_group(
+                compacted_code_mutation = retention.add_group(
                     assistant=assistant_message,
                     calls=response.tool_calls,
                     results=tool_results,
                 )
+                await self._record_tool_cost_outcome(
+                    calls=response.tool_calls,
+                    results=tool_results,
+                    workspace=workspace,
+                    compacted_code_mutation=compacted_code_mutation,
+                )
                 messages = retention.messages()
             else:
+                await self._record_tool_cost_outcome(
+                    calls=response.tool_calls,
+                    results=tool_results,
+                    workspace=workspace,
+                )
                 messages.append(assistant_message)
                 messages.extend(
                     AgentMessage(
@@ -332,6 +348,26 @@ class RepairAgent:
                 total_tokens=total_tokens,
             ),
             latency_ms=total_latency_ms,
+        )
+
+    async def _record_tool_cost_outcome(
+        self,
+        *,
+        calls,
+        results: list[ToolExecutionResult],
+        workspace: LocalGitWorkspace,
+        compacted_code_mutation: bool = False,
+    ) -> None:
+        observer = getattr(self._driver, "record_tool_outcome", None)
+        if not callable(observer):
+            return
+        await observer(
+            role=AgentRole.REPAIR.value,
+            calls=calls,
+            results=results,
+            has_real_progress=any(result.ok for result in results)
+            or bool(workspace.changed_files()),
+            compacted_code_mutation=compacted_code_mutation,
         )
 
     def _initial_messages(

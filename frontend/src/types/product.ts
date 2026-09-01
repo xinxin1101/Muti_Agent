@@ -8,6 +8,7 @@ export type ProductProject = Readonly<{
   provision_status: "PROVISIONING" | "READY" | "FAILED" | "ARCHIVED";
   provision_error_code: string | null;
   provision_error_message: string | null;
+  lifecycle_state?: "ACTIVE" | "ARCHIVED" | "DELETING" | "DELETED";
 }>;
 
 export type ProductRun = Readonly<{
@@ -18,6 +19,144 @@ export type ProductRun = Readonly<{
   task_count: number;
   started_at: string;
   finished_at: string | null;
+  development_session_id?: string | null;
+  visibility_status?: "VISIBLE" | "ARCHIVED";
+  display_status?: "RUNNING" | "WAITING_EXTERNAL" | "RECOVERY_REQUIRED" | "FAILED" | "SUCCEEDED";
+  recovery_reason?: string | null;
+  recovery_checked_at?: string | null;
+}>;
+
+export type ProductRunRecoveryPreview = Readonly<{
+  run_id: string;
+  display_status: "RUNNING" | "WAITING_EXTERNAL" | "RECOVERY_REQUIRED" | "FAILED" | "SUCCEEDED";
+  reason: string;
+  observed_at: string;
+  baseline_commit: string;
+  current_commit: string;
+  baseline_changed: boolean;
+  dag_complete: boolean;
+  reusable_task_ids: readonly string[];
+  checkpointed_task_ids: readonly string[];
+  remaining_task_ids: readonly string[];
+  estimated_new_budget_tokens: number;
+  existing_recovery_run_id: string | null;
+  recovery_available: boolean;
+  next_action: string;
+}>;
+
+export type ProductProjectDeletionPreview = Readonly<{
+  project_id: string;
+  required_confirmation_name: string;
+  confirmation_token: string;
+  confirmation_expires_at: string;
+  run_count: number;
+  development_session_count: number;
+  local_workspace_bytes: number;
+  project_cache_bytes: number;
+  local_credential_count: number;
+  github_repository_will_be_preserved: true;
+}>;
+
+export type ProjectDeletePayload = Readonly<{
+  confirmation_token: string;
+  confirmation_name: string;
+}>;
+
+export type ProductProjectDeletionResult = Readonly<{
+  project_id: string;
+  removed_run_count: number;
+  removed_development_session_count: number;
+  removed_local_workspace_bytes: number;
+  removed_project_cache_bytes: number;
+  removed_local_credential_count: number;
+  github_repository_preserved: true;
+}>;
+
+export type ProductDevelopmentSessionRecovery = Readonly<{
+  session_id: string;
+  source_run_id: string | null;
+  baseline_commit: string;
+  current_commit: string;
+  baseline_state: "UNCHANGED" | "CHANGED";
+  reusable_work_package_ids: readonly string[];
+  checkpointed_work_package_ids: readonly string[];
+  remaining_work_package_ids: readonly string[];
+  next_action: string;
+  budget: Readonly<{
+    planning_remaining_tokens: number | null;
+    development_remaining_tokens: number | null;
+    repair_remaining_tokens: number | null;
+    estimated_new_development_tokens: number;
+    estimated_tokens_saved: number;
+  }>;
+}>;
+
+export type ProductDevelopmentSessionWorkPackage = Readonly<{
+  task_id: string;
+  state: "PENDING" | "RUNNING" | "SUCCEEDED" | "CHECKPOINTED" | "FAILED" | "BLOCKED";
+  source_run_id: string | null;
+  commit_sha: string | null;
+  completed_interfaces: readonly string[];
+  verification_summary: string;
+  failure_summary: string;
+  remaining_budget_tokens: number | null;
+}>;
+
+export type ProductDevelopmentSession = Readonly<{
+  session_id: string;
+  project_id: string;
+  requirement: string;
+  base_commit: string;
+  state: "PLANNING" | "PAUSED_PLANNING" | "PLANNING_FAILED" | "READY_TO_RUN" | "RUNNING" | "COMPLETED";
+  planning_diagnostic: string;
+  latest_run_id: string | null;
+  resumed_from_run_id: string | null;
+  work_packages: readonly ProductDevelopmentSessionWorkPackage[];
+  created_at: string;
+  updated_at: string;
+}>;
+
+export type ProductDevelopmentSessionTimelineEntry = Readonly<{
+  entry_id: number;
+  session_id: string;
+  kind:
+    | "USER_REQUIREMENT"
+    | "PLAN_DRAFT"
+    | "BUDGET_DIAGNOSTIC"
+    | "WORK_PACKAGE_SUCCEEDED"
+    | "WORK_PACKAGE_FAILED"
+    | "WORK_PACKAGE_CHECKPOINTED"
+    | "RECOVERY_PREVIEW"
+    | "USER_ACTION"
+    | "RUN_LINKED";
+  title: string;
+  detail: string;
+  run_id: string | null;
+  task_id: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}>;
+
+export type DevelopmentSessionCommandIntent =
+  | "CONTINUE_DEVELOPMENT"
+  | "CONTINUE_OLD_BASE"
+  | "REPLAN"
+  | "ARCHIVE_RUN"
+  | "ARCHIVE_PROJECT"
+  | "DELETE_PROJECT"
+  | "UNKNOWN";
+
+export type ProductDevelopmentSessionCommandPreview = Readonly<{
+  session_id: string;
+  intent: DevelopmentSessionCommandIntent;
+  action_name: string;
+  target_label: string;
+  impact: readonly string[];
+  token_cost: string;
+  affects_local_data: boolean;
+  confirmation_required: true;
+  executable_after_confirmation: boolean;
+  confirmation_hint: string;
 }>;
 
 export type ProductTaskSummary = Readonly<{
@@ -33,6 +172,7 @@ export type ProductRunFailure = Readonly<{
     | "AGENT_TIME_LIMIT"
     | "RATE_LIMIT"
     | "INVALID_AGENT_OUTPUT"
+    | "INVALID_TOOL_ARGUMENTS"
     | "TOOL_FAILURE"
     | "SCOPE_VIOLATION"
     | "TEST_FAILURE"
@@ -43,6 +183,7 @@ export type ProductRunFailure = Readonly<{
     | "SANDBOX_TIMEOUT"
     | "VERIFICATION_ENV_UNAVAILABLE"
     | "TOKEN_BUDGET_EXHAUSTED"
+    | "WORK_PACKAGE_BUDGET_ALLOCATION_BLOCKED"
     | "INTERFACE_CONTRACT_UNMET";
   source: "provider" | "tool" | "verification" | "review" | "runtime";
   message: string;
@@ -172,12 +313,24 @@ export type ProductWorkPackageTokenBudget = Readonly<{
   repair_borrowed_tokens?: number;
   developer_reclaimed_tokens?: number;
   repair_reclaimed_tokens?: number;
+  developer_observed_prompt_tokens?: number;
+  repair_observed_prompt_tokens?: number;
+  developer_predicted_next_input_tokens?: number;
+  repair_predicted_next_input_tokens?: number;
+  developer_estimated_executable_turns?: number;
+  repair_estimated_executable_turns?: number;
+  developer_startup_reserve_tokens?: number;
+  complexity_upgrade_count?: number;
   borrow_count?: number;
   last_required_tokens?: number;
   last_available_tokens?: number;
   last_flex_available_tokens?: number;
+  last_downstream_available_tokens?: number;
   last_borrowed_tokens?: number;
   last_budget_decision?: string | null;
+  last_budget_reason?: string | null;
+  last_recovery_action?: string | null;
+  last_cost_prediction_reason?: string | null;
   status: "ACTIVE" | "RECLAIMED";
 }>;
 

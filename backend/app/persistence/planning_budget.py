@@ -162,6 +162,50 @@ class PostgresPlanningTokenBudgetStore:
             reserved_output_tokens=max_output_tokens,
         )
 
+    async def ensure_capacity(
+        self,
+        *,
+        launch_id: UUID,
+        required_tokens: int,
+        required_calls: int,
+    ) -> None:
+        """Check a complete initial-planning envelope before its first provider call.
+
+        This is intentionally non-mutating: the normal per-call reservations remain the durable
+        concurrency fence.  A launch has one caller, while this check prevents a first call from
+        consuming the capacity required by its one allowed recovery path.
+        """
+
+        if required_tokens < 1 or required_calls < 1:
+            raise ValueError("planning capacity must include at least one positive call")
+        async with self._session_factory.begin() as session:
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT total_budget_tokens, used_total_tokens, reserved_tokens, "
+                        "attempt_count, max_attempts FROM planning_token_budgets "
+                        "WHERE launch_id = :launch_id FOR UPDATE"
+                    ),
+                    {"launch_id": launch_id},
+                )
+            ).one_or_none()
+            if row is None:
+                raise PlanningTokenBudgetReservationError("规划预算记录不存在，未发起模型请求。")
+            available = max(
+                0,
+                int(row.total_budget_tokens)
+                - int(row.used_total_tokens)
+                - int(row.reserved_tokens),
+            )
+            remaining_calls = int(row.max_attempts) - int(row.attempt_count)
+            if required_calls > remaining_calls or required_tokens > available:
+                raise PlanningTokenBudgetReservationError(
+                    "启动规划预算不足以覆盖首次规划和一次受控恢复，未向模型服务发起请求。"
+                    f"required_tokens={required_tokens}, available_tokens={available}, "
+                    f"required_calls={required_calls}, available_calls={max(0, remaining_calls)}, "
+                    f"budget={int(row.total_budget_tokens)}。"
+                )
+
     async def settle(self, reservation: PlanningTokenBudgetReservation, usage: TokenUsage) -> None:
         await self._finish(reservation, usage=usage)
 

@@ -32,14 +32,14 @@ export function GitHubPublication({
   if (runStatus !== "SUCCEEDED") {
     return (
       <section
-        className="rounded-xl border border-slate-800 bg-slate-900/50 p-5"
+        className="df-surface-card p-5"
         aria-label="GitHub 发布"
       >
-        <h2 className="text-xl font-semibold text-white">GitHub 发布</h2>
-        <p className="mt-2 text-sm text-slate-400">
+        <h2 className="text-xl font-semibold text-stone-900">GitHub 发布</h2>
+        <p className="mt-2 text-sm text-stone-600">
           仅当已持久化的运行状态为“已成功”后，才可发布草稿 PR。
         </p>
-        <p className="mt-2 text-xs text-slate-500">
+        <p className="mt-2 text-xs text-stone-500">
           GitHub 状态不会提升或覆盖运行状态。
         </p>
       </section>
@@ -48,7 +48,7 @@ export function GitHubPublication({
 
   if (publication.isLoading) {
     return (
-      <p className="rounded-xl border border-slate-800 bg-slate-950/60 p-5 text-sm text-slate-500">
+      <p className="df-surface-card p-5 text-sm text-stone-600">
         正在加载 GitHub 发布资格…
       </p>
     );
@@ -73,12 +73,12 @@ export function GitHubPublication({
   const publishing = item.state === "PUBLISHING";
   return (
     <section
-      className="space-y-4 rounded-xl border border-slate-800 bg-slate-900/50 p-5"
+      className="df-surface-card space-y-4 p-5"
       aria-label="GitHub 发布"
     >
       <div>
-        <h2 className="text-xl font-semibold text-white">GitHub 发布</h2>
-        <p className="mt-1 text-sm text-slate-500">
+        <h2 className="text-xl font-semibold text-stone-900">GitHub 发布</h2>
+        <p className="mt-1 text-sm text-stone-600">
           将后端选定的已接受提交发布到 DevFlow 管理的分支与草稿 PR。GitHub 不参与运行成功判定。
         </p>
       </div>
@@ -111,7 +111,7 @@ export function GitHubPublication({
           href={item.pull_request_url}
           target="_blank"
           rel="noreferrer"
-          className="inline-flex rounded-lg border border-cyan-400/30 px-4 py-2 text-sm font-medium text-cyan-200 hover:bg-cyan-400/10"
+          className="df-button df-button-secondary"
         >
           打开草稿 PR #{item.pull_request_number}
         </a>
@@ -120,7 +120,7 @@ export function GitHubPublication({
           type="button"
           disabled={!item.publisher_configured || publish.isPending}
           onClick={() => publish.mutate()}
-          className="rounded-lg bg-cyan-300 px-4 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
+          className="df-button df-button-primary"
         >
           {publish.isPending
             ? "正在发布…"
@@ -131,12 +131,12 @@ export function GitHubPublication({
       )}
 
       {publishing ? (
-        <p className="text-xs text-slate-500">
+        <p className="text-xs text-stone-500">
           后端发布声明已存在。重试是安全的：后端会拒绝仍有效的声明，仅在 PostgreSQL 声明过期后接管。
         </p>
       ) : null}
       {!item.publisher_configured && !item.pull_request_url ? (
-        <p className="text-xs text-amber-200/70">
+        <p className="text-xs text-amber-700">
           后端未加载 GitHub 发布凭据。请在仓库根目录 .env 配置
           DEVFLOW_GITHUB_PUBLICATION_TOKEN，或重新注册该项目并填写发布令牌。项目令牌会加密保存于本机 PostgreSQL 数据卷；浏览器不会保存任何凭据。
         </p>
@@ -156,8 +156,8 @@ function Fact({
 }) {
   return (
     <div>
-      <dt className="text-xs uppercase tracking-wide text-slate-500">{label}</dt>
-      <dd className={`mt-1 break-all text-sm text-slate-200 ${mono ? "font-mono" : ""}`}>
+      <dt className="text-xs uppercase tracking-wide text-stone-500">{label}</dt>
+      <dd className={`mt-1 break-all text-sm text-stone-800 ${mono ? "font-mono" : ""}`}>
         {value}
       </dd>
     </div>

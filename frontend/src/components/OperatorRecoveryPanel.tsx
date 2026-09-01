@@ -30,16 +30,16 @@ export function OperatorRecoveryPanel({ runId }: { runId: string }) {
 
   if (recovery.isLoading) {
     return (
-      <p className="rounded-xl border border-slate-800 bg-slate-950/60 p-5 text-sm text-slate-500">
+      <p className="df-surface-card p-5 text-sm text-stone-600">
         正在重建持久化恢复状态…
       </p>
     );
   }
   if (recovery.error || !recovery.data) {
     return (
-      <div className="rounded-xl border border-amber-400/20 bg-amber-400/5 p-5">
-        <h2 className="font-semibold text-amber-100">运维恢复不可用</h2>
-        <p className="mt-2 text-sm text-amber-200/80">
+      <div className="rounded-xl border border-amber-200 bg-amber-50 p-5">
+        <h2 className="font-semibold text-amber-900">运维恢复不可用</h2>
+        <p className="mt-2 text-sm text-amber-800">
           {recovery.error?.message ?? "无法重建持久化恢复状态。"}
         </p>
       </div>
@@ -49,15 +49,15 @@ export function OperatorRecoveryPanel({ runId }: { runId: string }) {
   const plan = recovery.data;
   return (
     <section aria-label="运维恢复" className="space-y-4">
-      <div className="rounded-xl border border-cyan-400/20 bg-cyan-400/5 p-5">
+      <div className="rounded-xl border border-blue-200 bg-blue-50 p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-xl font-semibold text-cyan-50">运维恢复</h2>
-            <p className="mt-2 max-w-3xl text-sm text-cyan-100/75">
+            <h2 className="text-xl font-semibold text-blue-900">运维恢复</h2>
+            <p className="mt-2 max-w-3xl text-sm text-blue-800">
               这是对持久化运行时事实的诊断投影。因果追踪可解释运行，但不能授权重试、恢复、合并或发布。
             </p>
           </div>
-          <span className="rounded-full border border-cyan-300/30 px-3 py-1 font-mono text-xs text-cyan-100">
+          <span className="rounded-full border border-blue-200 bg-white px-3 py-1 font-mono text-xs text-blue-800">
             必须重新验证
           </span>
         </div>
@@ -66,18 +66,18 @@ export function OperatorRecoveryPanel({ runId }: { runId: string }) {
           {plan.reconciliation.tasks.map((task) => (
             <div
               key={task.task_id}
-              className="grid gap-2 rounded-lg border border-slate-800 bg-slate-950/50 p-3 md:grid-cols-[8rem_12rem_1fr]"
+              className="grid gap-2 rounded-lg border border-blue-100 bg-white p-3 md:grid-cols-[8rem_12rem_1fr]"
             >
               <p className="font-mono text-xs text-cyan-200">{task.task_id}</p>
               <div>
-                <p className="font-mono text-xs text-slate-300">
+                <p className="font-mono text-xs text-stone-800">
                   {labelFor(task.frontier_state)}
                 </p>
-                <p className="mt-1 text-[11px] text-slate-600">
+                <p className="mt-1 text-[11px] text-stone-500">
                   {labelFor(task.lease_state)} · 代次 {task.lease_generation}
                 </p>
               </div>
-              <p className="text-xs leading-5 text-slate-400">
+              <p className="text-xs leading-5 text-stone-600">
                 {translateOperatorRecoveryReason(task.reason)}
               </p>
             </div>
@@ -85,7 +85,7 @@ export function OperatorRecoveryPanel({ runId }: { runId: string }) {
         </div>
 
         {action.error ? (
-          <p className="mt-4 rounded-md border border-rose-400/20 bg-rose-400/5 p-3 text-sm text-rose-200">
+          <p className="mt-4 rounded-md border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">
             {action.error.message}
           </p>
         ) : null}
@@ -98,19 +98,19 @@ export function OperatorRecoveryPanel({ runId }: { runId: string }) {
               disabled={action.isPending}
               title={candidate.description}
               onClick={() => action.mutate(candidate)}
-              className="rounded-md bg-cyan-200 px-4 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
+              className="df-button df-button-primary"
             >
               {action.isPending ? "正在重新验证持久化事实…" : candidate.label}
             </button>
           ))}
           {plan.actions.length === 0 ? (
-            <p className="text-sm text-slate-500">
+            <p className="text-sm text-stone-600">
               服务端当前未公布可执行的运维变更。浏览器不会根据追踪或任务状态虚构操作。
             </p>
           ) : null}
         </div>
 
-        <p className="mt-4 text-[11px] text-slate-600">
+        <p className="mt-4 text-[11px] text-stone-500">
           操作标识是绑定当前 DAG、租约、Worker 证据、执行基线和分派账本事实的不透明服务端值；点击仅发送该操作 ID。
         </p>
       </div>

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Callable
 from time import monotonic
 
@@ -21,6 +22,7 @@ from app.models.developer import (
     DeveloperStopReason,
 )
 from app.models.task import TaskContract
+from app.models.tools import ToolErrorCode, ToolExecutionResult
 from app.providers.base import AgentDriver
 from app.tools import RepositoryToolbox
 from app.trace.collector import TaskTraceCollector
@@ -43,6 +45,7 @@ class DeveloperAgent:
         max_tool_calls_per_turn: int = 8,
         temperature: float = 0.1,
         max_output_tokens: int = 1_400,
+        invalid_tool_retry_max_output_tokens: int = 3_200,
         enable_thinking: bool = False,
         context_compaction_enabled: bool = True,
         role_context_projection_enabled: bool = True,
@@ -63,6 +66,11 @@ class DeveloperAgent:
             raise ValueError("temperature must be between 0.0 and 2.0")
         if not 64 <= max_output_tokens <= 32_768:
             raise ValueError("max_output_tokens must be between 64 and 32768")
+        if not max_output_tokens <= invalid_tool_retry_max_output_tokens <= 32_768:
+            raise ValueError(
+                "invalid_tool_retry_max_output_tokens must be between "
+                "max_output_tokens and 32768"
+            )
 
         self._driver = driver
         self._model = normalized_model
@@ -72,6 +80,7 @@ class DeveloperAgent:
         self._max_tool_calls_per_turn = max_tool_calls_per_turn
         self._temperature = temperature
         self._max_output_tokens = max_output_tokens
+        self._invalid_tool_retry_max_output_tokens = invalid_tool_retry_max_output_tokens
         self._enable_thinking = enable_thinking
         self._context_compaction_enabled = context_compaction_enabled
         self._role_context_projection_enabled = role_context_projection_enabled
@@ -98,6 +107,10 @@ class DeveloperAgent:
         total_tokens = 0
         total_latency_ms = 0
         tool_call_count = 0
+        successful_tool_progress = bool(workspace.changed_files())
+        last_tool_failure: tuple[str, ToolErrorCode, str] | None = None
+        repeated_tool_failure_count = 0
+        tool_recovery_instruction: str | None = None
 
         for iteration in range(1, self._max_iterations + 1):
             remaining = self._max_duration_seconds - (self._clock() - started_at)
@@ -129,19 +142,34 @@ class DeveloperAgent:
                     latency_ms=total_latency_ms,
                 )
 
+            effective_max_output_tokens = self._max_output_tokens
+            request_messages = messages
+            if tool_recovery_instruction is not None:
+                # A function-call argument is part of the completion.  A normal 1,400-token
+                # cap is intentionally economical for ordinary turns but can truncate a new
+                # source file.  Give exactly one diagnosed retry a larger, separately-budgeted
+                # completion cap and a deterministic correction instruction.
+                effective_max_output_tokens = self._invalid_tool_retry_max_output_tokens
+                request_messages = [
+                    *messages,
+                    AgentMessage(role=MessageRole.USER, content=tool_recovery_instruction),
+                ]
+                tool_recovery_instruction = None
+
             request = AgentRequest(
                 role=AgentRole.DEVELOPER,
                 model=self._model,
-                messages=messages,
+                messages=request_messages,
                 temperature=self._temperature,
-                max_output_tokens=self._max_output_tokens,
+                max_output_tokens=effective_max_output_tokens,
                 enable_thinking=self._enable_thinking,
-                budget_progress=tool_call_count > 0 or bool(workspace.changed_files()),
+                budget_progress=successful_tool_progress or bool(workspace.changed_files()),
                 context_estimated_tokens=(
                     context_packet.usage.billable_prompt_tokens
                     if context_packet is not None
                     else 0
                 ),
+                execution_iteration=iteration,
                 tools=toolbox.definitions(),
             )
 
@@ -295,15 +323,77 @@ class DeveloperAgent:
                         duration_ms=trace.duration_ms(tool_started),
                     )
                 tool_results.append(tool_result)
+                if tool_result.ok:
+                    successful_tool_progress = True
+                    last_tool_failure = None
+                    repeated_tool_failure_count = 0
+                    continue
+
+                error_code = tool_result.error_code
+                if error_code is None:
+                    last_tool_failure = None
+                    repeated_tool_failure_count = 0
+                    continue
+                signature = (
+                    tool_result.name,
+                    error_code,
+                    self._tool_failure_signature(call, tool_result),
+                )
+                repeated_tool_failure_count = (
+                    repeated_tool_failure_count + 1
+                    if signature == last_tool_failure
+                    else 1
+                )
+                last_tool_failure = signature
+                if repeated_tool_failure_count >= 2:
+                    await self._record_tool_cost_outcome(
+                        calls=response.tool_calls,
+                        results=tool_results,
+                        workspace=workspace,
+                    )
+                    return self._result(
+                        stop_reason=DeveloperStopReason.REPEATED_TOOL_FAILURE,
+                        iterations=iteration,
+                        tool_calls=tool_call_count,
+                        workspace=workspace,
+                        final_message=(
+                            "Developer stopped after repeated invalid repository-tool calls; "
+                            "no additional model request was made."
+                        ),
+                        tool_failure_evidence=(
+                            self._safe_tool_failure_evidence(call, tool_result),
+                        ),
+                        usage=TokenUsage(
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=completion_tokens,
+                            total_tokens=total_tokens,
+                        ),
+                        latency_ms=total_latency_ms,
+                    )
+                tool_recovery_instruction = self._tool_recovery_instruction(
+                    call=call,
+                    result=tool_result,
+                )
 
             if self._context_compaction_enabled:
-                retention.add_group(
+                compacted_code_mutation = retention.add_group(
                     assistant=assistant_message,
                     calls=response.tool_calls,
                     results=tool_results,
                 )
+                await self._record_tool_cost_outcome(
+                    calls=response.tool_calls,
+                    results=tool_results,
+                    workspace=workspace,
+                    compacted_code_mutation=compacted_code_mutation,
+                )
                 messages = retention.messages()
             else:
+                await self._record_tool_cost_outcome(
+                    calls=response.tool_calls,
+                    results=tool_results,
+                    workspace=workspace,
+                )
                 messages.append(assistant_message)
                 messages.extend(
                     AgentMessage(
@@ -369,6 +459,26 @@ class DeveloperAgent:
             latency_ms=total_latency_ms,
         )
 
+    async def _record_tool_cost_outcome(
+        self,
+        *,
+        calls,
+        results: list[ToolExecutionResult],
+        workspace: LocalGitWorkspace,
+        compacted_code_mutation: bool = False,
+    ) -> None:
+        observer = getattr(self._driver, "record_tool_outcome", None)
+        if not callable(observer):
+            return
+        await observer(
+            role=AgentRole.DEVELOPER.value,
+            calls=calls,
+            results=results,
+            has_real_progress=any(result.ok for result in results)
+            or bool(workspace.changed_files()),
+            compacted_code_mutation=compacted_code_mutation,
+        )
+
     def _bounded_completion_after_changes(
         self,
         *,
@@ -428,7 +538,11 @@ class DeveloperAgent:
             "file when write_file can create it. Locate code with search_code or search_code_many, "
             "then prefer read_symbol or read_range before reading a whole file. Use read_files "
             "only for a small related batch, so you can make one informed change instead of "
-            "spending multiple model turns or loading unnecessary source."
+            "spending multiple model turns or loading unnecessary source. Function-tool "
+            "arguments must be one complete JSON object, never Markdown or prose. For a new "
+            "large source file, first write a small runnable skeleton, then use apply_patch "
+            "for bounded additions instead of placing an entire large implementation in one "
+            "write_file call."
         )
         if context_packet is None:
             user_prompt = (
@@ -483,6 +597,7 @@ class DeveloperAgent:
         usage: TokenUsage,
         latency_ms: int,
         final_message: str = "",
+        tool_failure_evidence: tuple[str, ...] = (),
     ) -> DeveloperRunResult:
         return DeveloperRunResult(
             stop_reason=stop_reason,
@@ -497,4 +612,54 @@ class DeveloperAgent:
                 max_duration_seconds=self._max_duration_seconds,
                 max_model_turn_seconds=self._max_model_turn_seconds,
             ),
+            tool_failure_evidence=tool_failure_evidence,
+        )
+
+    @staticmethod
+    def _safe_tool_failure_evidence(call, result: ToolExecutionResult) -> str:
+        """Return diagnostic shape metadata without retaining arguments or source content."""
+
+        argument_state = "invalid_json"
+        fields = ""
+        try:
+            payload = json.loads(call.arguments or "{}")
+            if isinstance(payload, dict):
+                argument_state = "json_object"
+                fields = ",".join(
+                    sorted(
+                        key[:64]
+                        for key in payload
+                        if isinstance(key, str) and key.replace("_", "").isalnum()
+                    )[:8]
+                )
+            else:
+                argument_state = "json_non_object"
+        except json.JSONDecodeError:
+            pass
+        error_code = result.error_code.value if result.error_code else "UNKNOWN"
+        return (
+            f"tool={result.name};error_code={error_code};"
+            f"arguments={argument_state};fields={fields or '-'}"
+        )
+
+    @classmethod
+    def _tool_failure_signature(cls, call, result: ToolExecutionResult) -> str:
+        """Return a bounded fingerprint so different argument mistakes are not conflated."""
+
+        evidence = cls._safe_tool_failure_evidence(call, result)
+        return evidence.partition(";arguments=")[2] or evidence
+
+    @staticmethod
+    def _tool_recovery_instruction(*, call, result: ToolExecutionResult) -> str:
+        if call.name == "write_file" and result.error_code is ToolErrorCode.INVALID_ARGUMENTS:
+            return (
+                "The previous write_file call was rejected because its function arguments were "
+                "not a complete JSON object. Retry write_file exactly once using only valid JSON "
+                "with the required keys path and content; do not wrap JSON in Markdown and do not "
+                "add commentary. If the intended file is long, write only a small runnable "
+                "skeleton now and add the rest later with bounded apply_patch calls."
+            )
+        return (
+            "The previous repository-tool call was rejected. Correct its JSON arguments exactly "
+            "once according to the tool schema. Return a tool call, not Markdown or prose."
         )

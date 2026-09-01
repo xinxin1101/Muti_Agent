@@ -7,7 +7,15 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, SecretStr
 
 from app.models.checkpoint import CheckpointReason
+from app.models.development_session import (
+    DevelopmentSessionBaselineState,
+    DevelopmentSessionCommandIntent,
+    DevelopmentSessionState,
+    DevelopmentSessionTimelineKind,
+    DevelopmentWorkPackageState,
+)
 from app.models.failure import FailureSource, FailureType
+from app.models.lifecycle import ProjectLifecycleState, RunDisplayStatus, RunVisibilityState
 from app.models.project import ProjectProvisionStatus
 from app.models.publication import GitHubPublicationSourceBasis, GitHubPublicationState
 from app.models.task import TaskContract
@@ -31,6 +39,7 @@ class ProductProject(ProductModel):
     provision_status: ProjectProvisionStatus = ProjectProvisionStatus.READY
     provision_error_code: str | None = Field(default=None, max_length=64)
     provision_error_message: str | None = Field(default=None, max_length=512)
+    lifecycle_state: ProjectLifecycleState = ProjectLifecycleState.ACTIVE
 
 
 class ProductRun(ProductModel):
@@ -41,6 +50,57 @@ class ProductRun(ProductModel):
     task_count: int = Field(ge=1)
     started_at: datetime
     finished_at: datetime | None = None
+    development_session_id: UUID | None = None
+    visibility_status: RunVisibilityState = RunVisibilityState.VISIBLE
+    display_status: RunDisplayStatus = RunDisplayStatus.RUNNING
+    recovery_reason: str | None = Field(default=None, max_length=1024)
+    recovery_checked_at: datetime | None = None
+
+
+class ProductRunRecoveryPreview(ProductModel):
+    run_id: UUID
+    display_status: RunDisplayStatus
+    reason: str = Field(min_length=1, max_length=1024)
+    observed_at: datetime
+    baseline_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    current_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    baseline_changed: bool
+    dag_complete: bool
+    reusable_task_ids: tuple[str, ...] = ()
+    checkpointed_task_ids: tuple[str, ...] = ()
+    remaining_task_ids: tuple[str, ...] = ()
+    estimated_new_budget_tokens: int = Field(ge=0)
+    existing_recovery_run_id: UUID | None = None
+    recovery_available: bool
+    next_action: str = Field(min_length=1, max_length=256)
+
+
+class ProductProjectDeletionPreview(ProductModel):
+    project_id: UUID
+    required_confirmation_name: str = Field(min_length=1, max_length=512)
+    confirmation_token: str = Field(min_length=32, max_length=2_048)
+    confirmation_expires_at: datetime
+    run_count: int = Field(ge=0)
+    development_session_count: int = Field(ge=0)
+    local_workspace_bytes: int = Field(ge=0)
+    project_cache_bytes: int = Field(ge=0)
+    local_credential_count: int = Field(ge=0)
+    github_repository_will_be_preserved: bool = True
+
+
+class ProjectDeleteRequest(ProductModel):
+    confirmation_token: str = Field(min_length=32, max_length=2_048)
+    confirmation_name: str = Field(min_length=1, max_length=512)
+
+
+class ProductProjectDeletionResult(ProductModel):
+    project_id: UUID
+    removed_run_count: int = Field(ge=0)
+    removed_development_session_count: int = Field(ge=0)
+    removed_local_workspace_bytes: int = Field(ge=0)
+    removed_project_cache_bytes: int = Field(ge=0)
+    removed_local_credential_count: int = Field(ge=0)
+    github_repository_preserved: bool = True
 
 
 class ProductTaskSummary(ProductModel):
@@ -84,6 +144,81 @@ class ProductRunDetail(ProductRun):
     tasks: tuple[ProductTaskSummary, ...]
     failures: tuple[ProductRunFailure, ...] = ()
     checkpoint: ProductRunCheckpoint | None = None
+
+
+class ProductDevelopmentWorkPackage(ProductModel):
+    task_id: str
+    state: DevelopmentWorkPackageState
+    source_run_id: UUID | None = None
+    commit_sha: str | None = None
+    completed_interfaces: tuple[str, ...] = ()
+    verification_summary: str = ""
+    failure_summary: str = ""
+    remaining_budget_tokens: int | None = None
+
+
+class ProductDevelopmentSession(ProductModel):
+    session_id: UUID
+    project_id: UUID
+    requirement: str
+    base_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    state: DevelopmentSessionState
+    planning_diagnostic: str = ""
+    latest_run_id: UUID | None = None
+    resumed_from_run_id: UUID | None = None
+    work_packages: tuple[ProductDevelopmentWorkPackage, ...] = ()
+    created_at: datetime
+    updated_at: datetime
+
+
+class ProductDevelopmentSessionTimelineEntry(ProductModel):
+    entry_id: int = Field(ge=1)
+    session_id: UUID
+    kind: DevelopmentSessionTimelineKind
+    title: str = Field(min_length=1, max_length=160)
+    detail: str = Field(default="", max_length=512)
+    run_id: UUID | None = None
+    task_id: str | None = Field(default=None, max_length=128)
+    metadata: dict = Field(default_factory=dict)
+    created_at: datetime
+
+
+class DevelopmentSessionCommandPreviewRequest(ProductModel):
+    command: str = Field(min_length=1, max_length=1_000)
+
+
+class ProductDevelopmentSessionCommandPreview(ProductModel):
+    session_id: UUID
+    intent: DevelopmentSessionCommandIntent
+    action_name: str = Field(min_length=1, max_length=128)
+    target_label: str = Field(min_length=1, max_length=512)
+    impact: tuple[str, ...] = Field(default_factory=tuple, max_length=8)
+    token_cost: str = Field(min_length=1, max_length=128)
+    affects_local_data: bool
+    confirmation_required: bool = True
+    executable_after_confirmation: bool
+    confirmation_hint: str = Field(min_length=1, max_length=512)
+
+
+class ProductDevelopmentSessionRecoveryBudget(ProductModel):
+    planning_remaining_tokens: int | None = Field(default=None, ge=0)
+    development_remaining_tokens: int | None = Field(default=None, ge=0)
+    repair_remaining_tokens: int | None = Field(default=None, ge=0)
+    estimated_new_development_tokens: int = Field(ge=0)
+    estimated_tokens_saved: int = Field(ge=0)
+
+
+class ProductDevelopmentSessionRecovery(ProductModel):
+    session_id: UUID
+    source_run_id: UUID | None = None
+    baseline_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    current_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    baseline_state: DevelopmentSessionBaselineState
+    reusable_work_package_ids: tuple[str, ...] = ()
+    checkpointed_work_package_ids: tuple[str, ...] = ()
+    remaining_work_package_ids: tuple[str, ...] = ()
+    next_action: str = Field(min_length=1, max_length=128)
+    budget: ProductDevelopmentSessionRecoveryBudget
 
 
 class ProductRunStatusBasis(StrEnum):
@@ -170,12 +305,24 @@ class ProductWorkPackageTokenBudget(ProductModel):
     repair_borrowed_tokens: int = Field(default=0, ge=0)
     developer_reclaimed_tokens: int = Field(default=0, ge=0)
     repair_reclaimed_tokens: int = Field(default=0, ge=0)
+    developer_observed_prompt_tokens: int = Field(default=0, ge=0)
+    repair_observed_prompt_tokens: int = Field(default=0, ge=0)
+    developer_predicted_next_input_tokens: int = Field(default=0, ge=0)
+    repair_predicted_next_input_tokens: int = Field(default=0, ge=0)
+    developer_estimated_executable_turns: int = Field(default=0, ge=0)
+    repair_estimated_executable_turns: int = Field(default=0, ge=0)
+    developer_startup_reserve_tokens: int = Field(default=0, ge=0)
+    complexity_upgrade_count: int = Field(default=0, ge=0)
     borrow_count: int = Field(default=0, ge=0)
     last_required_tokens: int = Field(default=0, ge=0)
     last_available_tokens: int = Field(default=0, ge=0)
     last_flex_available_tokens: int = Field(default=0, ge=0)
+    last_downstream_available_tokens: int = Field(default=0, ge=0)
     last_borrowed_tokens: int = Field(default=0, ge=0)
     last_budget_decision: str | None = Field(default=None, max_length=64)
+    last_budget_reason: str | None = Field(default=None, max_length=512)
+    last_recovery_action: str | None = Field(default=None, max_length=64)
+    last_cost_prediction_reason: str | None = Field(default=None, max_length=512)
     status: str = Field(pattern=r"^(ACTIVE|RECLAIMED)$")
 
 

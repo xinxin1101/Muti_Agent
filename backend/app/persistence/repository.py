@@ -18,6 +18,7 @@ from app.models.events import (
     RuntimeEventLevel,
     RuntimeEventSource,
 )
+from app.models.lifecycle import RunDisplayStatus
 from app.models.run import SingleTaskRunResult
 from app.models.task import TaskContract
 from app.persistence.database import create_postgres_engine, create_session_factory
@@ -528,6 +529,9 @@ class PostgresEvidenceStore:
             default_branch=project.default_branch,
             base_commit=run.base_commit,
             status=status,
+            display_status=RunDisplayStatus(run.display_status),
+            recovery_reason=run.recovery_reason,
+            recovery_checked_at=run.recovery_checked_at,
             tasks=tasks,
             evidence=evidence,
             terminal_result=terminal_result,

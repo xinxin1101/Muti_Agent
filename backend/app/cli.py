@@ -76,6 +76,7 @@ async def run_single_task(*, workspace_path: Path, task_path: Path):
         max_duration_seconds=settings.developer_max_duration_seconds,
         max_model_turn_seconds=settings.developer_max_model_turn_seconds,
         max_output_tokens=settings.developer_max_output_tokens,
+        invalid_tool_retry_max_output_tokens=settings.developer_invalid_tool_retry_max_output_tokens,
         enable_thinking=settings.developer_enable_thinking,
     )
     reviewer = ReviewerAgent(

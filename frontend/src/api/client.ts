@@ -39,7 +39,7 @@ export class ApiClient {
     headers.set("Content-Type", "application/json");
     return this.requestJson<TResponse>(path, {
       ...init,
-      method: "POST",
+      method: init?.method ?? "POST",
       headers,
       body: JSON.stringify(body),
     });
@@ -88,6 +88,9 @@ export class ApiClient {
         throw new ApiError(response.status, detail);
       }
 
+      if (response.status === 204) {
+        return undefined as T;
+      }
       return (await response.json()) as T;
     } catch (error) {
       if (controller.signal.aborted && !callerSignal?.aborted) {
@@ -98,6 +101,10 @@ export class ApiClient {
       window.clearTimeout(timeoutId);
       callerSignal?.removeEventListener("abort", cancelFromCaller);
     }
+  }
+
+  async deleteJson<TResponse, TBody>(path: string, body: TBody): Promise<TResponse> {
+    return this.postJson<TResponse, TBody>(path, body, { method: "DELETE" });
   }
 
   private url(path: string): string {

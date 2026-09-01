@@ -41,7 +41,7 @@ def test_canonical_repository_url_is_branch_identity_input() -> None:
     )
 
 
-def test_planning_context_reads_the_frozen_commit_not_current_checkout() -> None:
+def test_planning_context_uses_frozen_metadata_without_source_blobs() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)
         _git(root, "init", "-b", "main")
@@ -60,13 +60,15 @@ def test_planning_context_reads_the_frozen_commit_not_current_checkout() -> None
             default_branch="main",
         )
 
-        assert "auth behavior: OLD" in context
+        assert "README.md" in context
+        assert "auth behavior: OLD" not in context
         assert "auth behavior: NEW" not in context
         assert f"base_commit={old_commit}" in context
-        assert "context_is_partial=" in context
+        assert "context_kind=metadata_only" in context
+        assert "source_files_included=false" in context
 
 
-def test_planning_context_replaces_non_utf8_blob_bytes_without_failing() -> None:
+def test_planning_context_does_not_read_non_utf8_source_blobs() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)
         _git(root, "init", "-b", "main")
@@ -85,8 +87,9 @@ def test_planning_context_replaces_non_utf8_blob_bytes_without_failing() -> None
             default_branch="main",
         )
 
-        assert "repository note:" in context
-        assert "\ufffd" in context
+        assert "README.md" in context
+        assert "repository note:" not in context
+        assert "\ufffd" not in context
 
 
 def test_strong_readiness_rejects_origin_or_branch_identity_mismatch() -> None:

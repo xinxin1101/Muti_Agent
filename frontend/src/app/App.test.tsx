@@ -50,6 +50,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(productApi.listProjects).mockResolvedValue([project]);
   vi.mocked(productApi.listRuns).mockResolvedValue([run]);
+  vi.mocked(productApi.listDevelopmentSessions).mockResolvedValue([]);
   vi.mocked(productApi.getRun).mockResolvedValue({
     ...run,
     repository_url: project.repository_url,

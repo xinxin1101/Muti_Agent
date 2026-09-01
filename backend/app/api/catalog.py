@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.api.models import ProductProject, ProductRun
+from app.models.lifecycle import ProjectLifecycleState, RunDisplayStatus, RunVisibilityState
 from app.persistence.database import create_postgres_engine, create_session_factory
 from app.persistence.models import ProjectRow, RunRow, TaskRow
 
@@ -39,7 +40,9 @@ class PostgresProductCatalog:
         if self._owns_engine:
             await self._engine.dispose()
 
-    async def list_projects(self, *, limit: int = 100) -> tuple[ProductProject, ...]:
+    async def list_projects(
+        self, *, limit: int = 100, include_archived: bool = False
+    ) -> tuple[ProductProject, ...]:
         if limit < 1 or limit > 500:
             raise ValueError("project query limit must be between 1 and 500")
         run_count = (
@@ -49,13 +52,13 @@ class PostgresProductCatalog:
             .scalar_subquery()
         )
         async with self._session_factory() as session:
-            rows = (
-                await session.execute(
-                    select(ProjectRow, run_count.label("run_count"))
-                    .order_by(ProjectRow.created_at.desc(), ProjectRow.id)
-                    .limit(limit)
+            statement = select(ProjectRow, run_count.label("run_count"))
+            if not include_archived:
+                statement = statement.where(
+                    ProjectRow.lifecycle_state != ProjectLifecycleState.ARCHIVED.value
                 )
-            ).all()
+            statement = statement.order_by(ProjectRow.created_at.desc(), ProjectRow.id).limit(limit)
+            rows = (await session.execute(statement)).all()
         return tuple(
             ProductProject(
                 project_id=project.id,
@@ -67,6 +70,7 @@ class PostgresProductCatalog:
                 provision_status=project.provision_status,
                 provision_error_code=project.provision_error_code,
                 provision_error_message=project.provision_error_message,
+                lifecycle_state=ProjectLifecycleState(project.lifecycle_state),
             )
             for project, count in rows
         )
@@ -99,6 +103,7 @@ class PostgresProductCatalog:
             provision_status=project.provision_status,
             provision_error_code=project.provision_error_code,
             provision_error_message=project.provision_error_message,
+            lifecycle_state=ProjectLifecycleState(project.lifecycle_state),
         )
 
     async def list_runs(
@@ -106,6 +111,7 @@ class PostgresProductCatalog:
         *,
         project_id: UUID | None = None,
         limit: int = 100,
+        include_archived: bool = False,
     ) -> tuple[ProductRun, ...]:
         if limit < 1 or limit > 500:
             raise ValueError("run query limit must be between 1 and 500")
@@ -118,6 +124,10 @@ class PostgresProductCatalog:
         statement = select(RunRow, task_count.label("task_count"))
         if project_id is not None:
             statement = statement.where(RunRow.project_id == project_id)
+        if not include_archived:
+            statement = statement.where(
+                RunRow.visibility_status == RunVisibilityState.VISIBLE.value
+            )
         statement = statement.order_by(RunRow.started_at.desc(), RunRow.id).limit(limit)
         async with self._session_factory() as session:
             rows = (await session.execute(statement)).all()
@@ -130,6 +140,10 @@ class PostgresProductCatalog:
                 task_count=count,
                 started_at=run.started_at,
                 finished_at=run.finished_at,
+                visibility_status=RunVisibilityState(run.visibility_status),
+                display_status=RunDisplayStatus(run.display_status),
+                recovery_reason=run.recovery_reason,
+                recovery_checked_at=run.recovery_checked_at,
             )
             for run, count in rows
         )

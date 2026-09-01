@@ -29,8 +29,11 @@ def test_default_settings() -> None:
     assert settings.repair_max_duration_seconds == 300.0
     assert settings.repair_max_model_turn_seconds == 90.0
     assert settings.minimum_repair_attempts == 2
-    assert settings.planner_max_output_tokens == 1_200
+    assert settings.planner_initial_max_output_tokens == 1_000
+    assert settings.planner_json_repair_max_output_tokens == 700
+    assert settings.planner_budget_replan_max_output_tokens == 800
     assert settings.developer_max_output_tokens == 1_400
+    assert settings.developer_invalid_tool_retry_max_output_tokens == 3_200
     assert settings.reviewer_max_output_tokens == 800
     assert settings.repair_max_output_tokens == 1_000
     assert settings.failure_explanation_max_output_tokens == 400
@@ -39,7 +42,7 @@ def test_default_settings() -> None:
     assert settings.reviewer_enable_thinking is False
     assert settings.repair_enable_thinking is False
     assert settings.failure_explanation_enable_thinking is False
-    assert settings.planner_token_budget_tokens == 4_000
+    assert settings.planner_token_budget_tokens == 7_200
     assert settings.planner_max_attempts == 2
     assert settings.siliconflow_api_key is None
     assert settings.verification_sandbox_image == "devflow-verifier:py311"
@@ -66,8 +69,11 @@ def test_prefixed_environment_variables_override_defaults(monkeypatch) -> None:
     monkeypatch.setenv("DEVFLOW_REPAIR_MAX_DURATION_SECONDS", "240")
     monkeypatch.setenv("DEVFLOW_REPAIR_MAX_MODEL_TURN_SECONDS", "80")
     monkeypatch.setenv("DEVFLOW_MINIMUM_REPAIR_ATTEMPTS", "2")
-    monkeypatch.setenv("DEVFLOW_PLANNER_MAX_OUTPUT_TOKENS", "700")
+    monkeypatch.setenv("DEVFLOW_PLANNER_INITIAL_MAX_OUTPUT_TOKENS", "700")
+    monkeypatch.setenv("DEVFLOW_PLANNER_JSON_REPAIR_MAX_OUTPUT_TOKENS", "600")
+    monkeypatch.setenv("DEVFLOW_PLANNER_BUDGET_REPLAN_MAX_OUTPUT_TOKENS", "650")
     monkeypatch.setenv("DEVFLOW_DEVELOPER_MAX_OUTPUT_TOKENS", "1700")
+    monkeypatch.setenv("DEVFLOW_DEVELOPER_INVALID_TOOL_RETRY_MAX_OUTPUT_TOKENS", "2800")
     monkeypatch.setenv("DEVFLOW_REVIEWER_MAX_OUTPUT_TOKENS", "600")
     monkeypatch.setenv("DEVFLOW_REPAIR_MAX_OUTPUT_TOKENS", "900")
     monkeypatch.setenv("DEVFLOW_FAILURE_EXPLANATION_MAX_OUTPUT_TOKENS", "300")
@@ -88,6 +94,11 @@ def test_prefixed_environment_variables_override_defaults(monkeypatch) -> None:
     monkeypatch.setenv("DEVFLOW_DEPENDENCY_NODE_REGISTRY_URL", "https://npm.example")
     monkeypatch.setenv("DEVFLOW_DEPENDENCY_PREFLIGHT_TIMEOUT_SECONDS", "8")
     monkeypatch.setenv("DEVFLOW_DEPENDENCY_PREFLIGHT_BUILD_TIMEOUT_SECONDS", "45")
+    monkeypatch.setenv("DEVFLOW_LIFECYCLE_ROLLOUT_MODE", "project_allowlist")
+    monkeypatch.setenv(
+        "DEVFLOW_LIFECYCLE_PROJECT_ALLOWLIST",
+        "11111111-1111-1111-1111-111111111111,22222222-2222-2222-2222-222222222222",
+    )
 
     settings = Settings(_env_file=None)
 
@@ -102,8 +113,11 @@ def test_prefixed_environment_variables_override_defaults(monkeypatch) -> None:
     assert settings.repair_max_duration_seconds == 240.0
     assert settings.repair_max_model_turn_seconds == 80.0
     assert settings.minimum_repair_attempts == 2
-    assert settings.planner_max_output_tokens == 700
+    assert settings.planner_initial_max_output_tokens == 700
+    assert settings.planner_json_repair_max_output_tokens == 600
+    assert settings.planner_budget_replan_max_output_tokens == 650
     assert settings.developer_max_output_tokens == 1700
+    assert settings.developer_invalid_tool_retry_max_output_tokens == 2800
     assert settings.reviewer_max_output_tokens == 600
     assert settings.repair_max_output_tokens == 900
     assert settings.failure_explanation_max_output_tokens == 300
@@ -124,6 +138,17 @@ def test_prefixed_environment_variables_override_defaults(monkeypatch) -> None:
     assert settings.dependency_node_registry_url == "https://npm.example/"
     assert settings.dependency_preflight_timeout_seconds == 8.0
     assert settings.dependency_preflight_build_timeout_seconds == 45.0
+    assert settings.lifecycle_rollout_mode.value == "project_allowlist"
+    assert len(settings.lifecycle_project_ids) == 2
+
+
+def test_lifecycle_project_allowlist_rejects_invalid_uuid(monkeypatch) -> None:
+    monkeypatch.setenv("DEVFLOW_LIFECYCLE_PROJECT_ALLOWLIST", "not-a-uuid")
+
+    settings = Settings(_env_file=None)
+
+    with pytest.raises(ValueError, match="PROJECT_ALLOWLIST"):
+        _ = settings.lifecycle_project_ids
 
 
 def test_worker_heartbeat_interval_must_be_shorter_than_lease(monkeypatch) -> None:

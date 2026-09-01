@@ -387,6 +387,58 @@ describe("RunDashboardPage live timeline", () => {
     await waitFor(() => expect(productApi.retryRun).toHaveBeenCalledWith(runId));
   });
 
+  it("previews reusable work before continuing development", async () => {
+    vi.mocked(productApi.getRun).mockResolvedValue({
+      run_id: runId,
+      project_id: "11111111-1111-1111-1111-111111111111",
+      repository_url: "https://github.com/example/repo",
+      default_branch: "main",
+      status: "FAILED",
+      base_commit: "a".repeat(40),
+      development_session_id: "33333333-3333-3333-3333-333333333333",
+      task_count: 2,
+      started_at: "2026-08-19T00:00:00Z",
+      finished_at: "2026-08-19T00:01:00Z",
+      tasks: [],
+      failures: [],
+    });
+    vi.mocked(productApi.getDevelopmentSessionRecovery).mockResolvedValue({
+      session_id: "33333333-3333-3333-3333-333333333333",
+      source_run_id: runId,
+      baseline_commit: "a".repeat(40),
+      current_commit: "a".repeat(40),
+      baseline_state: "UNCHANGED",
+      reusable_work_package_ids: ["core"],
+      checkpointed_work_package_ids: ["web"],
+      remaining_work_package_ids: ["web"],
+      next_action: "继续未完成工作包",
+      budget: {
+        planning_remaining_tokens: 4000,
+        development_remaining_tokens: 6000,
+        repair_remaining_tokens: 2000,
+        estimated_new_development_tokens: 5000,
+        estimated_tokens_saved: 6000,
+      },
+    });
+    vi.mocked(productApi.continueDevelopmentSession).mockResolvedValue({
+      run_id: "99999999-9999-9999-9999-999999999999",
+      project_id: "11111111-1111-1111-1111-111111111111",
+      base_commit: "a".repeat(40),
+      dag_sha256: "d".repeat(64),
+      task_ids: ["web"],
+      initial_ready_task_ids: ["web"],
+      launch_state: "QUEUED",
+      dispatches: [{ task_id: "web", state: "QUEUED", dispatch_id: null, broker_message_id: null, queue_name: null, detail: null }],
+    });
+
+    renderDashboard();
+
+    expect(await screen.findByText("继续开发预览")).toBeInTheDocument();
+    expect(screen.getByText(/已复用 1 个工作包/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "继续开发" }));
+    await waitFor(() => expect(productApi.continueDevelopmentSession).toHaveBeenCalledWith("33333333-3333-3333-3333-333333333333", "AUTO"));
+  });
+
   it("labels a controlled Developer time limit without calling it a tool failure", async () => {
     vi.mocked(productApi.getRun).mockResolvedValue({
       run_id: runId,

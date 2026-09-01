@@ -36,6 +36,17 @@ from app.models.developer import (
     DeveloperRunResult,
     DeveloperStopReason,
 )
+from app.models.development_session import (
+    DevelopmentSession,
+    DevelopmentSessionBaselineState,
+    DevelopmentSessionCommandIntent,
+    DevelopmentSessionContinuationMode,
+    DevelopmentSessionState,
+    DevelopmentSessionTimelineEntry,
+    DevelopmentSessionTimelineKind,
+    DevelopmentWorkPackageProgress,
+    DevelopmentWorkPackageState,
+)
 from app.models.dispatch import (
     TaskDispatchEnvelope,
     TaskDispatchReceipt,
@@ -62,7 +73,23 @@ from app.models.integration_gate import (
 )
 from app.models.interface_contract import InterfaceContractGate, InterfaceContractState
 from app.models.lease import TaskLeaseGrant, TaskLeaseSnapshot, TaskLeaseState
+from app.models.lifecycle import (
+    DEVELOPMENT_SESSION_LIFECYCLE_TRANSITIONS,
+    PROJECT_LIFECYCLE_TRANSITIONS,
+    RUN_LIFECYCLE_TRANSITIONS,
+    DevelopmentSessionLifecycleState,
+    ProjectLifecycleState,
+    RunDisplayStatus,
+    RunLifecycleState,
+    RunVisibilityState,
+    transition_is_allowed,
+)
 from app.models.merge import MergeAttemptOutcome, MergeQueueAttempt, MergeQueueSnapshot
+from app.models.operation_audit import (
+    OperationAuditAction,
+    OperationAuditOutcome,
+    OperationAuditRecord,
+)
 from app.models.reconciliation import (
     TaskReconciliationAction,
     TaskReconciliationDecision,
@@ -204,6 +231,9 @@ __all__ = [
     "MergeQueueAttempt",
     "MergeQueueSnapshot",
     "MessageRole",
+    "OperationAuditAction",
+    "OperationAuditOutcome",
+    "OperationAuditRecord",
     "ParallelWorkerWaveResult",
     "PersistedRuntimeEvent",
     "RecoveryDisposition",
@@ -216,6 +246,7 @@ __all__ = [
     "ReviewOutcome",
     "ReviewSeverity",
     "RunEvent",
+    "RunLifecycleState",
     "RunRecoveryPlan",
     "RuntimeEventDraft",
     "RuntimeEventKind",
@@ -230,6 +261,16 @@ __all__ = [
     "TaskDAG",
     "TaskDispatchEnvelope",
     "TaskDispatchReceipt",
+    "DevelopmentSession",
+    "DevelopmentSessionCommandIntent",
+    "DevelopmentSessionBaselineState",
+    "DevelopmentSessionContinuationMode",
+    "DevelopmentSessionLifecycleState",
+    "DevelopmentSessionState",
+    "DevelopmentSessionTimelineEntry",
+    "DevelopmentSessionTimelineKind",
+    "DevelopmentWorkPackageProgress",
+    "DevelopmentWorkPackageState",
     "TaskExecutionBase",
     "TaskExecutionBaseBasis",
     "TaskLeaseGrant",
@@ -267,8 +308,15 @@ __all__ = [
     "InterfaceContract",
     "PlanningComplexity",
     "PlanningComplexityAssessment",
+    "ProjectLifecycleState",
+    "RunDisplayStatus",
+    "RunVisibilityState",
     "TaskBudgetAllocation",
     "WorkPackage",
     "WorkPackageActivationMode",
     "WorkPackagePlan",
+    "DEVELOPMENT_SESSION_LIFECYCLE_TRANSITIONS",
+    "PROJECT_LIFECYCLE_TRANSITIONS",
+    "RUN_LIFECYCLE_TRANSITIONS",
+    "transition_is_allowed",
 ]

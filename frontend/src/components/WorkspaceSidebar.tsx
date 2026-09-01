@@ -1,7 +1,7 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import { NavLink, Link } from "react-router";
 
-import { listProjects, listRuns } from "../api/product";
+import { listDevelopmentSessions, listProjects, listRuns } from "../api/product";
 import { formatDateTime, labelFor } from "../i18n";
 
 const navigation = [
@@ -13,6 +13,18 @@ const navigation = [
 export function WorkspaceSidebar() {
   const projects = useQuery({ queryKey: ["projects"], queryFn: listProjects });
   const runs = useQuery({ queryKey: ["runs", "all"], queryFn: () => listRuns() });
+  // The API defaults to active projects, but retain this local guard so an older proxy/cache
+  // response cannot unexpectedly reveal an archived project in the primary workspace.
+  const visibleProjects = (projects.data ?? []).filter(
+    (project) => project.lifecycle_state !== "ARCHIVED" && project.lifecycle_state !== "DELETED",
+  );
+  const sessionQueries = useQueries({
+    queries: visibleProjects.slice(0, 6).map((project) => ({
+      queryKey: ["development-sessions", project.project_id],
+      queryFn: () => listDevelopmentSessions(project.project_id),
+    })),
+  });
+  const sessions = sessionQueries.flatMap((query) => query.data ?? []).slice(0, 7);
 
   return (
     <aside className="workspace-sidebar flex shrink-0 flex-col border-r border-stone-200 bg-stone-50/90 px-3 py-5">
@@ -24,7 +36,7 @@ export function WorkspaceSidebar() {
         <p className="mt-2 text-xs leading-5 text-stone-500">面向代码仓库的开发工作区</p>
       </div>
 
-      <Link to="/runs/new" className="mt-5 rounded-xl bg-stone-900 px-3 py-2.5 text-center text-sm font-medium text-white transition hover:bg-stone-700">
+      <Link to="/runs/new" className="df-button df-button-primary mt-5 w-full rounded-xl">
         ＋ 新建任务
       </Link>
 
@@ -45,7 +57,7 @@ export function WorkspaceSidebar() {
       </nav>
 
       <SidebarSection title="项目">
-        {projects.data?.length ? projects.data.slice(0, 6).map((project) => (
+        {visibleProjects.length ? visibleProjects.slice(0, 6).map((project) => (
           <Link key={project.project_id} to={`/runs?projectId=${project.project_id}`} className="block truncate rounded-lg px-2 py-1.5 text-sm text-stone-600 hover:bg-stone-100 hover:text-stone-900" title={project.repository_url}>
             {repositoryName(project.repository_url)}
           </Link>
@@ -62,6 +74,15 @@ export function WorkspaceSidebar() {
             <span className="mt-0.5 block truncate pl-3.5 text-[11px] text-stone-400">{labelFor(run.status)} · {formatDateTime(run.started_at)}</span>
           </Link>
         )) : <SidebarEmpty loading={runs.isLoading} text="暂无运行记录" />}
+      </SidebarSection>
+
+      <SidebarSection title="开发会话" className="mt-5">
+        {sessions.length ? sessions.map((session) => (
+          <Link key={session.session_id} to={`/development-sessions/${session.session_id}`} className="block rounded-lg px-2 py-1.5 hover:bg-stone-100">
+            <span className="flex items-center gap-2"><span aria-hidden="true" className={`h-1.5 w-1.5 shrink-0 rounded-full ${sessionDot(session.state)}`} /><span className="truncate text-sm text-stone-600">{session.requirement}</span></span>
+            <span className="mt-0.5 block truncate pl-3.5 text-[11px] text-stone-400">{sessionStateLabel(session.state)} · {formatDateTime(session.updated_at)}</span>
+          </Link>
+        )) : <SidebarEmpty loading={sessionQueries.some((query) => query.isLoading)} text="暂无开发会话" />}
       </SidebarSection>
 
       <div className="mt-auto border-t border-stone-200 px-2 pt-4 text-xs text-stone-500">
@@ -81,4 +102,16 @@ function SidebarEmpty({ loading, text }: { loading: boolean; text: string }) {
 
 function repositoryName(repositoryUrl: string): string {
   return repositoryUrl.replace(/\/$/, "").split("/").slice(-2).join("/") || repositoryUrl;
+}
+
+function sessionDot(state: string): string {
+  if (state === "COMPLETED") return "bg-emerald-500";
+  if (state === "PLANNING_FAILED") return "bg-rose-500";
+  if (state === "PAUSED_PLANNING") return "bg-amber-500";
+  return "bg-blue-500";
+}
+
+function sessionStateLabel(state: string): string {
+  const labels: Record<string, string> = { PLANNING: "正在规划", PAUSED_PLANNING: "等待继续", PLANNING_FAILED: "规划未完成", READY_TO_RUN: "等待运行", RUNNING: "开发中", COMPLETED: "已完成" };
+  return labels[state] ?? state;
 }

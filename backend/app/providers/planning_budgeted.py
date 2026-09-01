@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from uuid import UUID
 
 from app.context.token_estimator import TokenEstimator
@@ -50,6 +51,30 @@ class PlanningBudgetedAgentDriver:
             raise
         await self._budget_store.settle(reservation, response.usage)
         return response
+
+    async def ensure_capacity(self, requests: Sequence[AgentRequest]) -> None:
+        """Fail closed before the first Planner call when one bounded recovery cannot fit."""
+
+        if not requests:
+            raise ValueError("planning capacity requires at least one request")
+        required_tokens = sum(
+            max(request.context_estimated_tokens, self._estimate_request_tokens(request))
+            + request.max_output_tokens
+            for request in requests
+        )
+        try:
+            await self._budget_store.ensure_capacity(
+                launch_id=self._launch_id,
+                required_tokens=required_tokens,
+                required_calls=len(requests),
+            )
+        except PlanningTokenBudgetReservationError as exc:
+            raise AgentProviderError(
+                provider="devflow-planning-budget",
+                code=ProviderErrorCode.TOKEN_BUDGET_EXHAUSTED,
+                message=str(exc),
+                retryable=False,
+            ) from exc
 
     def _estimate_request_tokens(self, request: AgentRequest) -> int:
         return self._token_estimator.estimate_agent_request(request)

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import logging
 from enum import StrEnum
 from typing import Protocol
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.agents.errors import InvalidPlannerOutputError
 from app.api.failure_explanation import (
@@ -14,21 +17,44 @@ from app.api.failure_explanation import (
     FailureExplanationUnavailableError,
 )
 from app.api.github_publication import ProductRuntimeServiceWithGitHubPublication
-from app.api.models import ProductDependencyPreflight, ProductFailureExplanation, ProductProject
+from app.api.models import (
+    DevelopmentSessionCommandPreviewRequest,
+    ProductDependencyPreflight,
+    ProductDevelopmentSession,
+    ProductDevelopmentSessionCommandPreview,
+    ProductDevelopmentSessionRecovery,
+    ProductDevelopmentSessionRecoveryBudget,
+    ProductDevelopmentSessionTimelineEntry,
+    ProductDevelopmentWorkPackage,
+    ProductFailureExplanation,
+    ProductProject,
+)
 from app.api.publication import _require_repaired_publication_authority
 from app.api.service import (
     ProductDiffUnavailableError,
     ProductWorkspaceNotReadyError,
     _DiffCommitPair,
 )
+from app.api.session_commands import DevelopmentSessionCommandPreviewer
 from app.context.token_estimator import TokenEstimator
 from app.dispatch.errors import TaskDispatchBrokerError
 from app.models.agent import AgentRole
 from app.models.dag import TaskDAG
+from app.models.development_session import (
+    DevelopmentSessionBaselineState,
+    DevelopmentSessionContinuationMode,
+    DevelopmentSessionState,
+    DevelopmentSessionTimelineKind,
+    DevelopmentWorkPackageState,
+)
 from app.models.dispatch import TaskDispatchReceipt
 from app.models.integration_gate import HumanGateDecision, IntegrationGateSnapshot
 from app.models.merge import MergeAttemptOutcome, MergeQueueSnapshot
+from app.models.operation_audit import OperationAuditAction, OperationAuditOutcome
+from app.models.token_budget import TokenBudgetStage
+from app.persistence.development_session import PostgresDevelopmentSessionStore
 from app.persistence.errors import PersistenceConflictError, PersistenceCorruptionError
+from app.persistence.operation_audit import PostgresOperationAuditStore
 from app.persistence.planning_budget import PostgresPlanningTokenBudgetStore
 from app.persistence.token_budget import TokenBudgetPlanError
 from app.persistence.types import PersistedRunSnapshot, PersistedRunStatus, PersistenceEvidenceKind
@@ -43,6 +69,8 @@ from app.workspace import LocalGitWorkspace, ProjectProvisionError, WorkspaceGit
 _MAX_REQUIREMENT_CHARS = 12_000
 _MAX_CONTEXT_FILES = 400
 _MAX_CONTEXT_CHARS = 20_000
+
+logger = logging.getLogger(__name__)
 
 
 class RequirementProductModel(BaseModel):
@@ -92,6 +120,8 @@ class RequirementRunLaunchResponse(RequirementProductModel):
     launch_state: RequirementRunLaunchState
     dispatches: tuple[InitialTaskDispatch, ...] = Field(min_length=1)
     dependency_preflight: ProductDependencyPreflight | None = None
+    resumed_from_run_id: UUID | None = None
+    reused_existing_run: bool = False
 
 
 class HumanGateDecisionRequest(RequirementProductModel):
@@ -135,6 +165,8 @@ class AutonomousProductRuntimeService(ProductRuntimeServiceWithGitHubPublication
         *,
         requirement_planner: RequirementPlanner | None,
         planning_budget_store: PostgresPlanningTokenBudgetStore | None = None,
+        development_session_store: PostgresDevelopmentSessionStore | None = None,
+        operation_audit_store: PostgresOperationAuditStore | None = None,
         token_estimator: TokenEstimator | None = None,
         failure_explainer: FailureExplanationService | None = None,
         run_controller: ProductRunController | None = None,
@@ -143,6 +175,9 @@ class AutonomousProductRuntimeService(ProductRuntimeServiceWithGitHubPublication
         super().__init__(**kwargs)
         self._requirement_planner = requirement_planner
         self._planning_budget_store = planning_budget_store
+        self._development_session_store = development_session_store
+        self._operation_audit_store = operation_audit_store
+        self._session_command_previewer = DevelopmentSessionCommandPreviewer()
         self._token_estimator = token_estimator or TokenEstimator()
         self._requirement_workflow_matcher = RequirementWorkflowMatcher()
         self._failure_explainer = failure_explainer
@@ -161,6 +196,10 @@ class AutonomousProductRuntimeService(ProductRuntimeServiceWithGitHubPublication
                 await self._failure_explainer.dispose()
             if self._planning_budget_store is not None:
                 await self._planning_budget_store.dispose()
+            if self._development_session_store is not None:
+                await self._development_session_store.dispose()
+            if self._operation_audit_store is not None:
+                await self._operation_audit_store.dispose()
         finally:
             await super().dispose()
 
@@ -215,6 +254,11 @@ class AutonomousProductRuntimeService(ProductRuntimeServiceWithGitHubPublication
                 launch_id=launch_id,
                 project_id=request.project_id,
             )
+            await self._ensure_requirement_planning_capacity(
+                planner,
+                requirement=request.requirement,
+                repository_context=repository_context,
+            )
             dag = await planner.plan(
                 request.requirement,
                 repository_context=repository_context,
@@ -232,18 +276,16 @@ class AutonomousProductRuntimeService(ProductRuntimeServiceWithGitHubPublication
         dag = self._with_workflow_execution_modes(dag, matches)
         try:
             self._validate_run_token_budget_plan(dag)
-        except TokenBudgetPlanError:
+        except TokenBudgetPlanError as exc:
             # The planning budget permits two bounded calls.  Use the second only when the
             # first valid DAG cannot fund the minimum Agent turns; it is a structural retry,
             # not a blind provider retry.
-            if planner is None or repository_context is None:
+            if planner is None:
                 raise
-            dag = await planner.plan(
-                request.requirement
-                + "\n\n预算约束：当前工作包方案无法支持最低开发轮次。"
-                "请将职责进一步拆分为更小、可独立验证的工作包；"
-                "每个工作包只保留一个交付物和所需最小 Token 建议。",
-                repository_context=repository_context,
+            dag = await self._replan_requirement_for_budget(
+                planner,
+                requirement=request.requirement,
+                validation_error=str(exc),
             )
             dag = TaskDAG.model_validate(dag.model_dump(mode="python"))
             dependency_preflight = await self._preflight_workspace(
@@ -334,6 +376,85 @@ class AutonomousProductRuntimeService(ProductRuntimeServiceWithGitHubPublication
             )
         )
 
+    async def _start_development_session(
+        self,
+        *,
+        project_id: UUID,
+        requirement: str,
+        base_commit: str,
+        repository_context: str,
+        planning_launch_id: UUID | None,
+    ) -> UUID | None:
+        if self._development_session_store is None:
+            return None
+        return await self._development_session_store.create(
+            project_id=project_id,
+            requirement=requirement,
+            base_commit=base_commit,
+            repository_context_sha256=hashlib.sha256(
+                repository_context.encode("utf-8")
+            ).hexdigest(),
+            planning_launch_id=planning_launch_id,
+        )
+
+    async def _record_development_session_plan(self, session_id: UUID | None, dag: TaskDAG) -> None:
+        if session_id is not None and self._development_session_store is not None:
+            await self._development_session_store.record_plan(session_id=session_id, dag=dag)
+
+    async def _mark_development_session_problem(
+        self,
+        session_id: UUID | None,
+        *,
+        diagnostic: str,
+        reusable_plan: bool,
+    ) -> None:
+        if session_id is not None and self._development_session_store is not None:
+            await self._development_session_store.mark_planning_problem(
+                session_id=session_id,
+                diagnostic=diagnostic,
+                reusable_plan=reusable_plan,
+            )
+
+    async def _attach_development_session_run(
+        self,
+        session_id: UUID | None,
+        *,
+        run_id: UUID,
+        resumed_from_run_id: UUID | None = None,
+    ) -> None:
+        if session_id is not None and self._development_session_store is not None:
+            await self._development_session_store.attach_run(
+                session_id=session_id,
+                run_id=run_id,
+                resumed_from_run_id=resumed_from_run_id,
+            )
+
+    @staticmethod
+    async def _ensure_requirement_planning_capacity(
+        planner: RequirementPlanner,
+        *,
+        requirement: str,
+        repository_context: str,
+    ) -> None:
+        ensure_capacity = getattr(planner, "ensure_launch_capacity", None)
+        if callable(ensure_capacity):
+            await ensure_capacity(requirement, repository_context=repository_context)
+
+    @staticmethod
+    async def _replan_requirement_for_budget(
+        planner: RequirementPlanner,
+        *,
+        requirement: str,
+        validation_error: str,
+    ) -> TaskDAG:
+        replan = getattr(planner, "replan_for_budget", None)
+        if not callable(replan):
+            raise TokenBudgetPlanError(
+                "规划结果无法满足工作包最低预算，且当前 Planner 不支持紧凑预算重拆分；"
+                "未再次发送完整仓库上下文。"
+            )
+        return await replan(requirement, validation_error=validation_error)
+
     async def _transfer_planner_usage(
         self,
         *,
@@ -373,6 +494,18 @@ class AutonomousProductRuntimeService(ProductRuntimeServiceWithGitHubPublication
                         "enable_thinking": planning_budget.enable_thinking,
                         "status": planning_budget.status,
                     }
+                )
+            }
+        )
+
+    async def get_run(self, run_id: UUID):
+        detail = await super().get_run(run_id)
+        if self._development_session_store is None:
+            return detail
+        return detail.model_copy(
+            update={
+                "development_session_id": (
+                    await self._development_session_store.find_session_id_by_run(run_id)
                 )
             }
         )
@@ -435,6 +568,449 @@ class AutonomousProductRuntimeService(ProductRuntimeServiceWithGitHubPublication
             launch_state=launch_state,
             dispatches=dispatches,
             dependency_preflight=dependency_preflight,
+        )
+
+    async def get_development_session(self, session_id: UUID) -> ProductDevelopmentSession:
+        store = self._require_development_session_store()
+        return self._product_development_session(await store.snapshot(session_id))
+
+    async def list_project_development_sessions(
+        self, project_id: UUID
+    ) -> tuple[ProductDevelopmentSession, ...]:
+        store = self._require_development_session_store()
+        await self._catalog.get_project(project_id)
+        sessions = await store.list_for_project(project_id)
+        return tuple(self._product_development_session(session) for session in sessions)
+
+    async def get_development_session_timeline(
+        self, session_id: UUID
+    ) -> tuple[ProductDevelopmentSessionTimelineEntry, ...]:
+        store = self._require_development_session_store()
+        session = await store.snapshot(session_id)
+        if session.latest_run_id is not None:
+            await store.capture_run_progress(
+                session_id=session_id,
+                snapshot=await self._evidence_store.load_run(session.latest_run_id),
+            )
+        return tuple(
+            ProductDevelopmentSessionTimelineEntry(
+                entry_id=entry.entry_id,
+                session_id=entry.session_id,
+                kind=entry.kind,
+                title=entry.title,
+                detail=entry.detail,
+                run_id=entry.run_id,
+                task_id=entry.task_id,
+                metadata=entry.metadata,
+                created_at=entry.created_at,
+            )
+            for entry in await store.list_timeline(session_id)
+        )
+
+    async def preview_development_session_command(
+        self,
+        session_id: UUID,
+        request: DevelopmentSessionCommandPreviewRequest,
+    ) -> ProductDevelopmentSessionCommandPreview:
+        """Create a non-authorizing confirmation card for one allow-listed intent."""
+
+        session = await self.get_development_session(session_id)
+        project = await self._catalog.get_project(session.project_id)
+        return self._session_command_previewer.preview(
+            session=session,
+            project=project,
+            command=request.command,
+        )
+
+    async def get_development_session_recovery(
+        self, session_id: UUID
+    ) -> ProductDevelopmentSessionRecovery:
+        store = self._require_development_session_store()
+        session = await store.snapshot(session_id)
+        if session.latest_run_id is not None:
+            await store.capture_run_progress(
+                session_id=session_id,
+                snapshot=await self._evidence_store.load_run(session.latest_run_id),
+            )
+            session = await store.snapshot(session_id)
+        workspace = self._resolve_planning_workspace(session.project_id)
+        current_commit = await asyncio.to_thread(workspace.head_commit)
+        preview = await self._development_session_recovery_preview(
+            session=session,
+            current_commit=current_commit,
+        )
+        await store.append_timeline(
+            session_id=session_id,
+            event_key=f"recovery-preview:{session.latest_run_id or 'none'}:{current_commit}",
+            kind=DevelopmentSessionTimelineKind.RECOVERY_PREVIEW,
+            title="已生成恢复预览",
+            detail=(
+                f"可复用 {len(preview.reusable_work_package_ids)} 个工作包，"
+                f"剩余 {len(preview.remaining_work_package_ids)} 个工作包。"
+            ),
+            run_id=session.latest_run_id,
+            metadata={
+                "baseline_state": preview.baseline_state.value,
+                "estimated_new_development_tokens": preview.budget.estimated_new_development_tokens,
+                "estimated_tokens_saved": preview.budget.estimated_tokens_saved,
+            },
+        )
+        return preview
+
+    async def replan_development_session(self, session_id: UUID) -> RequirementRunLaunchResponse:
+        """Start a fresh planning session from the original intent after a baseline change."""
+
+        session = await self._require_development_session_store().snapshot(session_id)
+        response = await self.create_requirement_run(
+            RequirementRunCreateRequest(
+                project_id=session.project_id,
+                requirement=session.requirement,
+            )
+        )
+        await self._record_management_audit(
+            operation_key=f"development-session-replan:{session_id}:{response.run_id}",
+            action=OperationAuditAction.DEVELOPMENT_SESSION_REPLANNED,
+            project_id=session.project_id,
+            run_id=response.run_id,
+            development_session_id=session_id,
+            result_summary="已从当前仓库基线创建新的规划会话。",
+        )
+        return response
+
+    async def continue_development_session(
+        self,
+        session_id: UUID,
+        *,
+        mode: DevelopmentSessionContinuationMode = DevelopmentSessionContinuationMode.AUTO,
+    ) -> RequirementRunLaunchResponse:
+        """Create a new Run from only incomplete work packages; never reopen the source Run."""
+
+        store = self._require_development_session_store()
+        async with store.continuation_lock(session_id):
+            response = await self._continue_development_session_locked(session_id, mode=mode)
+            session = await store.snapshot(session_id)
+            await self._record_management_audit(
+                operation_key=f"development-session-continue:{session_id}:{response.run_id}",
+                action=OperationAuditAction.DEVELOPMENT_SESSION_CONTINUED,
+                project_id=session.project_id,
+                run_id=response.run_id,
+                development_session_id=session_id,
+                result_summary="已从未完成工作包创建关联的新运行记录。",
+            )
+            return response
+
+    async def _record_management_audit(
+        self,
+        *,
+        operation_key: str,
+        action: OperationAuditAction,
+        project_id: UUID,
+        run_id: UUID,
+        development_session_id: UUID,
+        result_summary: str,
+    ) -> None:
+        """Persist a non-authorizing, append-only fact after a confirmed action."""
+
+        if self._operation_audit_store is None:
+            return
+        await self._operation_audit_store.record(
+            operation_key=operation_key,
+            actor="local-product-user",
+            action=action,
+            outcome=OperationAuditOutcome.SUCCEEDED,
+            project_id=project_id,
+            run_id=run_id,
+            development_session_id=development_session_id,
+            impact_summary={"new_run_id": str(run_id)},
+            result_summary=result_summary,
+        )
+        if self._development_session_store is not None:
+            await self._development_session_store.append_timeline(
+                session_id=development_session_id,
+                event_key=f"user-action:{action.value}:{run_id}",
+                kind=DevelopmentSessionTimelineKind.USER_ACTION,
+                title=(
+                    "用户确认继续开发"
+                    if action is OperationAuditAction.DEVELOPMENT_SESSION_CONTINUED
+                    else "用户确认重新规划"
+                ),
+                detail=result_summary,
+                run_id=run_id,
+                metadata={"action": action.value},
+            )
+
+    async def _continue_development_session_locked(
+        self,
+        session_id: UUID,
+        *,
+        mode: DevelopmentSessionContinuationMode,
+    ) -> RequirementRunLaunchResponse:
+        store = self._require_development_session_store()
+        session = await store.snapshot(session_id)
+        if session.dag is None:
+            raise PersistenceConflictError(
+                "该开发会话没有可复用的规划草案；请重新规划，不会伪造恢复路径。"
+            )
+        if session.state not in {
+            DevelopmentSessionState.PAUSED_PLANNING,
+            DevelopmentSessionState.READY_TO_RUN,
+            DevelopmentSessionState.RUNNING,
+        }:
+            raise PersistenceConflictError("该开发会话当前不能继续执行")
+        if session.latest_run_id is not None:
+            latest = await self._evidence_store.load_run(session.latest_run_id)
+            if latest.status is PersistedRunStatus.RUNNING:
+                return await self._existing_development_session_launch(session.latest_run_id)
+            await store.capture_run_progress(
+                session_id=session_id,
+                snapshot=latest,
+            )
+            session = await store.snapshot(session_id)
+
+        completed = {
+            item.task_id
+            for item in session.work_packages
+            if item.state is DevelopmentWorkPackageState.SUCCEEDED
+        }
+        remaining = self._remaining_session_dag(session.dag, completed)
+        if remaining is None:
+            await store.mark_completed(session_id)
+            raise PersistenceConflictError(
+                "开发会话的所有工作包均已有成功验证证据，无需再次调用 Developer。"
+            )
+
+        completed_commits = {
+            item.commit_sha
+            for item in session.work_packages
+            if item.task_id in completed and item.commit_sha is not None
+        }
+        if len(completed_commits) > 1:
+            raise PersistenceConflictError(
+                "已完成工作包来自多个未整合提交，无法安全跳过它们；请先完成集成或重新规划。"
+            )
+        base_commit = next(iter(completed_commits), session.base_commit)
+        project = await self._catalog.get_project(session.project_id)
+        workspace = self._resolve_planning_workspace(session.project_id)
+        current_commit = await asyncio.to_thread(workspace.head_commit)
+        if (
+            current_commit != session.base_commit
+            and mode is not DevelopmentSessionContinuationMode.OLD_BASE
+        ):
+            raise PersistenceConflictError(
+                "仓库基线已变化。请先查看恢复预览，并明确选择基于旧基线继续或重新规划。"
+            )
+        self._validate_run_token_budget_plan(remaining)
+        dependency_preflight = await self._preflight_workspace(
+            workspace,
+            verification_commands=self._dag_verification_commands(remaining),
+        )
+        run_id = await self._dag_store.start_run(
+            project_id=project.project_id,
+            dag=remaining,
+            base_commit=base_commit,
+        )
+        await self._initialize_run_token_budget(run_id, remaining)
+        await self._attach_development_session_run(
+            session_id,
+            run_id=run_id,
+            resumed_from_run_id=session.latest_run_id,
+        )
+        persisted_dag = await self._dag_store.load_dag(run_id)
+        ready = tuple(remaining.ready_task_ids(completed_task_ids=set(), failed_task_ids=set()))
+        dispatches = tuple(
+            await asyncio.gather(
+                *(self._dispatch_initial_task(run_id=run_id, task_id=task_id) for task_id in ready)
+            )
+        )
+        queued = sum(item.state is RequirementDispatchState.QUEUED for item in dispatches)
+        return RequirementRunLaunchResponse(
+            run_id=run_id,
+            project_id=project.project_id,
+            base_commit=base_commit,
+            dag_sha256=persisted_dag.dag_sha256,
+            task_ids=tuple(remaining.topological_order()),
+            initial_ready_task_ids=ready,
+            launch_state=(
+                RequirementRunLaunchState.QUEUED
+                if queued == len(dispatches)
+                else RequirementRunLaunchState.BROKER_UNAVAILABLE
+                if queued == 0
+                else RequirementRunLaunchState.PARTIAL
+            ),
+            dispatches=dispatches,
+            dependency_preflight=dependency_preflight,
+            resumed_from_run_id=session.latest_run_id,
+        )
+
+    async def _existing_development_session_launch(
+        self, run_id: UUID
+    ) -> RequirementRunLaunchResponse:
+        """Return the already-created continuation instead of dispatching a duplicate Run."""
+
+        persisted = await self._dag_store.load_dag(run_id)
+        snapshot = await self._evidence_store.load_run(run_id)
+        ready = tuple(persisted.dag.ready_task_ids(completed_task_ids=set(), failed_task_ids=set()))
+        return RequirementRunLaunchResponse(
+            run_id=run_id,
+            project_id=snapshot.project_id,
+            base_commit=snapshot.base_commit,
+            dag_sha256=persisted.dag_sha256,
+            task_ids=tuple(persisted.dag.topological_order()),
+            initial_ready_task_ids=ready,
+            launch_state=RequirementRunLaunchState.QUEUED,
+            dispatches=tuple(
+                InitialTaskDispatch(
+                    task_id=task_id,
+                    state=RequirementDispatchState.QUEUED,
+                    detail="恢复运行已创建，未重复分派。",
+                )
+                for task_id in ready
+            ),
+            resumed_from_run_id=run_id,
+            reused_existing_run=True,
+        )
+
+    async def _development_session_recovery_preview(
+        self,
+        *,
+        session,
+        current_commit: str,
+    ) -> ProductDevelopmentSessionRecovery:
+        completed = tuple(
+            item.task_id
+            for item in session.work_packages
+            if item.state is DevelopmentWorkPackageState.SUCCEEDED
+        )
+        checkpointed = tuple(
+            item.task_id
+            for item in session.work_packages
+            if item.state is DevelopmentWorkPackageState.CHECKPOINTED
+        )
+        remaining = (
+            ()
+            if session.dag is None
+            else tuple(
+                node.task.task_id
+                for node in session.dag.tasks
+                if node.task.task_id not in completed
+            )
+        )
+        allocations = (
+            {}
+            if session.dag is None
+            else {
+                node.task.task_id: (
+                    node.budget_allocation.recommended_token_budget
+                    if node.budget_allocation is not None
+                    else 0
+                )
+                for node in session.dag.tasks
+            }
+        )
+        planning_remaining: int | None = None
+        if session.planning_launch_id is not None and self._planning_budget_store is not None:
+            planning = await self._planning_budget_store.snapshot(session.planning_launch_id)
+            planning_remaining = max(
+                0,
+                planning.total_budget_tokens
+                - planning.used_total_tokens
+                - planning.reserved_tokens,
+            )
+        development_remaining: int | None = None
+        repair_remaining: int | None = None
+        if session.latest_run_id is not None and self._token_budget_store is not None:
+            budget = await self._token_budget_store.snapshot(session.latest_run_id)
+            by_stage = {item.stage: item for item in budget.stages}
+            development = by_stage.get(TokenBudgetStage.DEVELOPMENT)
+            repair = by_stage.get(TokenBudgetStage.VERIFICATION_REPAIR)
+            if development is not None:
+                development_remaining = max(
+                    0,
+                    development.total_budget_tokens
+                    - development.used_tokens
+                    - development.reserved_tokens,
+                )
+            if repair is not None:
+                repair_remaining = max(
+                    0, repair.total_budget_tokens - repair.used_tokens - repair.reserved_tokens
+                )
+        baseline_state = (
+            DevelopmentSessionBaselineState.UNCHANGED
+            if current_commit == session.base_commit
+            else DevelopmentSessionBaselineState.CHANGED
+        )
+        return ProductDevelopmentSessionRecovery(
+            session_id=session.session_id,
+            source_run_id=session.latest_run_id,
+            baseline_commit=session.base_commit,
+            current_commit=current_commit,
+            baseline_state=baseline_state,
+            reusable_work_package_ids=completed,
+            checkpointed_work_package_ids=checkpointed,
+            remaining_work_package_ids=remaining,
+            next_action=(
+                "重新规划或明确基于旧基线继续"
+                if baseline_state is DevelopmentSessionBaselineState.CHANGED
+                else "继续未完成工作包"
+            ),
+            budget=ProductDevelopmentSessionRecoveryBudget(
+                planning_remaining_tokens=planning_remaining,
+                development_remaining_tokens=development_remaining,
+                repair_remaining_tokens=repair_remaining,
+                estimated_new_development_tokens=sum(
+                    allocations.get(item, 0) for item in remaining
+                ),
+                estimated_tokens_saved=sum(allocations.get(item, 0) for item in completed),
+            ),
+        )
+
+    def _require_development_session_store(self) -> PostgresDevelopmentSessionStore:
+        if self._development_session_store is None:
+            raise PersistenceConflictError("开发会话持久化未配置")
+        return self._development_session_store
+
+    @staticmethod
+    def _remaining_session_dag(dag: TaskDAG, completed: set[str]) -> TaskDAG | None:
+        pending = [node for node in dag.tasks if node.task.task_id not in completed]
+        if not pending:
+            return None
+        return TaskDAG(
+            tasks=tuple(
+                node.model_copy(
+                    update={
+                        "depends_on": tuple(dep for dep in node.depends_on if dep not in completed)
+                    }
+                )
+                for node in pending
+            )
+        )
+
+    @staticmethod
+    def _product_development_session(session) -> ProductDevelopmentSession:
+        return ProductDevelopmentSession(
+            session_id=session.session_id,
+            project_id=session.project_id,
+            requirement=session.requirement,
+            base_commit=session.base_commit,
+            state=session.state,
+            planning_diagnostic=session.planning_diagnostic,
+            latest_run_id=session.latest_run_id,
+            resumed_from_run_id=session.resumed_from_run_id,
+            work_packages=tuple(
+                ProductDevelopmentWorkPackage(
+                    task_id=item.task_id,
+                    state=item.state,
+                    source_run_id=item.source_run_id,
+                    commit_sha=item.commit_sha,
+                    completed_interfaces=item.completed_interfaces,
+                    verification_summary=item.verification_summary,
+                    failure_summary=item.failure_summary,
+                    remaining_budget_tokens=item.remaining_budget_tokens,
+                )
+                for item in session.work_packages
+            ),
+            created_at=session.created_at,
+            updated_at=session.updated_at,
         )
 
     async def resume_run(self, run_id: UUID) -> RequirementRunLaunchResponse:
@@ -712,15 +1288,146 @@ def attach_autonomous_routes(
             if exc.code is ProviderErrorCode.TOKEN_BUDGET_EXHAUSTED:
                 raise HTTPException(
                     status_code=429,
-                    detail=(
-                        "本次启动的规划模型预算已用尽，未向模型服务发起超额请求。"
-                        f"原因：{exc}"
-                    ),
+                    detail=(f"本次启动的规划模型预算已用尽，未向模型服务发起超额请求。原因：{exc}"),
                 ) from exc
             raise HTTPException(
                 status_code=502,
                 detail=f"Planner provider failed: {exc.code.value}",
             ) from exc
+        except (PersistenceConflictError, ProjectProvisionError, WorkspaceGitError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except SQLAlchemyError as exc:
+            # Convert persistence faults into a normal FastAPI response so CORSMiddleware
+            # can retain the browser's access-control headers. The detailed traceback remains
+            # in the backend log; the client receives no database internals or credentials.
+            logger.exception("failed to persist requirement-run creation state")
+            raise HTTPException(
+                status_code=500,
+                detail="创建开发会话的本地持久化失败，请查看后端日志。",
+            ) from exc
+        except ValueError as exc:
+            detail = str(exc)
+            # Only an explicit missing project is a 404. Validation and implementation
+            # errors must not be misrepresented as a nonexistent resource in the UI.
+            status_code = 404 if detail.startswith("unknown ") else 422
+            raise HTTPException(status_code=status_code, detail=detail) from exc
+
+    @app.get(
+        "/api/v1/projects/{project_id}/development-sessions",
+        response_model=tuple[ProductDevelopmentSession, ...],
+    )
+    async def list_project_development_sessions(
+        project_id: UUID,
+    ) -> tuple[ProductDevelopmentSession, ...]:
+        try:
+            return await service.list_project_development_sessions(project_id)
+        except PersistenceConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get(
+        "/api/v1/development-sessions/{session_id}",
+        response_model=ProductDevelopmentSession,
+    )
+    async def get_development_session(session_id: UUID) -> ProductDevelopmentSession:
+        try:
+            return await service.get_development_session(session_id)
+        except PersistenceConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get(
+        "/api/v1/development-sessions/{session_id}/timeline",
+        response_model=tuple[ProductDevelopmentSessionTimelineEntry, ...],
+    )
+    async def get_development_session_timeline(
+        session_id: UUID,
+    ) -> tuple[ProductDevelopmentSessionTimelineEntry, ...]:
+        try:
+            return await service.get_development_session_timeline(session_id)
+        except PersistenceConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post(
+        "/api/v1/development-sessions/{session_id}/command-preview",
+        response_model=ProductDevelopmentSessionCommandPreview,
+    )
+    async def preview_development_session_command(
+        session_id: UUID,
+        request: DevelopmentSessionCommandPreviewRequest,
+    ) -> ProductDevelopmentSessionCommandPreview:
+        try:
+            return await service.preview_development_session_command(session_id, request)
+        except PersistenceConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get(
+        "/api/v1/development-sessions/{session_id}/recovery-preview",
+        response_model=ProductDevelopmentSessionRecovery,
+    )
+    async def get_development_session_recovery(
+        session_id: UUID,
+    ) -> ProductDevelopmentSessionRecovery:
+        try:
+            return await service.get_development_session_recovery(session_id)
+        except (PersistenceConflictError, WorkspaceGitError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post(
+        "/api/v1/development-sessions/{session_id}/continue",
+        response_model=RequirementRunLaunchResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def continue_development_session(
+        request: Request,
+        session_id: UUID,
+        mode: DevelopmentSessionContinuationMode = DevelopmentSessionContinuationMode.AUTO,
+    ) -> RequirementRunLaunchResponse:
+        if (await request.body()).strip():
+            raise HTTPException(status_code=400, detail="继续开发不接受浏览器提供的任务或 Git 参数")
+        try:
+            return await service.continue_development_session(session_id, mode=mode)
+        except DependencyEnvironmentPreflightError as exc:
+            raise HTTPException(status_code=424, detail=exc.public_detail) from exc
+        except TokenBudgetPlanError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except (PersistenceConflictError, WorkspaceGitError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post(
+        "/api/v1/development-sessions/{session_id}/replan",
+        response_model=RequirementRunLaunchResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def replan_development_session(
+        request: Request, session_id: UUID
+    ) -> RequirementRunLaunchResponse:
+        if request.query_params or (await request.body()).strip():
+            raise HTTPException(status_code=400, detail="重新规划不接受浏览器提供的任务或 Git 参数")
+        try:
+            return await service.replan_development_session(session_id)
+        except ProductPlannerUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except DependencyEnvironmentPreflightError as exc:
+            raise HTTPException(status_code=424, detail=exc.public_detail) from exc
+        except TokenBudgetPlanError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except AgentProviderError as exc:
+            raise HTTPException(
+                status_code=502, detail=f"Planner provider failed: {exc.code.value}"
+            ) from exc
+        except (PersistenceConflictError, WorkspaceGitError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 

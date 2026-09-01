@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import re
 import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
 from difflib import unified_diff
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
+
+_COMMIT_RE = re.compile(r"^[0-9a-f]{40,64}$")
 
 
 class WorkspaceGitError(RuntimeError):
@@ -90,6 +93,17 @@ class LocalGitWorkspace:
         if not commit:
             raise WorkspaceGitError("workspace repository does not have a resolvable HEAD commit")
         return commit
+
+    def has_commit(self, commit: str) -> bool:
+        """Return whether a full commit object is present in this managed repository."""
+
+        normalized = commit.strip().lower()
+        if not _COMMIT_RE.fullmatch(normalized):
+            return False
+        completed = self._git_completed(
+            ["cat-file", "-e", f"{normalized}^{{commit}}"]
+        )
+        return completed.returncode == 0
 
     def tracked_files(self) -> list[str]:
         """Return sorted tracked repository paths without exposing `.git` internals."""
@@ -198,9 +212,16 @@ class LocalGitWorkspace:
             raise WorkspaceGitError("workspace repository must have a valid HEAD commit")
 
     def _git(self, arguments: Sequence[str], *, check: bool = True) -> str:
+        completed = self._git_completed(arguments)
+        if check and completed.returncode != 0:
+            stderr = completed.stderr.strip() or "unknown git error"
+            raise WorkspaceGitError(f"git command failed: {stderr}")
+        return completed.stdout
+
+    def _git_completed(self, arguments: Sequence[str]) -> subprocess.CompletedProcess[str]:
         command = ["git", "-C", str(self._root), *arguments]
         try:
-            completed = subprocess.run(
+            return subprocess.run(
                 command,
                 capture_output=True,
                 text=True,
@@ -211,11 +232,6 @@ class LocalGitWorkspace:
             raise WorkspaceGitError("git executable is not available") from exc
         except subprocess.TimeoutExpired as exc:
             raise WorkspaceGitError("git command exceeded the workspace timeout") from exc
-
-        if check and completed.returncode != 0:
-            stderr = completed.stderr.strip() or "unknown git error"
-            raise WorkspaceGitError(f"git command failed: {stderr}")
-        return completed.stdout
 
     @staticmethod
     def _split_nul(value: str) -> list[str]:

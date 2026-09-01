@@ -96,6 +96,8 @@ class AgentRequest(BaseModel):
     budget_progress: bool = False
     # Used by DevFlow's local budget gate and deliberately never forwarded to a provider.
     context_estimated_tokens: int = Field(default=0, ge=0)
+    # Local turn ordinal used for durable cost observations. It is never sent to a provider.
+    execution_iteration: int = Field(default=0, ge=0, le=100)
     tools: list[ToolDefinition] = Field(default_factory=list)
 
     @field_validator("model")

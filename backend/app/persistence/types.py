@@ -8,6 +8,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.context import ContextPacket, ContextUsage
+from app.models.lifecycle import RunDisplayStatus
 from app.models.run import TaskRunState
 from app.models.task import TaskContract
 
@@ -113,6 +114,9 @@ class PersistedRunSnapshot(BaseModel):
     default_branch: str = Field(min_length=1, max_length=255)
     base_commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
     status: PersistedRunStatus
+    display_status: RunDisplayStatus = RunDisplayStatus.RUNNING
+    recovery_reason: str | None = Field(default=None, max_length=1024)
+    recovery_checked_at: datetime | None = None
     tasks: tuple[PersistedTask, ...] = Field(min_length=1)
     evidence: tuple[PersistedEvidence, ...] = ()
     terminal_result: dict[str, Any] | None = None

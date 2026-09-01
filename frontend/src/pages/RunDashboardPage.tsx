@@ -6,8 +6,12 @@ import {
   getRun,
   getRunDAG,
   getRunMetrics,
+  getDevelopmentSessionRecovery,
+  continueDevelopmentSession,
+  replanDevelopmentSession,
   explainRunFailure,
   getDependencyEnvironment,
+  archiveRun,
   resumeRun,
   retryRun,
   type RequirementRunLaunchResponse,
@@ -32,6 +36,7 @@ import {
 import type {
   ProductFailureExplanation,
   ProductDAGNode,
+  ProductDevelopmentSessionRecovery,
   ProductRunDetail,
   ProductRunMetrics,
   ProductRunCheckpoint,
@@ -79,6 +84,11 @@ export function RunDashboardPage() {
     queryFn: () => getDependencyEnvironment(run.data!.project_id),
     enabled: run.isSuccess,
   });
+  const developmentRecovery = useQuery({
+    queryKey: ["development-session-recovery", run.data?.development_session_id],
+    queryFn: () => getDevelopmentSessionRecovery(run.data!.development_session_id!),
+    enabled: Boolean(run.data?.development_session_id) && run.data?.status === "FAILED",
+  });
   const retry = useMutation({
     mutationFn: () => retryRun(runId),
     onSuccess: (nextLaunch) => {
@@ -97,9 +107,33 @@ export function RunDashboardPage() {
       void navigate(`/runs/${nextLaunch.run_id}`, { state: { launch: nextLaunch } });
     },
   });
+  const continueDevelopment = useMutation({
+    mutationFn: (mode: "AUTO" | "OLD_BASE") =>
+      continueDevelopmentSession(run.data!.development_session_id!, mode),
+    onSuccess: (nextLaunch) => {
+      void navigate(`/runs/${nextLaunch.run_id}`, { state: { launch: nextLaunch } });
+    },
+  });
+  const replanDevelopment = useMutation({
+    mutationFn: () => replanDevelopmentSession(run.data!.development_session_id!),
+    onSuccess: (nextLaunch) => {
+      void navigate(`/runs/${nextLaunch.run_id}`, { state: { launch: nextLaunch } });
+    },
+  });
   const explanation = useMutation({
     mutationFn: () => explainRunFailure(runId),
   });
+  const archive = useMutation({
+    mutationFn: () => archiveRun(runId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["runs"] });
+      void navigate("/runs");
+    },
+  });
+  const requestArchive = () => {
+    if (archive.isPending || run.data?.visibility_status === "ARCHIVED") return;
+    archive.mutate();
+  };
   const [events, setEvents] = useState<readonly RuntimeEventSummary[]>([]);
   const [streamStatus, setStreamStatus] =
     useState<StreamStatus>("connecting");
@@ -225,9 +259,16 @@ export function RunDashboardPage() {
         latestEvent={events.at(-1) ?? null}
         onOpenActivity={() => setActiveDetail("activity")}
         onOpenDag={() => setActiveDetail("dag")}
+        onArchive={requestArchive}
+        archiving={archive.isPending}
       />
 
       {launch ? <LaunchNotice launch={launch} /> : null}
+      {archive.error instanceof Error ? (
+        <p className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700" role="alert">
+          归档未完成：{archive.error.message}
+        </p>
+      ) : null}
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_20rem]">
         <div className="min-w-0 space-y-6">
@@ -264,6 +305,16 @@ export function RunDashboardPage() {
           resumeError={resume.error instanceof Error ? resume.error.message : null}
           resuming={resume.isPending}
           onResume={() => resume.mutate()}
+          recovery={developmentRecovery.data}
+          recoveryLoading={developmentRecovery.isLoading}
+          recoveryError={developmentRecovery.error instanceof Error ? developmentRecovery.error.message : null}
+          continuing={continueDevelopment.isPending}
+          continueError={continueDevelopment.error instanceof Error ? continueDevelopment.error.message : null}
+          onContinue={() => continueDevelopment.mutate("AUTO")}
+          onContinueOldBase={() => continueDevelopment.mutate("OLD_BASE")}
+          replanning={replanDevelopment.isPending}
+          replanError={replanDevelopment.error instanceof Error ? replanDevelopment.error.message : null}
+          onReplan={() => replanDevelopment.mutate()}
             />
           ) : null}
 
@@ -287,7 +338,7 @@ export function RunDashboardPage() {
             <div className="mt-5">
 
       {metrics.isLoading ? (
-        <p className="rounded-xl border border-slate-800 bg-slate-950/60 p-5 text-sm text-slate-500">
+        <p className="df-surface-card p-5 text-sm text-stone-600">
           正在加载已接受的运行指标…
         </p>
       ) : metrics.error || !metrics.data ? (
@@ -307,7 +358,7 @@ export function RunDashboardPage() {
       <GitHubPublication runId={runId} runStatus={run.data.status} />
 
       {dag.isLoading ? (
-        <p className="rounded-xl border border-slate-800 bg-slate-950/60 p-5 text-sm text-slate-500">
+        <p className="df-surface-card p-5 text-sm text-stone-600">
           正在加载已验证的 DAG…
         </p>
       ) : dag.error || !dag.data ? (
@@ -331,8 +382,8 @@ export function RunDashboardPage() {
       <div className="mt-5 space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h2 className="text-xl font-semibold text-white">实时运行时间线</h2>
-            <p className="mt-1 text-sm text-slate-500">
+            <h2 className="text-xl font-semibold text-stone-900">实时运行时间线</h2>
+            <p className="mt-1 text-sm text-stone-600">
               SSE 用于观察已接受的运行时事件；运行成功仍由结构化持久化和确定性证据门控决定。
             </p>
           </div>
@@ -345,38 +396,38 @@ export function RunDashboardPage() {
           </p>
         ) : null}
 
-        <div className="overflow-hidden rounded-xl border border-slate-800 bg-slate-950/60">
+        <div className="df-technical-panel overflow-hidden">
           {events.length === 0 ? (
-            <p className="p-5 text-sm text-slate-500">
+            <p className="df-technical-muted p-5 text-sm">
               {streamStatus === "unsupported"
                 ? "当前浏览器不支持 EventSource。"
                 : "正在等待已接受的运行时事件…"}
             </p>
           ) : (
-            <ol className="divide-y divide-slate-800">
+            <ol>
               {events.map((event) => (
-                <li key={event.event_id} className="grid gap-3 p-4 md:grid-cols-[5rem_11rem_1fr]">
-                  <p className="font-mono text-xs text-slate-500">#{event.sequence}</p>
+                <li key={event.event_id} className="df-technical-row grid gap-3 p-4 md:grid-cols-[5rem_11rem_1fr]">
+                  <p className="df-technical-muted font-mono text-xs">#{event.sequence}</p>
                   <div className="space-y-1">
                     <p className={`text-xs font-semibold ${levelClass(event.level)}`}>
                       {labelFor(event.level)}
                     </p>
-                    <p className="text-xs text-slate-500">{labelFor(event.source)}</p>
+                    <p className="df-technical-muted text-xs">{labelFor(event.source)}</p>
                   </div>
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
                       <p className="font-mono text-xs text-cyan-200">{labelFor(event.kind)}</p>
                       {event.task_id ? (
-                        <span className="text-xs text-slate-500">任务 {event.task_id}</span>
+                        <span className="df-technical-muted text-xs">任务 {event.task_id}</span>
                       ) : null}
                       {event.generation ? (
-                        <span className="text-xs text-slate-500">代次 {event.generation}</span>
+                        <span className="df-technical-muted text-xs">代次 {event.generation}</span>
                       ) : null}
                     </div>
-                    <p className="mt-2 text-sm text-slate-300">
+                    <p className="mt-2 text-sm text-slate-100">
                       {translateRuntimeEventMessage(event.kind, event.message)}
                     </p>
-                    <p className="mt-2 text-xs text-slate-600">
+                    <p className="df-technical-muted mt-2 text-xs">
                       {formatDateTime(event.created_at)}
                     </p>
                   </div>
@@ -391,21 +442,21 @@ export function RunDashboardPage() {
       <details className="rounded-2xl border border-stone-200 bg-white p-5">
         <summary className="cursor-pointer text-sm font-medium text-stone-700">所有任务与证据</summary>
         <div className="mt-5 space-y-3">
-        <h2 className="text-xl font-semibold text-white">任务</h2>
+        <h2 className="text-xl font-semibold text-stone-900">任务</h2>
         {run.data.tasks.map((task) => (
           <Link
             key={task.task_id}
             to={`/runs/${run.data.run_id}/tasks/${encodeURIComponent(task.task_id)}`}
-            className="block rounded-xl border border-slate-800 bg-slate-900/50 p-5 transition hover:border-slate-700"
+            className="block rounded-xl border border-stone-200 bg-stone-50 p-5 transition hover:border-stone-300 hover:bg-white"
           >
             <div className="flex flex-wrap justify-between gap-4">
               <div>
-                <p className="font-mono text-sm text-cyan-200">{task.task_id}</p>
-                <p className="mt-2 text-slate-300">
+                <p className="font-mono text-sm text-blue-700">{task.task_id}</p>
+                <p className="mt-2 text-stone-700">
                   {translateTaskObjective(task.objective)}
                 </p>
               </div>
-              <p className="text-sm text-slate-500">
+              <p className="text-sm text-stone-500">
                 {task.evidence_count} 条证据记录
               </p>
             </div>
@@ -441,6 +492,8 @@ function RunHero({
   latestEvent,
   onOpenActivity,
   onOpenDag,
+  onArchive,
+  archiving,
 }: {
   run: ProductRunDetail;
   currentTask: ProductDAGNode | null;
@@ -450,6 +503,8 @@ function RunHero({
   latestEvent: RuntimeEventSummary | null;
   onOpenActivity: () => void;
   onOpenDag: () => void;
+  onArchive: () => void;
+  archiving: boolean;
 }) {
   const statusText = run.status === "RUNNING" ? "运行中" : labelFor(run.status);
   const unlockedInterfaces = nodes
@@ -471,7 +526,7 @@ function RunHero({
       <div className="mt-5 grid gap-4 border-t border-stone-100 pt-5 md:grid-cols-[1fr_1.35fr_auto] md:items-center">
         <p className="text-sm text-stone-600"><span className="font-semibold text-stone-900">已完成 {completedTaskCount} / {run.task_count} 个工作包</span><br /><span className="text-stone-400">已解锁 {unlockedInterfaces} 个接口 · 当前：{currentTask?.task_id ?? (run.status === "SUCCEEDED" ? "已完成" : "等待调度")} · {executionModeLabel(currentTask?.execution_mode)}</span>{developmentBudget ? <><br /><span className="text-stone-400">开发预算 {developmentBudget.used_tokens.toLocaleString()} / {developmentBudget.total_budget_tokens.toLocaleString()}</span></> : null}</p>
         <p className="text-sm text-stone-500">{latestEvent ? `最近进展：${translateRuntimeEventMessage(latestEvent.kind, latestEvent.message)}` : "最近进展：等待运行事件"}</p>
-        <div className="flex flex-wrap items-center justify-end gap-2"><span className="rounded-full bg-stone-100 px-2.5 py-1 text-xs text-stone-600">{metrics ? `策略：${metrics.workflow.activation_mode}` : "正在读取策略"}</span><button type="button" onClick={onOpenActivity} className="rounded-lg border border-stone-200 px-3 py-2 text-sm text-stone-600 hover:bg-stone-50">实时过程</button><button type="button" onClick={onOpenDag} className="rounded-lg border border-stone-200 px-3 py-2 text-sm text-stone-600 hover:bg-stone-50">完整 DAG</button></div>
+        <div className="flex flex-wrap items-center justify-end gap-2"><span className="rounded-full bg-stone-100 px-2.5 py-1 text-xs text-stone-600">{metrics ? `策略：${metrics.workflow.activation_mode}` : "正在读取策略"}</span><button type="button" onClick={onOpenActivity} className="rounded-lg border border-stone-200 px-3 py-2 text-sm text-stone-600 hover:bg-stone-50">实时过程</button><button type="button" onClick={onOpenDag} className="rounded-lg border border-stone-200 px-3 py-2 text-sm text-stone-600 hover:bg-stone-50">完整 DAG</button>{run.visibility_status === "VISIBLE" && (run.status !== "RUNNING" || run.display_status === "RECOVERY_REQUIRED") ? <button type="button" onClick={onArchive} disabled={archiving} className="df-button df-button-secondary">{archiving ? "正在归档…" : "归档此运行"}</button> : null}</div>
       </div>
     </header>
   );
@@ -493,14 +548,14 @@ function ContextDrawer({ run, metrics, currentTask, streamStatus, children }: { 
   return (
     <aside className="hidden space-y-4 xl:block" aria-label="运行上下文">
       <section className="rounded-2xl border border-stone-200 bg-white p-4 shadow-sm"><h2 className="text-sm font-semibold text-stone-900">当前任务</h2><p className="mt-2 font-mono text-sm text-blue-700">{currentTask?.task_id ?? (run.status === "SUCCEEDED" ? "已完成" : "等待调度")}</p><p className="mt-2 text-xs leading-5 text-stone-500">{currentTask ? translateTaskObjective(currentTask.objective) : run.status === "SUCCEEDED" ? "所有任务均已完成。" : "任务会在其依赖完成后开始。"}</p><dl className="mt-3 grid gap-2 border-t border-stone-100 pt-3 text-xs text-stone-500"><div><dt className="inline">执行方式：</dt><dd className="inline text-stone-700">{executionModeLabel(currentTask?.execution_mode)}</dd></div><div><dt className="inline">当前步骤：</dt><dd className="inline text-stone-700">{currentTask?.workflow_step ?? (currentTask?.execution_mode === "AGENT" ? "Agent 开发" : "等待执行")}</dd></div>{currentTask?.agent_escalation_reason ? <div><dt>升级原因：</dt><dd className="mt-1 leading-5 text-amber-700">{currentTask.agent_escalation_reason}</dd></div> : null}</dl><div className="mt-3 border-t border-stone-100 pt-3 text-xs text-stone-500">事件流：{labelFor(streamStatus)} · 基线 {run.base_commit.slice(0, 8)}</div></section>
-      <section className="rounded-2xl border border-stone-200 bg-white p-4"><h2 className="text-sm font-semibold text-stone-900">运行数据</h2><dl className="mt-3 grid grid-cols-2 gap-3 text-sm"><div><dt className="text-stone-400">本次 Token</dt><dd className="mt-1 font-medium text-stone-700">{metrics ? `${metrics.token_budget.used_total_tokens.toLocaleString()} / ${metrics.token_budget.total_budget_tokens.toLocaleString()}` : "—"}</dd></div><div><dt className="text-stone-400">规划 Token</dt><dd className="mt-1 font-medium text-stone-700">{metrics?.planning_budget ? `${metrics.planning_budget.used_total_tokens.toLocaleString()} / ${metrics.planning_budget.total_budget_tokens.toLocaleString()}` : "—"}</dd></div><div><dt className="text-stone-400">预算状态</dt><dd className="mt-1 font-medium text-stone-700">{metrics?.token_budget.status ?? "—"}</dd></div><div><dt className="text-stone-400">上下文复用</dt><dd className="mt-1 font-medium text-stone-700">{metrics?.performance.context_reused_files ?? "—"} 文件</dd></div><div><dt className="text-stone-400">预留 Token</dt><dd className="mt-1 font-medium text-stone-700">{metrics?.token_budget.reserved_tokens.toLocaleString() ?? "—"}</dd></div></dl>{metrics?.token_budget.stages?.length ? <div className="mt-4 border-t border-stone-100 pt-3"><p className="text-xs font-medium text-stone-500">阶段预算</p><ul className="mt-2 space-y-1 text-xs text-stone-600">{metrics.token_budget.stages.map((item) => <li key={item.stage} className="flex justify-between gap-2"><span>{stageBudgetLabel(item.stage)}</span><span>{item.used_tokens.toLocaleString()} / {item.total_budget_tokens.toLocaleString()}</span></li>)}</ul></div> : null}{metrics?.token_budget.work_packages?.length ? <div className="mt-4 border-t border-stone-100 pt-3"><p className="text-xs font-medium text-stone-500">工作包预算</p><ul className="mt-2 space-y-2 text-xs text-stone-600">{metrics.token_budget.work_packages.map((item) => <li key={item.task_id}><div className="flex justify-between gap-2"><span className="truncate">{item.task_id} · {item.complexity}</span><span>{item.developer_used_tokens + item.repair_used_tokens} / {item.total_budget_tokens}</span></div><p className="mt-1 text-[11px] text-stone-400">开发 {item.developer_used_tokens}/{item.developer_budget_tokens} · 修复 {item.repair_used_tokens}/{item.repair_budget_tokens} · 借款 {(item.developer_borrowed_tokens ?? 0) + (item.repair_borrowed_tokens ?? 0)} · 回收 {(item.developer_reclaimed_tokens ?? 0) + (item.repair_reclaimed_tokens ?? 0)}</p>{item.last_required_tokens ? <p className="mt-1 text-[11px] text-stone-400">下一轮需 {item.last_required_tokens} · 包可用 {item.last_available_tokens ?? 0} · FLEX {item.last_flex_available_tokens ?? 0}{item.last_budget_decision ? ` · ${item.last_budget_decision}` : ""}</p> : null}</li>)}</ul></div> : null}</section>
+      <section className="rounded-2xl border border-stone-200 bg-white p-4"><h2 className="text-sm font-semibold text-stone-900">运行数据</h2><dl className="mt-3 grid grid-cols-2 gap-3 text-sm"><div><dt className="text-stone-400">本次 Token</dt><dd className="mt-1 font-medium text-stone-700">{metrics ? `${metrics.token_budget.used_total_tokens.toLocaleString()} / ${metrics.token_budget.total_budget_tokens.toLocaleString()}` : "—"}</dd></div><div><dt className="text-stone-400">规划 Token</dt><dd className="mt-1 font-medium text-stone-700">{metrics?.planning_budget ? `${metrics.planning_budget.used_total_tokens.toLocaleString()} / ${metrics.planning_budget.total_budget_tokens.toLocaleString()}` : "—"}</dd></div><div><dt className="text-stone-400">预算状态</dt><dd className="mt-1 font-medium text-stone-700">{metrics?.token_budget.status ?? "—"}</dd></div><div><dt className="text-stone-400">上下文复用</dt><dd className="mt-1 font-medium text-stone-700">{metrics?.performance.context_reused_files ?? "—"} 文件</dd></div><div><dt className="text-stone-400">已压缩写入</dt><dd className="mt-1 font-medium text-stone-700">{metrics?.performance.context_compacted_tool_groups ?? "—"} 组</dd></div><div><dt className="text-stone-400">预留 Token</dt><dd className="mt-1 font-medium text-stone-700">{metrics?.token_budget.reserved_tokens.toLocaleString() ?? "—"}</dd></div></dl>{metrics?.token_budget.stages?.length ? <div className="mt-4 border-t border-stone-100 pt-3"><p className="text-xs font-medium text-stone-500">阶段预算</p><p className="mt-1 text-[11px] leading-4 text-stone-400">规划调用在启动预算中结算；运行内未使用的规划容量已释放至 FLEX。</p><ul className="mt-2 space-y-1 text-xs text-stone-600">{metrics.token_budget.stages.map((item) => <li key={item.stage} className="flex justify-between gap-2"><span>{stageBudgetLabel(item.stage)}</span><span>{item.used_tokens.toLocaleString()} / {item.total_budget_tokens.toLocaleString()}</span></li>)}</ul></div> : null}{metrics?.token_budget.work_packages?.length ? <div className="mt-4 border-t border-stone-100 pt-3"><p className="text-xs font-medium text-stone-500">工作包预算</p><ul className="mt-2 space-y-2 text-xs text-stone-600">{metrics.token_budget.work_packages.map((item) => <li key={item.task_id}><div className="flex justify-between gap-2"><span className="truncate">{item.task_id} · {item.complexity}</span><span>{item.developer_used_tokens + item.repair_used_tokens} / {item.total_budget_tokens}</span></div><p className="mt-1 text-[11px] text-stone-400">开发 {item.developer_used_tokens}/{item.developer_budget_tokens} · 修复 {item.repair_used_tokens}/{item.repair_budget_tokens} · 借款 {(item.developer_borrowed_tokens ?? 0) + (item.repair_borrowed_tokens ?? 0)} · 回收 {(item.developer_reclaimed_tokens ?? 0) + (item.repair_reclaimed_tokens ?? 0)}</p>{item.last_required_tokens ? <p className="mt-1 text-[11px] text-stone-400">下一轮需 {item.last_required_tokens} · 包可用 {item.last_available_tokens ?? 0} · FLEX {item.last_flex_available_tokens ?? 0} · 可延期下游 {item.last_downstream_available_tokens ?? 0}{item.last_budget_decision ? ` · ${item.last_budget_decision}` : ""}{item.last_budget_reason ? `：${item.last_budget_reason}` : ""}</p> : null}</li>)}</ul></div> : null}</section>
       {children}
     </aside>
   );
 }
 
 function stageBudgetLabel(stage: string): string {
-  return ({ PLANNING: "规划", DEVELOPMENT: "开发", VERIFICATION_REPAIR: "验证与修复", REVIEW_PUBLICATION: "审查与发布", FLEX: "FLEX 弹性池" } as Record<string, string>)[stage] ?? stage;
+  return ({ PLANNING: "规划（启动预算）", DEVELOPMENT: "开发", VERIFICATION_REPAIR: "验证与修复", REVIEW_PUBLICATION: "审查与发布", FLEX: "FLEX 弹性池" } as Record<string, string>)[stage] ?? stage;
 }
 
 function ActivityFeed({ events, streamStatus }: { events: readonly RuntimeEventSummary[]; streamStatus: StreamStatus }) {
@@ -549,6 +604,16 @@ function FailureSummary({
   resumeError,
   resuming,
   onResume,
+  recovery,
+  recoveryLoading,
+  recoveryError,
+  continuing,
+  continueError,
+  onContinue,
+  onContinueOldBase,
+  replanning,
+  replanError,
+  onReplan,
 }: {
   failures: readonly ProductRunFailure[];
   checkpoint: ProductRunCheckpoint | null;
@@ -566,6 +631,16 @@ function FailureSummary({
   resumeError: string | null;
   resuming: boolean;
   onResume: () => void;
+  recovery: ProductDevelopmentSessionRecovery | undefined;
+  recoveryLoading: boolean;
+  recoveryError: string | null;
+  continuing: boolean;
+  continueError: string | null;
+  onContinue: () => void;
+  onContinueOldBase: () => void;
+  replanning: boolean;
+  replanError: string | null;
+  onReplan: () => void;
 }) {
   const orderedFailures = [...failures].sort(
     (left, right) => failurePriority(left) - failurePriority(right),
@@ -573,12 +648,12 @@ function FailureSummary({
   return (
     <section
       aria-label="失败原因"
-      className="rounded-xl border border-rose-400/30 bg-rose-400/5 p-5"
+      className="rounded-xl border border-rose-200 bg-rose-50 p-5"
     >
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h2 className="text-xl font-semibold text-rose-100">失败原因</h2>
-          <p className="mt-1 text-sm text-rose-100/80">
+          <h2 className="text-xl font-semibold text-rose-900">失败原因</h2>
+          <p className="mt-1 text-sm text-rose-800">
             原运行已结束。重新发起会使用服务端保存的任务图创建新的运行记录，不会修改旧记录。
           </p>
         </div>
@@ -587,7 +662,7 @@ function FailureSummary({
             type="button"
             onClick={onExplain}
             disabled={explaining}
-            className="rounded-lg border border-cyan-300/40 bg-cyan-300/10 px-4 py-2 text-sm font-medium text-cyan-100 transition hover:bg-cyan-300/20 disabled:cursor-not-allowed disabled:opacity-60"
+            className="df-button border border-blue-200 bg-white text-blue-800 hover:bg-blue-50"
           >
             {explaining ? "正在生成解读…" : "AI 解读失败原因"}
           </button>
@@ -596,16 +671,26 @@ function FailureSummary({
               type="button"
               onClick={onResume}
               disabled={resuming}
-              className="rounded-lg border border-emerald-300/40 bg-emerald-300/10 px-4 py-2 text-sm font-medium text-emerald-100 transition hover:bg-emerald-300/20 disabled:cursor-not-allowed disabled:opacity-60"
+              className="df-button border border-emerald-200 bg-white text-emerald-800 hover:bg-emerald-50"
             >
               {resuming ? "正在继续…" : "从检查点继续"}
+            </button>
+          ) : null}
+          {recovery?.baseline_state === "UNCHANGED" ? (
+            <button
+              type="button"
+              onClick={onContinue}
+              disabled={continuing}
+              className="df-button border border-emerald-200 bg-white text-emerald-800 hover:bg-emerald-50"
+            >
+              {continuing ? "正在继续开发…" : "继续开发"}
             </button>
           ) : null}
           <button
             type="button"
             onClick={onRetry}
             disabled={retrying}
-            className="rounded-lg border border-rose-300/40 bg-rose-300/10 px-4 py-2 text-sm font-medium text-rose-100 transition hover:bg-rose-300/20 disabled:cursor-not-allowed disabled:opacity-60"
+            className="df-button df-button-danger"
           >
             {retrying ? "正在重新发起…" : "重新发起运行"}
           </button>
@@ -613,7 +698,7 @@ function FailureSummary({
             type="button"
             onClick={onCachedRetry}
             disabled={!cacheReady || cachedRetrying}
-            className="rounded-lg border border-emerald-300/40 bg-emerald-300/10 px-4 py-2 text-sm font-medium text-emerald-100 transition hover:bg-emerald-300/20 disabled:cursor-not-allowed disabled:opacity-60"
+            className="df-button border border-emerald-200 bg-white text-emerald-800 hover:bg-emerald-50"
           >
             {cachedRetrying ? "正在使用缓存环境…" : "使用缓存环境重新发起"}
           </button>
@@ -621,12 +706,12 @@ function FailureSummary({
       </div>
 
       {explanation ? (
-        <div className="mt-4 rounded-lg border border-cyan-300/20 bg-cyan-300/5 p-4">
-          <h3 className="font-medium text-cyan-100">AI 辅助说明</h3>
-          <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-cyan-50/90">
+        <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50 p-4">
+          <h3 className="font-medium text-blue-900">AI 辅助说明</h3>
+          <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-blue-900">
             {plainAiText(explanation.explanation)}
           </p>
-          <p className="mt-3 text-xs text-cyan-100/60">
+          <p className="mt-3 text-xs text-blue-700">
             {explanation.cached ? "已使用已保存的解读" : "刚刚生成"} · 模型 {explanation.model} ·
             仅用于辅助理解，不改变系统失败判定或重试权限。
           </p>
@@ -634,56 +719,84 @@ function FailureSummary({
       ) : null}
 
       {explanationError ? (
-        <p className="mt-4 rounded-lg border border-amber-300/20 bg-amber-300/5 p-3 text-sm text-amber-100">
+        <p className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
           AI 解读暂不可用：{explanationError}。原始失败证据仍可用于诊断。
         </p>
       ) : null}
 
       {retryError ? (
-        <p className="mt-4 rounded-lg border border-rose-300/20 bg-slate-950/30 p-3 text-sm text-rose-100">
+        <p className="mt-4 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">
           重新发起失败：{retryError}
         </p>
       ) : null}
 
       {cachedRetryError ? (
-        <p className="mt-4 rounded-lg border border-rose-300/20 bg-slate-950/30 p-3 text-sm text-rose-100">
+        <p className="mt-4 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">
           缓存环境重试失败：{cachedRetryError}
         </p>
       ) : null}
 
       {checkpoint ? (
-        <div className="mt-4 rounded-lg border border-emerald-300/20 bg-emerald-300/5 p-4 text-sm text-emerald-50/90">
-          <p className="font-medium text-emerald-100">可恢复检查点：任务 {checkpoint.task_id}</p>
+        <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
+          <p className="font-medium text-emerald-900">可恢复检查点：任务 {checkpoint.task_id}</p>
           <p className="mt-1">{checkpoint.summary}</p>
-          <p className="mt-2 font-mono text-xs text-emerald-100/70">
+          <p className="mt-2 text-xs text-emerald-700">从检查点继续 · 已压缩上下文：仅携带工作包契约、文件哈希、验证摘要、失败摘要与未完成事项。</p>
+          <p className="mt-2 font-mono text-xs text-emerald-700">
             提交 {checkpoint.commit_sha.slice(0, 12)} · 已保存 {checkpoint.changed_files.length} 个文件 · 原因 {checkpoint.reason}
           </p>
         </div>
       ) : null}
 
+      {recoveryLoading ? (
+        <p className="mt-4 text-sm text-rose-800">正在计算可恢复内容与预算…</p>
+      ) : null}
+
+      {recovery ? (
+        <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
+          <p className="font-medium text-emerald-900">继续开发预览</p>
+          <p className="mt-1">已复用 {recovery.reusable_work_package_ids.length} 个工作包，剩余 {recovery.remaining_work_package_ids.length} 个工作包。继续后不会重复规划、开发或验证已复用工作包。</p>
+          <p className="mt-2 text-xs text-emerald-700">新的开发切片不会重放历史消息、工具参数或源码；需要代码细节时由 Agent 显式读取。</p>
+          <p className="mt-2 text-xs text-emerald-700">预计节省 {recovery.budget.estimated_tokens_saved.toLocaleString()} Token · 后续开发预计 {recovery.budget.estimated_new_development_tokens.toLocaleString()} Token · 规划剩余 {tokenValue(recovery.budget.planning_remaining_tokens)} · 开发剩余 {tokenValue(recovery.budget.development_remaining_tokens)} · 修复剩余 {tokenValue(recovery.budget.repair_remaining_tokens)}</p>
+          {recovery.checkpointed_work_package_ids.length ? <p className="mt-2 text-xs text-emerald-700">可从检查点恢复：{recovery.checkpointed_work_package_ids.join("、")}</p> : null}
+          {recovery.baseline_state === "CHANGED" ? (
+            <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-amber-900">
+              <p>仓库基线已变化：{recovery.baseline_commit.slice(0, 12)} → {recovery.current_commit.slice(0, 12)}。为避免静默混入新代码，请明确选择后续路径。</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button type="button" onClick={onContinueOldBase} disabled={continuing} className="df-button border border-amber-300 bg-white text-amber-900 hover:bg-amber-100">{continuing ? "正在继续…" : "基于旧基线继续"}</button>
+                <button type="button" onClick={onReplan} disabled={replanning} className="df-button border border-amber-300 bg-white text-amber-900 hover:bg-amber-100">{replanning ? "正在重新规划…" : "重新规划"}</button>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {recoveryError ? <p className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">恢复预览不可用：{recoveryError}</p> : null}
+      {continueError ? <p className="mt-4 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">继续开发失败：{continueError}</p> : null}
+      {replanError ? <p className="mt-4 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">重新规划失败：{replanError}</p> : null}
+
       {resumeError ? (
-        <p className="mt-4 rounded-lg border border-rose-300/20 bg-slate-950/30 p-3 text-sm text-rose-100">
+        <p className="mt-4 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">
           从检查点继续失败：{resumeError}
         </p>
       ) : null}
 
       {failures.length === 0 ? (
-        <p className="mt-4 text-sm text-rose-100/80">
+        <p className="mt-4 text-sm text-rose-800">
           后端未找到可展示的结构化失败报告；请查看下方运行时间线并保留该运行 ID 以便诊断。
         </p>
       ) : (
         <ol className="mt-4 space-y-3">
           {orderedFailures.map((failure, index) => (
-            <li key={`${failure.task_id ?? "run"}-${failure.failure_type}-${index}`} className="rounded-lg border border-rose-300/15 bg-slate-950/30 p-4">
-              <p className="font-medium text-rose-100">
+            <li key={`${failure.task_id ?? "run"}-${failure.failure_type}-${index}`} className="rounded-lg border border-rose-200 bg-rose-50 p-4">
+              <p className="font-medium text-rose-900">
                 {failure.task_id ? `任务 ${failure.task_id}：` : "运行："}
                 {failure.message}
               </p>
-              <p className="mt-2 text-xs text-rose-100/70">
-                类型：{failureTypeLabel(failure)} · 来源：{failure.source} · {failure.retryable ? "允许自动重试" : "不可自动重试"}
+              <p className="mt-2 text-xs text-rose-700">
+                类型：{failureTypeLabel(failure)} · 来源：{failure.source} · {failure.failure_type === "WORK_PACKAGE_BUDGET_ALLOCATION_BLOCKED" ? "可通过恢复运行继续" : failure.retryable ? "允许自动重试" : "不可自动重试"}
               </p>
               {failure.evidence.length > 0 ? (
-                <pre className="mt-3 overflow-x-auto rounded bg-slate-950/70 p-3 text-xs leading-5 text-rose-100/90">
+                <pre className="mt-3 overflow-x-auto rounded bg-rose-100 p-3 text-xs leading-5 text-rose-950">
                   {failure.evidence.join("\n")}
                 </pre>
               ) : null}
@@ -702,6 +815,10 @@ function plainAiText(value: string): string {
     .replace(/`([^`]+)`/g, "$1");
 }
 
+function tokenValue(value: number | null): string {
+  return value == null ? "—" : `${value.toLocaleString()} Token`;
+}
+
 function failureTypeLabel(failure: ProductRunFailure): string {
   // Existing persisted runs predate AGENT_TIME_LIMIT. Preserve their diagnostic meaning instead
   // of showing a historical TIME_LIMIT result as an unrelated tool fault.
@@ -718,6 +835,7 @@ function failureTypeLabel(failure: ProductRunFailure): string {
     AGENT_TIME_LIMIT: "开发智能体时间预算耗尽",
     RATE_LIMIT: "模型服务限流",
     INVALID_AGENT_OUTPUT: "智能体输出无效",
+    INVALID_TOOL_ARGUMENTS: "工具参数无效",
     TOOL_FAILURE: "运行环境或工具故障",
     SCOPE_VIOLATION: "超出文件修改范围",
     TEST_FAILURE: "验证命令未通过",
@@ -728,6 +846,7 @@ function failureTypeLabel(failure: ProductRunFailure): string {
     SANDBOX_TIMEOUT: "验证沙箱超时",
     VERIFICATION_ENV_UNAVAILABLE: "验证环境不可用",
     TOKEN_BUDGET_EXHAUSTED: "本次运行模型预算已用尽",
+    WORK_PACKAGE_BUDGET_ALLOCATION_BLOCKED: "工作包预算分配受限",
     INTERFACE_CONTRACT_UNMET: "接口契约未满足",
   }[failure.failure_type];
 }
@@ -738,6 +857,7 @@ function failurePriority(failure: ProductRunFailure): number {
     TEST_FAILURE: 2,
     LINT_FAILURE: 2,
     TOKEN_BUDGET_EXHAUSTED: 3,
+    WORK_PACKAGE_BUDGET_ALLOCATION_BLOCKED: 3,
     PROVIDER_FAILURE: 5,
     TOOL_FAILURE: 5,
   } as Record<string, number>)[failure.failure_type] ?? 4;
@@ -788,8 +908,8 @@ type MetricProps = {
 function Metric({ label, value, mono = false }: MetricProps) {
   return (
     <div>
-      <dt className="text-xs uppercase tracking-wide text-slate-500">{label}</dt>
-      <dd className={`mt-2 text-slate-200 ${mono ? "font-mono" : ""}`}>{value}</dd>
+      <dt className="text-xs uppercase tracking-wide text-stone-500">{label}</dt>
+      <dd className={`mt-2 text-stone-800 ${mono ? "font-mono" : ""}`}>{value}</dd>
     </div>
   );
 }

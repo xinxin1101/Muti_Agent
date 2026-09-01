@@ -31,18 +31,18 @@ export function RunDAG({ runId, dag }: RunDAGProps) {
     <div className="space-y-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-xl font-semibold text-white">任务 DAG</h2>
-          <p className="mt-1 text-sm text-slate-500">
+          <h2 className="text-xl font-semibold text-stone-900">任务 DAG</h2>
+          <p className="mt-1 text-sm text-stone-600">
             来自后端已验证 DAG 的只读拓扑。节点状态是由证据支撑的展示投影，而非浏览器调度状态。
           </p>
         </div>
-        <div className="text-right text-xs text-slate-500">
+        <div className="text-right text-xs text-stone-500">
           <p>{dag.nodes.length} 个节点 · {dag.edges.length} 条边</p>
           <p className="mt-1 font-mono">DAG {dag.dag_sha256.slice(0, 12)}</p>
         </div>
       </div>
 
-      <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/60 p-2">
+      <div className="df-technical-panel overflow-x-auto p-2">
         <svg
           role="img"
           aria-label="已验证的任务依赖 DAG"
@@ -123,9 +123,9 @@ export function RunDAG({ runId, dag }: RunDAGProps) {
         </svg>
       </div>
 
-      <div className="flex flex-wrap gap-2 text-xs text-slate-500">
+      <div className="flex flex-wrap gap-2 text-xs text-stone-600">
         {(["READY", "RUNNING", "SUCCEEDED", "FAILED", "BLOCKED"] as const).map((state) => (
-          <span key={state} className="rounded-full border border-slate-800 px-2 py-1">
+          <span key={state} className="rounded-full border border-stone-200 bg-stone-50 px-2 py-1">
             {labelFor(state)}
           </span>
         ))}

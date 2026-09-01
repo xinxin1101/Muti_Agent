@@ -53,6 +53,7 @@ class ProjectRow(PersistenceBase):
     canonical_repository_url: Mapped[str] = mapped_column(Text, nullable=False)
     default_branch: Mapped[str] = mapped_column(String(255), nullable=False)
     provision_status: Mapped[str] = mapped_column(String(32), nullable=False, default="READY")
+    lifecycle_state: Mapped[str] = mapped_column(String(16), nullable=False, default="ACTIVE")
     provision_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     provision_error_message: Mapped[str | None] = mapped_column(String(512), nullable=True)
     last_provisioned_at: Mapped[datetime | None] = mapped_column(
@@ -112,6 +113,15 @@ class RunRow(PersistenceBase):
     )
     base_commit: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="RUNNING")
+    display_status: Mapped[str] = mapped_column(String(32), nullable=False, default="RUNNING")
+    recovery_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recovery_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    recovery_run_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), nullable=True
+    )
+    visibility_status: Mapped[str] = mapped_column(String(16), nullable=False, default="VISIBLE")
     event_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     dag_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     terminal_result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

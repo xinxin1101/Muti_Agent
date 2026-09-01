@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 import subprocess
 from collections import OrderedDict
 from pathlib import Path
@@ -9,44 +8,29 @@ from uuid import UUID
 
 from app.workspace import LocalGitWorkspace, WorkspaceGitError
 
-_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{2,}")
-_ALWAYS_NAMES = {
-    "README.md",
-    "README.rst",
-    "README.txt",
-    "pyproject.toml",
-    "requirements.txt",
-    "uv.lock",
-    "poetry.lock",
-    "package.json",
-    "package-lock.json",
-    "pnpm-lock.yaml",
-    "yarn.lock",
-    "pom.xml",
-    "build.gradle",
-    "build.gradle.kts",
-    "go.mod",
-    "Cargo.toml",
-    ".github/workflows",
-}
-_SUMMARY_VERSION = "repository_summary_v1"
+_SUMMARY_VERSION = "repository_summary_v2_metadata_only"
 
 
 class RepositoryPlanningContextBuilder:
-    """Read repository facts from one immutable commit without mutating the workspace."""
+    """Build a compact, metadata-only planning view of one immutable commit.
+
+    Planning decides package boundaries; it does not need repository source text.  Keeping source
+    blobs out of this context prevents a large repository from consuming the Planner's recovery
+    budget before an executable DAG exists.  Developers later receive task-scoped source context.
+    """
 
     def __init__(
         self,
         *,
-        max_files: int = 32,
-        max_file_chars: int = 6_000,
-        max_context_chars: int = 80_000,
+        max_directory_entries: int = 100,
+        max_context_chars: int = 2_400,
         max_cached_summaries: int = 64,
     ) -> None:
-        if not 1 <= max_files <= 100:
-            raise ValueError("max_files must be between 1 and 100")
-        self._max_files = max_files
-        self._max_file_chars = max_file_chars
+        if not 1 <= max_directory_entries <= 500:
+            raise ValueError("max_directory_entries must be between 1 and 500")
+        if not 256 <= max_context_chars <= 16_000:
+            raise ValueError("max_context_chars must be between 256 and 16000")
+        self._max_directory_entries = max_directory_entries
         self._max_context_chars = max_context_chars
         if not 1 <= max_cached_summaries <= 512:
             raise ValueError("max_cached_summaries must be between 1 and 512")
@@ -71,31 +55,7 @@ class RepositoryPlanningContextBuilder:
     ) -> str:
         root = workspace.root
         files = self._lines(root, ["ls-tree", "-r", "--name-only", base_commit])
-        selected: list[str] = []
-        for path in files:
-            if self._always_include(path) and path not in selected:
-                selected.append(path)
-
-        tokens = self._requirement_tokens(requirement)
-        for token in tokens:
-            if len(selected) >= self._max_files:
-                break
-            for path in files:
-                if token.lower() in path.lower() and path not in selected:
-                    selected.append(path)
-                    if len(selected) >= self._max_files:
-                        break
-
-        for token in tokens[:8]:
-            if len(selected) >= self._max_files:
-                break
-            for path in self._grep_paths(root, base_commit, token):
-                if path not in selected:
-                    selected.append(path)
-                    if len(selected) >= self._max_files:
-                        break
-
-        context_is_partial = len(selected) < len(files)
+        del requirement  # The immutable repository summary must not search or expose source blobs.
         summary = self._repository_summary(
             project_id=project_id,
             base_commit=base_commit,
@@ -106,20 +66,11 @@ class RepositoryPlanningContextBuilder:
             f"default_branch={default_branch}\n"
             f"base_commit={base_commit}\n"
             f"repository_file_count={len(files)}\n"
-            f"selected_context_file_count={len(selected)}\n"
-            f"context_is_partial={str(context_is_partial).lower()}\n"
-            "Important: absence from this bounded context does not prove a file is absent.\n"
+            "context_kind=metadata_only\n"
+            "source_files_included=false\n"
+            "Important: absence from this bounded index does not prove a file is absent.\n"
         )
-        chunks = [summary, "\n", header, "\nSelected repository files:\n"]
-        for path in selected[: self._max_files]:
-            if sum(len(item) for item in chunks) >= self._max_context_chars:
-                break
-            chunks.append(f"\n--- {path} ---\n")
-            content = self._show_file(root, base_commit, path)
-            chunks.append(content[: self._max_file_chars])
-            if len(content) > self._max_file_chars:
-                chunks.append("\n...<file truncated by DevFlow>\n")
-        result = "".join(chunks)
+        result = "".join((summary, "\n", header))
         if len(result) > self._max_context_chars:
             return result[: self._max_context_chars] + "\n...<context truncated by DevFlow>"
         return result
@@ -147,8 +98,7 @@ class RepositoryPlanningContextBuilder:
                 self._summary_cache.popitem(last=False)
         return summary
 
-    @staticmethod
-    def _build_summary(*, base_commit: str, files: tuple[str, ...]) -> str:
+    def _build_summary(self, *, base_commit: str, files: tuple[str, ...]) -> str:
         names = {Path(path).name for path in files}
         technologies: list[str] = []
         if {"pyproject.toml", "requirements.txt"} & names:
@@ -193,62 +143,9 @@ class RepositoryPlanningContextBuilder:
                 f"entry_files={','.join(entrypoints[:12]) or 'unknown'}",
                 f"dependency_files={','.join(dependencies[:12]) or 'none'}",
                 f"suggested_test_command={test_hint}",
-                f"directory_index={','.join(files[:80])}",
+                f"directory_index={','.join(files[: self._max_directory_entries])}",
             )
         )
-
-    @staticmethod
-    def _always_include(path: str) -> bool:
-        name = Path(path).name
-        return name in _ALWAYS_NAMES or path.startswith(".github/workflows/")
-
-    @staticmethod
-    def _requirement_tokens(requirement: str) -> list[str]:
-        ignored = {
-            "add",
-            "and",
-            "the",
-            "with",
-            "for",
-            "from",
-            "into",
-            "implement",
-            "update",
-            "change",
-            "create",
-        }
-        result: list[str] = []
-        for token in _TOKEN_RE.findall(requirement):
-            normalized = token.lower()
-            if normalized in ignored or normalized in result:
-                continue
-            result.append(normalized)
-        return result[:20]
-
-    def _grep_paths(self, root: Path, commit: str, token: str) -> tuple[str, ...]:
-        result = self._run(
-            root,
-            ["grep", "-I", "-l", "--fixed-strings", "-i", token, commit, "--"],
-            allow_no_match=True,
-        )
-        if result.returncode == 1:
-            return ()
-        paths: list[str] = []
-        prefix = f"{commit}:"
-        for raw in self._stdout(result).splitlines():
-            path = raw[len(prefix) :] if raw.startswith(prefix) else raw
-            if path and path not in paths:
-                paths.append(path)
-        return tuple(paths[: self._max_files])
-
-    def _show_file(self, root: Path, commit: str, path: str) -> str:
-        result = self._run(root, ["show", f"{commit}:{path}"], allow_no_match=True)
-        if result.returncode != 0:
-            return "<unavailable or non-text repository object>\n"
-        content = self._stdout(result)
-        if "\0" in content:
-            return "<binary repository object omitted from planning context>\n"
-        return content
 
     def _lines(self, root: Path, arguments: list[str]) -> tuple[str, ...]:
         result = self._run(root, arguments)

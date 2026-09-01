@@ -1,15 +1,23 @@
 import type { ProductGitHubPublication } from "../types/publication";
 import type {
   ProductDiffKind,
+  ProductDevelopmentSessionRecovery,
+  ProductDevelopmentSession,
+  ProductDevelopmentSessionCommandPreview,
+  ProductDevelopmentSessionTimelineEntry,
   ProductFailureExplanation,
   ProductProject,
+  ProductProjectDeletionPreview,
+  ProductProjectDeletionResult,
   ProductRun,
+  ProductRunRecoveryPreview,
   ProductRunDAG,
   ProductRunDetail,
   ProductRunMetrics,
   ProductTaskDetail,
   ProductTaskDiff,
   ProjectCreatePayload,
+  ProjectDeletePayload,
   RunCreatePayload,
   RunLaunchResponse,
 } from "../types/product";
@@ -80,6 +88,8 @@ export type RequirementRunLaunchResponse = Readonly<{
   launch_state: "QUEUED" | "PARTIAL" | "BROKER_UNAVAILABLE";
   dispatches: readonly RequirementTaskDispatch[];
   dependency_preflight?: DependencyPreflight | null;
+  resumed_from_run_id?: string | null;
+  reused_existing_run?: boolean;
 }>;
 
 export type HumanGateDecisionName = "AUTHORIZE_REPAIR" | "ABORT";
@@ -194,8 +204,11 @@ export type RuntimeDependencyHealth = Readonly<{
   dispatch_available: boolean;
 }>;
 
-export function listProjects(): Promise<readonly ProductProject[]> {
-  return apiClient.getJson<readonly ProductProject[]>(`${API_PREFIX}/projects`);
+export function listProjects(): Promise<readonly ProductProject[]>;
+export function listProjects(includeArchived: boolean): Promise<readonly ProductProject[]>;
+export function listProjects(includeArchived = false): Promise<readonly ProductProject[]> {
+  const query = includeArchived ? "?include_archived=true" : "";
+  return apiClient.getJson<readonly ProductProject[]>(`${API_PREFIX}/projects${query}`);
 }
 
 export function createProject(
@@ -208,11 +221,40 @@ export function getProject(projectId: string): Promise<ProductProject> {
   return apiClient.getJson<ProductProject>(`${API_PREFIX}/projects/${projectId}`);
 }
 
-export function listRuns(projectId?: string): Promise<readonly ProductRun[]> {
-  const query = projectId
-    ? `?project_id=${encodeURIComponent(projectId)}`
-    : "";
+export function archiveProject(projectId: string): Promise<ProductProject> {
+  return apiClient.postNoBody<ProductProject>(`${API_PREFIX}/projects/${projectId}/archive`);
+}
+
+export function restoreProject(projectId: string): Promise<ProductProject> {
+  return apiClient.postNoBody<ProductProject>(`${API_PREFIX}/projects/${projectId}/restore`);
+}
+
+export function getProjectDeletionPreview(projectId: string): Promise<ProductProjectDeletionPreview> {
+  return apiClient.getJson<ProductProjectDeletionPreview>(
+    `${API_PREFIX}/projects/${projectId}/deletion-preview`,
+  );
+}
+
+export function deleteProject(
+  projectId: string,
+  payload: ProjectDeletePayload,
+): Promise<ProductProjectDeletionResult> {
+  return apiClient.deleteJson<ProductProjectDeletionResult, ProjectDeletePayload>(
+    `${API_PREFIX}/projects/${projectId}`,
+    payload,
+  );
+}
+
+export function listRuns(projectId?: string, includeArchived = false): Promise<readonly ProductRun[]> {
+  const values = new URLSearchParams();
+  if (projectId) values.set("project_id", projectId);
+  if (includeArchived) values.set("include_archived", "true");
+  const query = values.size ? `?${values.toString()}` : "";
   return apiClient.getJson<readonly ProductRun[]>(`${API_PREFIX}/runs${query}`);
+}
+
+export function archiveRun(runId: string): Promise<void> {
+  return apiClient.postNoBody<void>(`${API_PREFIX}/runs/${runId}/archive`);
 }
 
 /** Legacy V1 TaskContract launch kept for benchmark/backward compatibility. */
@@ -244,10 +286,75 @@ export function resumeRun(runId: string): Promise<RequirementRunLaunchResponse> 
   );
 }
 
+export function getDevelopmentSessionRecovery(
+  sessionId: string,
+): Promise<ProductDevelopmentSessionRecovery> {
+  return apiClient.getJson<ProductDevelopmentSessionRecovery>(
+    `${API_PREFIX}/development-sessions/${encodeURIComponent(sessionId)}/recovery-preview`,
+  );
+}
+
+export function listDevelopmentSessions(
+  projectId: string,
+): Promise<readonly ProductDevelopmentSession[]> {
+  return apiClient.getJson<readonly ProductDevelopmentSession[]>(
+    `${API_PREFIX}/projects/${encodeURIComponent(projectId)}/development-sessions`,
+  );
+}
+
+export function getDevelopmentSession(
+  sessionId: string,
+): Promise<ProductDevelopmentSession> {
+  return apiClient.getJson<ProductDevelopmentSession>(
+    `${API_PREFIX}/development-sessions/${encodeURIComponent(sessionId)}`,
+  );
+}
+
+export function getDevelopmentSessionTimeline(
+  sessionId: string,
+): Promise<readonly ProductDevelopmentSessionTimelineEntry[]> {
+  return apiClient.getJson<readonly ProductDevelopmentSessionTimelineEntry[]>(
+    `${API_PREFIX}/development-sessions/${encodeURIComponent(sessionId)}/timeline`,
+  );
+}
+
+export function previewDevelopmentSessionCommand(
+  sessionId: string,
+  command: string,
+): Promise<ProductDevelopmentSessionCommandPreview> {
+  return apiClient.postJson<ProductDevelopmentSessionCommandPreview, Readonly<{ command: string }>>(
+    `${API_PREFIX}/development-sessions/${encodeURIComponent(sessionId)}/command-preview`,
+    { command },
+  );
+}
+
+export function continueDevelopmentSession(
+  sessionId: string,
+  mode: "AUTO" | "OLD_BASE" = "AUTO",
+): Promise<RequirementRunLaunchResponse> {
+  return apiClient.postNoBody<RequirementRunLaunchResponse>(
+    `${API_PREFIX}/development-sessions/${encodeURIComponent(sessionId)}/continue?mode=${mode}`,
+  );
+}
+
+export function replanDevelopmentSession(
+  sessionId: string,
+): Promise<RequirementRunLaunchResponse> {
+  return apiClient.postNoBody<RequirementRunLaunchResponse>(
+    `${API_PREFIX}/development-sessions/${encodeURIComponent(sessionId)}/replan`,
+  );
+}
+
 /** Starts a new Run only when the server confirms that the prior Run was interrupted mid-flight. */
 export function recoverInterruptedRun(runId: string): Promise<RequirementRunLaunchResponse> {
   return apiClient.postNoBody<RequirementRunLaunchResponse>(
     `${API_PREFIX}/runs/${runId}/recover-as-new`,
+  );
+}
+
+export function getRunRecoveryPreview(runId: string): Promise<ProductRunRecoveryPreview> {
+  return apiClient.getJson<ProductRunRecoveryPreview>(
+    `${API_PREFIX}/runs/${runId}/recovery-preview`,
   );
 }
 

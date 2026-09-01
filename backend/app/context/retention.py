@@ -99,11 +99,15 @@ class AgentContextRetention:
         self._base_messages = list(base_messages)
         self._max_retained_tool_groups = max_retained_tool_groups
         self._groups: list[ToolCallGroup] = []
+        self._compacted_code_mutation_group_count = 0
         self._state = _StateBuilder(task_id=task_id)
 
     @property
     def compacted_group_count(self) -> int:
-        return max(0, len(self._groups) - self._max_retained_tool_groups)
+        return (
+            self._compacted_code_mutation_group_count
+            + max(0, len(self._groups) - self._max_retained_tool_groups)
+        )
 
     def add_group(
         self,
@@ -111,7 +115,7 @@ class AgentContextRetention:
         assistant: AgentMessage,
         calls: list[ToolCall],
         results: list[ToolExecutionResult],
-    ) -> None:
+    ) -> bool:
         if assistant.role is not MessageRole.ASSISTANT or not assistant.tool_calls:
             raise ValueError("a tool group must start with an assistant tool-call message")
         if tuple(call.id for call in calls) != tuple(call.id for call in assistant.tool_calls):
@@ -126,9 +130,17 @@ class AgentContextRetention:
             )
             for result in results
         )
-        self._groups.append(ToolCallGroup(assistant=assistant, results=messages))
         for call, result in zip(calls, results, strict=True):
             self._observe(call, result)
+        # A successful write can contain an entire source file in assistant tool-call arguments.
+        # The repository and its content hash are now the code truth, so replaying that payload on
+        # every later turn is both costly and unnecessary. Omit the whole completed tool group to
+        # preserve a valid provider message sequence; AgentWorkingState retains the bounded fact.
+        if self._is_successful_code_mutation(calls=calls, results=results):
+            self._compacted_code_mutation_group_count += 1
+            return True
+        self._groups.append(ToolCallGroup(assistant=assistant, results=messages))
+        return False
 
     def messages(self) -> list[AgentMessage]:
         retained = self._groups[-self._max_retained_tool_groups :]
@@ -149,7 +161,7 @@ class AgentContextRetention:
         return messages
 
     def _observe(self, call: ToolCall, result: ToolExecutionResult) -> None:
-        source_hash = sha256(result.content.encode("utf-8")).hexdigest()
+        source_hash = self._source_hash(call=call, result=result)
         if not result.ok:
             self._state.recent_errors.append(f"{call.name}: {result.error_code or 'ERROR'}")
             self._state.observations.append(
@@ -222,3 +234,27 @@ class AgentContextRetention:
             if isinstance(item, dict) and isinstance(item.get("path"), str):
                 hits.append(f"{item['path']}:{item.get('line', '?')}")
         return tuple(hits)
+
+    @staticmethod
+    def _is_successful_code_mutation(
+        *, calls: list[ToolCall], results: list[ToolExecutionResult]
+    ) -> bool:
+        return any(
+            call.name in {"write_file", "apply_patch"} and result.ok
+            for call, result in zip(calls, results, strict=True)
+        )
+
+    @staticmethod
+    def _source_hash(*, call: ToolCall, result: ToolExecutionResult) -> str:
+        """Hash written source locally without retaining it in state or persistence."""
+
+        if result.ok and call.name in {"write_file", "apply_patch"}:
+            try:
+                payload = json.loads(call.arguments)
+            except json.JSONDecodeError:
+                payload = None
+            if isinstance(payload, dict):
+                source = payload.get("content", payload.get("new_text"))
+                if isinstance(source, str):
+                    return sha256(source.encode("utf-8")).hexdigest()
+        return sha256(result.content.encode("utf-8")).hexdigest()

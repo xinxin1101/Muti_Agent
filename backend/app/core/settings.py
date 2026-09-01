@@ -2,10 +2,12 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Self
 from urllib.parse import urlparse
+from uuid import UUID
 
 from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.api.lifecycle_rollout import LifecycleRolloutMode
 from app.models.work_package import WorkPackageActivationMode
 from app.models.workflow import WorkflowActivationMode
 
@@ -30,6 +32,9 @@ class Settings(BaseSettings):
     worker_id: str | None = Field(default=None, min_length=1, max_length=255)
     worker_lease_seconds: float = Field(default=60.0, gt=0.0, le=86_400.0)
     worker_heartbeat_interval_seconds: float = Field(default=15.0, gt=0.0, le=3_600.0)
+    recovery_check_interval_seconds: float = Field(default=30.0, ge=5.0, le=3_600.0)
+    recovery_startup_timeout_seconds: float = Field(default=120.0, ge=30.0, le=86_400.0)
+    recovery_stale_progress_seconds: float = Field(default=180.0, ge=30.0, le=86_400.0)
     # Dramatiq's thread-interrupt timeout is an emergency circuit breaker, not an Agent budget.
     # It must leave enough room for a bounded Agent to return its structured result and for the
     # worker to persist terminal evidence before the process is interrupted.
@@ -55,6 +60,12 @@ class Settings(BaseSettings):
     role_context_projection_enabled: bool = True
     adaptive_package_budget_enabled: bool = True
     adaptive_work_package_routing_enabled: bool = True
+    # Lifecycle/recovery mutations can be enabled progressively without hiding their
+    # diagnostics.  Start with test_database, then a test repository, then explicitly
+    # listed project ids before using the default all-project behaviour.
+    lifecycle_rollout_mode: LifecycleRolloutMode = LifecycleRolloutMode.DEFAULT
+    lifecycle_test_repository_url: str | None = None
+    lifecycle_project_allowlist: str = ""
 
     siliconflow_api_key: SecretStr | None = Field(
         default=None,
@@ -110,13 +121,32 @@ class Settings(BaseSettings):
     failure_explanation_enable_thinking: bool = False
     # Role-specific completion caps prevent auxiliary agents from consuming a coding-sized
     # response budget. They are intentionally separate from time and iteration limits.
-    planner_max_output_tokens: int = Field(default=1_200, ge=64, le=32_768)
+    # Planning has one initial generation and at most one controlled recovery.  Separate caps
+    # keep a JSON/schema repair from reserving a full first-plan completion budget.
+    # The legacy key remains an alias for the initial cap so existing local .env files continue
+    # to start safely during the rollout.
+    planner_initial_max_output_tokens: int = Field(
+        default=1_000,
+        ge=64,
+        le=32_768,
+        validation_alias=AliasChoices(
+            "DEVFLOW_PLANNER_INITIAL_MAX_OUTPUT_TOKENS",
+            "DEVFLOW_PLANNER_MAX_OUTPUT_TOKENS",
+        ),
+    )
+    planner_json_repair_max_output_tokens: int = Field(default=700, ge=64, le=32_768)
+    planner_budget_replan_max_output_tokens: int = Field(default=800, ge=64, le=32_768)
     developer_max_output_tokens: int = Field(default=1_400, ge=64, le=32_768)
+    # Used only for one diagnosed malformed write_file retry. The regular Developer cap remains
+    # small; this controlled exception prevents a source-file JSON payload being truncated.
+    developer_invalid_tool_retry_max_output_tokens: int = Field(
+        default=3_200, ge=64, le=32_768
+    )
     reviewer_max_output_tokens: int = Field(default=800, ge=64, le=32_768)
     repair_max_output_tokens: int = Field(default=1_000, ge=64, le=32_768)
     failure_explanation_max_output_tokens: int = Field(default=400, ge=64, le=32_768)
     run_token_budget_tokens: int = Field(default=30_000, ge=1_000, le=10_000_000)
-    planner_token_budget_tokens: int = Field(default=4_000, ge=256, le=1_000_000)
+    planner_token_budget_tokens: int = Field(default=7_200, ge=256, le=1_000_000)
     planner_max_attempts: int = Field(default=2, ge=1, le=4)
     token_estimate_safety_factor: float = Field(default=1.15, ge=1.0, le=2.0)
 
@@ -240,6 +270,16 @@ class Settings(BaseSettings):
     @property
     def effective_github_publication_token(self) -> SecretStr | None:
         return self.github_publication_token or self.github_token
+
+    @property
+    def lifecycle_project_ids(self) -> frozenset[UUID]:
+        values = [value.strip() for value in self.lifecycle_project_allowlist.split(",")]
+        try:
+            return frozenset(UUID(value) for value in values if value)
+        except ValueError as exc:
+            raise ValueError(
+                "DEVFLOW_LIFECYCLE_PROJECT_ALLOWLIST 必须是逗号分隔的项目 UUID"
+            ) from exc
 
 
 @lru_cache

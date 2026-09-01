@@ -132,7 +132,7 @@ def test_role_projection_keeps_runtime_audit_metadata_out_of_model_view(tmp_path
     assert "scope_summary" in reviewer_view
 
 
-def test_resumed_packet_reuses_unchanged_files_and_keeps_checkpoint_changes(
+def test_resumed_packet_keeps_checkpoint_changes_as_hashes_not_source(
     tmp_path: Path,
 ) -> None:
     root = _repository(tmp_path)
@@ -156,8 +156,8 @@ def test_resumed_packet_reuses_unchanged_files_and_keeps_checkpoint_changes(
 
     assert resumed.resume == resume
     assert resumed.changed_files == ["src/b.py"]
-    assert [item.path for item in resumed.selected_files] == ["src/b.py"]
-    assert resumed.usage.reused_files == 2
+    assert resumed.selected_files == []
+    assert resumed.usage.reused_files == 3
     assert resumed.usage.prompt_estimated_tokens >= resumed.usage.estimated_tokens
     assert "repository_head=" in resumed.repository_summary
 
@@ -181,7 +181,7 @@ def test_planning_summary_is_cached_by_project_commit_and_version(tmp_path: Path
 
     assert first == second
     assert builder.cached_summary_count == 1
-    assert "repository_summary_version=repository_summary_v1" in first
+    assert "repository_summary_version=repository_summary_v2_metadata_only" in first
 
 
 def test_packet_rejects_tampered_payload_or_detached_fingerprint(tmp_path: Path) -> None:

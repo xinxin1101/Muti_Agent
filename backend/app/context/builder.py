@@ -262,7 +262,15 @@ class ContextPacketBuilder:
         workspace: LocalGitWorkspace,
         source_cache: dict[str, _SourceResult],
     ) -> bool:
-        if resume is None or candidate.path in changed:
+        if resume is None:
+            return False
+        # A fenced checkpoint already records the content identity of files changed in
+        # the prior slice.  Do not replay their source merely because they are marked
+        # changed: the next Agent can explicitly read one if it needs implementation
+        # detail.  This keeps recovery context to facts, hashes and unresolved work.
+        if candidate.path in resume.changed_files:
+            return True
+        if candidate.path in changed:
             return False
         previous = {item.path: item.source_sha256 for item in resume.read_files}
         expected_hash = previous.get(candidate.path)

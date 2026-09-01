@@ -10,6 +10,7 @@ from app.persistence.dag import (
     PostgresDAGStore,
 )
 from app.persistence.database import create_postgres_engine, create_session_factory
+from app.persistence.development_session import PostgresDevelopmentSessionStore
 from app.persistence.dispatch import PostgresDispatchAttemptStore
 from app.persistence.errors import (
     PersistenceConfigurationError,
@@ -23,6 +24,8 @@ from app.persistence.errors import (
 from app.persistence.failure_explanations import PostgresFailureExplanationStore
 from app.persistence.interface_contracts import PostgresInterfaceContractRegistry
 from app.persistence.leases import PostgresTaskLeaseStore
+from app.persistence.lifecycle import PostgresLifecycleStore, ProjectDeletionTokenSigner
+from app.persistence.operation_audit import PostgresOperationAuditStore
 from app.persistence.planning_budget import (
     PlanningTokenBudgetReservationError,
     PostgresPlanningTokenBudgetStore,
@@ -33,6 +36,7 @@ from app.persistence.reconciliation import (
     PostgresTaskReconciliationStore,
     PreparedDispatchPublication,
 )
+from app.persistence.run_recovery import PostgresRunRecoveryStore, RunRecoveryObservation
 from app.persistence.token_budget import PostgresRunTokenBudgetStore, TokenBudgetReservationError
 from app.persistence.types import (
     ContextFingerprintReference,
@@ -63,14 +67,20 @@ __all__ = [
     "PersistedRunStatus",
     "PersistedTask",
     "PostgresDAGStore",
+    "PostgresDevelopmentSessionStore",
     "PostgresDispatchAttemptStore",
     "PostgresFailureExplanationStore",
     "PostgresEvidenceStore",
     "PostgresGitHubPublicationStore",
     "PostgresInterfaceContractRegistry",
+    "PostgresLifecycleStore",
+    "PostgresOperationAuditStore",
     "PostgresProjectCredentialStore",
     "ProjectCredentialConfigurationError",
     "ProjectCredentialDecryptionError",
+    "ProjectDeletionTokenSigner",
+    "PostgresRunRecoveryStore",
+    "RunRecoveryObservation",
     "PostgresTaskLeaseStore",
     "PostgresRunTokenBudgetStore",
     "PostgresPlanningTokenBudgetStore",

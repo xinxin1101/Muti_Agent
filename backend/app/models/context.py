@@ -205,6 +205,9 @@ class ContextContinuationState(BaseModel):
     repository_head: str = Field(pattern=r"^[0-9a-f]{40,64}$")
     read_files: tuple[ContextFileDigest, ...] = Field(default_factory=tuple, max_length=100)
     changed_files: tuple[str, ...] = Field(default_factory=tuple, max_length=512)
+    changed_file_hashes: tuple[ContextFileDigest, ...] = Field(
+        default_factory=tuple, max_length=512
+    )
     completed_summary: str = Field(default="", max_length=512)
     remaining_summary: str = Field(default="", max_length=512)
     verification_summary: str = Field(default="", max_length=512)
@@ -223,6 +226,11 @@ class ContextContinuationState(BaseModel):
         paths = [item.path for item in self.read_files]
         if len(paths) != len(set(paths)):
             raise ValueError("continuation read_files must not contain duplicate paths")
+        changed_hash_paths = [item.path for item in self.changed_file_hashes]
+        if len(changed_hash_paths) != len(set(changed_hash_paths)):
+            raise ValueError("continuation changed_file_hashes must not contain duplicate paths")
+        if set(changed_hash_paths) - set(self.changed_files):
+            raise ValueError("continuation changed_file_hashes must describe changed_files only")
         return self
 
 

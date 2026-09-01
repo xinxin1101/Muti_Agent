@@ -10,6 +10,7 @@ class DeveloperStopReason(StrEnum):
     ITERATION_LIMIT = "ITERATION_LIMIT"
     TIME_LIMIT = "TIME_LIMIT"
     TOOL_CALL_LIMIT = "TOOL_CALL_LIMIT"
+    REPEATED_TOOL_FAILURE = "REPEATED_TOOL_FAILURE"
 
 
 class DeveloperExecutionBudget(BaseModel):
@@ -37,3 +38,6 @@ class DeveloperRunResult(BaseModel):
     # Older persisted runs predate this field. New production runs always record it so a
     # terminal budget stop can be diagnosed against the configuration the Worker actually used.
     execution_budget: DeveloperExecutionBudget | None = None
+    # Safe, bounded diagnostics only: tool name, error code and argument shape. Raw tool
+    # arguments and repository content are deliberately never persisted here.
+    tool_failure_evidence: tuple[str, ...] = Field(default=(), max_length=8)

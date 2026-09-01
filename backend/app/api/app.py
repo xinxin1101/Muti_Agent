@@ -20,6 +20,8 @@ from app.api.models import (
     ProductDiffKind,
     ProductGitHubPublication,
     ProductProject,
+    ProductProjectDeletionPreview,
+    ProductProjectDeletionResult,
     ProductRun,
     ProductRunDAG,
     ProductRunDetail,
@@ -27,6 +29,7 @@ from app.api.models import (
     ProductTaskDetail,
     ProductTaskDiff,
     ProjectCreateRequest,
+    ProjectDeleteRequest,
     RunCreateRequest,
     RunLaunchResponse,
 )
@@ -52,6 +55,7 @@ from app.persistence import (
 )
 from app.verification.dependency_preflight import DependencyEnvironmentPreflightError
 from app.workspace import ProjectProvisionError, WorkspaceGitError
+from app.workspace.lifecycle import LocalProjectCleanupError
 
 StartupCheck = Callable[[], Awaitable[None]]
 
@@ -67,6 +71,9 @@ def create_app(
         try:
             if startup_check is not None:
                 await startup_check()
+            start_recovery_monitor = getattr(service, "start_recovery_monitor", None)
+            if callable(start_recovery_monitor):
+                await start_recovery_monitor()
             yield
         finally:
             if close_service:
@@ -81,7 +88,7 @@ def create_app(
         CORSMiddleware,
         allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
         allow_credentials=False,
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["Content-Type", "Last-Event-ID"],
     )
 
@@ -91,7 +98,11 @@ def create_app(
         return {"status": "ok", "runtime_fingerprint": fingerprint}
 
     @app.get("/api/v1/projects", response_model=list[ProductProject])
-    async def list_projects() -> tuple[ProductProject, ...]:
+    async def list_projects(
+        include_archived: Annotated[bool, Query()] = False,
+    ) -> tuple[ProductProject, ...]:
+        if include_archived:
+            return await service.list_projects(include_archived=True)
         return await service.list_projects()
 
     @app.post(
@@ -114,14 +125,76 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    @app.post("/api/v1/projects/{project_id}/archive", response_model=ProductProject)
+    async def archive_project(project_id: UUID) -> ProductProject:
+        try:
+            return await service.archive_project(project_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except PersistenceConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/v1/projects/{project_id}/restore", response_model=ProductProject)
+    async def restore_project(project_id: UUID) -> ProductProject:
+        try:
+            return await service.restore_project(project_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except PersistenceConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get(
+        "/api/v1/projects/{project_id}/deletion-preview",
+        response_model=ProductProjectDeletionPreview,
+    )
+    async def project_deletion_preview(project_id: UUID) -> ProductProjectDeletionPreview:
+        try:
+            return await service.project_deletion_preview(project_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except PersistenceConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.delete(
+        "/api/v1/projects/{project_id}",
+        response_model=ProductProjectDeletionResult,
+    )
+    async def delete_project(
+        project_id: UUID,
+        request: ProjectDeleteRequest,
+    ) -> ProductProjectDeletionResult:
+        try:
+            return await service.delete_project(project_id, request)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except PersistenceConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except LocalProjectCleanupError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.get("/api/v1/runs", response_model=list[ProductRun])
     async def list_runs(
         project_id: Annotated[UUID | None, Query()] = None,
+        include_archived: Annotated[bool, Query()] = False,
     ) -> tuple[ProductRun, ...]:
         try:
+            if include_archived:
+                return await service.list_runs(
+                    project_id=project_id,
+                    include_archived=True,
+                )
             return await service.list_runs(project_id=project_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/v1/runs/{run_id}/archive", status_code=status.HTTP_204_NO_CONTENT)
+    async def archive_run(run_id: UUID) -> None:
+        try:
+            await service.archive_run(run_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except PersistenceConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post(
         "/api/v1/runs",

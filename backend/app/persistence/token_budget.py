@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 # ruff: noqa: E501
+import json
 from dataclasses import dataclass
+from math import ceil
+from typing import Literal
 from uuid import UUID, uuid4
 
 from pydantic import SecretStr
@@ -28,6 +31,16 @@ class TokenBudgetReservationError(RuntimeError):
     """Raised before a provider call when a Run cannot reserve enough tokens."""
 
 
+class WorkPackageBudgetAllocationError(TokenBudgetReservationError):
+    """A recoverable work-package allocation block rather than a provider failure."""
+
+    def __init__(
+        self, message: str, *, decision: BudgetDecisionFacts | None = None
+    ) -> None:
+        super().__init__(message)
+        self.decision = decision
+
+
 class TokenBudgetPlanError(RuntimeError):
     """Raised when a Planner proposal cannot fund its own minimum agent turns."""
 
@@ -45,6 +58,32 @@ class TokenBudgetReservation:
         return self.reserved_input_tokens + self.reserved_output_tokens
 
 
+@dataclass(frozen=True)
+class BudgetDecisionFacts:
+    """The exact decision observed under a locked budget snapshot.
+
+    This is deliberately small and scalar-only so a rejected reservation can be
+    committed in a separate transaction after the reservation transaction rolls
+    back.  The dashboard therefore never has to infer a rejection from stale
+    counters left by a previous provider turn.
+    """
+
+    run_id: UUID
+    task_id: str
+    role: AgentRole
+    estimated_input_tokens: int
+    max_output_tokens: int
+    required_tokens: int
+    package_available_tokens: int
+    flex_available_tokens: int
+    downstream_available_tokens: int
+    borrowed_tokens: int
+    decision: Literal["RESERVED", "BORROWED", "DENIED"]
+    reason: str | None
+    limit_flags: tuple[str, ...] = ()
+    recovery_action: str | None = None
+
+
 class PostgresRunTokenBudgetStore:
     """Atomic Run-level token reservations shared safely by concurrent Workers."""
 
@@ -54,6 +93,7 @@ class PostgresRunTokenBudgetStore:
         engine: AsyncEngine,
         default_total_budget_tokens: int,
         adaptive_package_budget_enabled: bool = True,
+        token_estimate_safety_factor: float = 1.15,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
         owns_engine: bool = False,
     ) -> None:
@@ -61,6 +101,7 @@ class PostgresRunTokenBudgetStore:
         self._session_factory = session_factory or create_session_factory(engine)
         self._default_total_budget_tokens = default_total_budget_tokens
         self._adaptive_package_budget_enabled = adaptive_package_budget_enabled
+        self._token_estimate_safety_factor = token_estimate_safety_factor
         self._owns_engine = owns_engine
 
     @classmethod
@@ -70,12 +111,14 @@ class PostgresRunTokenBudgetStore:
         *,
         default_total_budget_tokens: int,
         adaptive_package_budget_enabled: bool = True,
+        token_estimate_safety_factor: float = 1.15,
         echo: bool = False,
     ) -> PostgresRunTokenBudgetStore:
         return cls(
             engine=create_postgres_engine(database_url, echo=echo),
             default_total_budget_tokens=default_total_budget_tokens,
             adaptive_package_budget_enabled=adaptive_package_budget_enabled,
+            token_estimate_safety_factor=token_estimate_safety_factor,
             owns_engine=True,
         )
 
@@ -132,12 +175,16 @@ class PostgresRunTokenBudgetStore:
                     ),
                     {"run_id": run_id, "total": total},
                 )
-            planning = min(4_000, max(0, total // 5))
-            # Review and publication must never absorb the unallocated development budget.
-            # Keep a small, fixed ceiling and place all remaining capacity in FLEX instead.
-            review_publication = min(2_000, max(500, total // 10))
+            # Planning has already been settled against the launch-scoped PlanningTokenBudget
+            # before a Run exists.  Keeping a second planning pool here strands usable Run
+            # capacity after the DAG is accepted, precisely when the critical work package may
+            # need another bounded turn.  Its Run share therefore enters FLEX immediately.
+            planning = 0
+            # Review/publication is a terminal, bounded activity.  It keeps only a small floor;
+            # all surplus belongs to the execution critical path until it is actually needed.
+            review_publication = min(1_000, max(500, total // 30))
             raw = [
-                (node, self._initial_package_allocation(node, developer_max_output_tokens))
+                self._initial_package_allocation(node, developer_max_output_tokens)
                 for node in nodes
             ]
             developer_total = 0
@@ -152,8 +199,9 @@ class PostgresRunTokenBudgetStore:
                 await session.execute(
                     text(
                         "INSERT INTO run_task_token_budgets "
-                        "(run_id, task_id, complexity, total_budget_tokens, developer_budget_tokens, repair_budget_tokens) "
-                        "VALUES (:run_id, :task_id, :complexity, :total, :developer, :repair) "
+                        "(run_id, task_id, complexity, total_budget_tokens, developer_budget_tokens, "
+                        "repair_budget_tokens, developer_startup_reserve_tokens) "
+                        "VALUES (:run_id, :task_id, :complexity, :total, :developer, :repair, :startup) "
                         "ON CONFLICT (run_id, task_id) DO NOTHING"
                     ),
                     {
@@ -165,6 +213,11 @@ class PostgresRunTokenBudgetStore:
                         "total": package_total,
                         "developer": developer,
                         "repair": repair,
+                        # One normal Developer turn remains protected. The second
+                        # startup turn is deferred capacity: while a direct dependant
+                        # is blocked by this producer it may be loaned safely and is
+                        # settled before the dependant can be dispatched.
+                        "startup": developer // 2,
                     },
                 )
             stage_budgets = {
@@ -193,8 +246,11 @@ class PostgresRunTokenBudgetStore:
         if not nodes:
             return
         total = self._default_total_budget_tokens
-        planning = min(4_000, max(0, total // 5))
-        review_publication = min(2_000, max(500, total // 10))
+        # The planner has its own launch budget.  Run budget validation must match the
+        # post-planning hierarchy created above, otherwise it rejects plans based on capacity
+        # that will in fact be available to FLEX.
+        planning = 0
+        review_publication = min(1_000, max(500, total // 30))
         required_packages = sum(
             developer + repair
             for _, developer, repair in (
@@ -219,75 +275,92 @@ class PostgresRunTokenBudgetStore:
         estimated_input_tokens: int,
         max_output_tokens: int,
         has_progress: bool = False,
+        allow_initial_credit: bool = False,
     ) -> TokenBudgetReservation:
         if estimated_input_tokens < 0 or max_output_tokens < 1:
             raise ValueError("token reservation values must be non-negative and non-empty")
-        required = estimated_input_tokens + max_output_tokens
         reservation_id = uuid4()
-        async with self._session_factory.begin() as session:
-            await session.execute(
-                text(
-                    "INSERT INTO run_token_budgets (run_id, total_budget_tokens) "
-                    "VALUES (:run_id, :total) ON CONFLICT (run_id) DO NOTHING"
-                ),
-                {"run_id": run_id, "total": self._default_total_budget_tokens},
-            )
-            row = (
+        try:
+            async with self._session_factory.begin() as session:
+                estimated_input_tokens = await self._calibrated_input_estimate(
+                    session=session,
+                    run_id=run_id,
+                    task_id=task_id,
+                    role=role,
+                    estimated_input_tokens=estimated_input_tokens,
+                )
+                required = estimated_input_tokens + max_output_tokens
                 await session.execute(
                     text(
-                        "SELECT total_budget_tokens, used_total_tokens, reserved_tokens "
-                        "FROM run_token_budgets WHERE run_id = :run_id FOR UPDATE"
+                        "INSERT INTO run_token_budgets (run_id, total_budget_tokens) "
+                        "VALUES (:run_id, :total) ON CONFLICT (run_id) DO NOTHING"
                     ),
-                    {"run_id": run_id},
+                    {"run_id": run_id, "total": self._default_total_budget_tokens},
                 )
-            ).one()
-            total = int(row.total_budget_tokens)
-            projected = int(row.used_total_tokens) + int(row.reserved_tokens) + required
-            status = self._status_for(projected, total)
-            if projected > total:
-                await self._update_status(session, run_id, RunTokenBudgetStatus.EXHAUSTED)
-                raise TokenBudgetReservationError("本次运行模型预算已用尽，未向模型服务发起请求。")
-            if status is RunTokenBudgetStatus.CRITICAL and role not in {
-                AgentRole.DEVELOPER,
-                AgentRole.REPAIR,
-            }:
-                await self._update_status(session, run_id, status)
-                raise TokenBudgetReservationError(
-                    "本次运行模型预算已进入临界区，仅允许开发或修复调用。"
+                row = (
+                    await session.execute(
+                        text(
+                            "SELECT total_budget_tokens, used_total_tokens, reserved_tokens "
+                            "FROM run_token_budgets WHERE run_id = :run_id FOR UPDATE"
+                        ),
+                        {"run_id": run_id},
+                    )
+                ).one()
+                total = int(row.total_budget_tokens)
+                projected = int(row.used_total_tokens) + int(row.reserved_tokens) + required
+                status = self._status_for(projected, total)
+                if projected > total:
+                    await self._update_status(session, run_id, RunTokenBudgetStatus.EXHAUSTED)
+                    raise TokenBudgetReservationError("本次运行模型预算已用尽，未向模型服务发起请求。")
+                if status is RunTokenBudgetStatus.CRITICAL and role not in {
+                    AgentRole.DEVELOPER,
+                    AgentRole.REPAIR,
+                }:
+                    await self._update_status(session, run_id, status)
+                    raise TokenBudgetReservationError(
+                        "本次运行模型预算已进入临界区，仅允许开发或修复调用。"
+                    )
+                await self._reserve_hierarchy(
+                    session=session,
+                    run_id=run_id,
+                    task_id=task_id,
+                    role=role,
+                    required=required,
+                    estimated_input_tokens=estimated_input_tokens,
+                    max_output_tokens=max_output_tokens,
+                    has_progress=has_progress,
+                    allow_initial_credit=allow_initial_credit,
                 )
-            await self._reserve_hierarchy(
-                session=session,
-                run_id=run_id,
-                task_id=task_id,
-                role=role,
-                required=required,
-                estimated_input_tokens=estimated_input_tokens,
-                max_output_tokens=max_output_tokens,
-                has_progress=has_progress,
-            )
-            await session.execute(
-                text(
-                    "UPDATE run_token_budgets SET reserved_tokens = reserved_tokens + :required, "
-                    "status = :status, updated_at = now() WHERE run_id = :run_id"
-                ),
-                {"run_id": run_id, "required": required, "status": status.value},
-            )
-            await session.execute(
-                text(
-                    "INSERT INTO run_token_reservations "
-                    "(reservation_id, run_id, task_id, role, reserved_input_tokens, "
-                    "reserved_output_tokens) "
-                    "VALUES (:reservation_id, :run_id, :task_id, :role, :input, :output)"
-                ),
-                {
-                    "reservation_id": reservation_id,
-                    "run_id": run_id,
-                    "task_id": task_id,
-                    "role": role.value,
-                    "input": estimated_input_tokens,
-                    "output": max_output_tokens,
-                },
-            )
+                await session.execute(
+                    text(
+                        "UPDATE run_token_budgets SET reserved_tokens = reserved_tokens + :required, "
+                        "status = :status, updated_at = now() WHERE run_id = :run_id"
+                    ),
+                    {"run_id": run_id, "required": required, "status": status.value},
+                )
+                await session.execute(
+                    text(
+                        "INSERT INTO run_token_reservations "
+                        "(reservation_id, run_id, task_id, role, reserved_input_tokens, "
+                        "reserved_output_tokens) "
+                        "VALUES (:reservation_id, :run_id, :task_id, :role, :input, :output)"
+                    ),
+                    {
+                        "reservation_id": reservation_id,
+                        "run_id": run_id,
+                        "task_id": task_id,
+                        "role": role.value,
+                        "input": estimated_input_tokens,
+                        "output": max_output_tokens,
+                    },
+                )
+        except WorkPackageBudgetAllocationError as exc:
+            # The reservation transaction must roll back so no partial borrowing,
+            # stage allocation, or reservation survives. Persist the *observed*
+            # refusal afterwards in its own transaction.
+            if exc.decision is not None:
+                await self._persist_budget_decision_independently(exc.decision)
+            raise
         return TokenBudgetReservation(
             reservation_id=reservation_id,
             run_id=run_id,
@@ -352,6 +425,152 @@ class PostgresRunTokenBudgetStore:
                 },
             )
 
+    async def record_model_turn_observation(
+        self,
+        *,
+        run_id: UUID,
+        task_id: str,
+        role: AgentRole,
+        iteration: int,
+        request_estimated_tokens: int,
+        usage: TokenUsage,
+        tool_argument_tokens: int,
+        write_patch_argument_tokens: int,
+        has_real_progress: bool,
+        max_output_tokens: int,
+    ) -> int | None:
+        """Persist bounded cost facts after provider settlement.
+
+        The observation contains only token counts and a progress bit. Raw source,
+        tool arguments and results remain outside PostgreSQL diagnostics.
+        """
+
+        if role not in {AgentRole.DEVELOPER, AgentRole.REPAIR}:
+            return None
+        prefix = "developer" if role is AgentRole.DEVELOPER else "repair"
+        async with self._session_factory.begin() as session:
+            previous = (
+                await session.execute(
+                    text(
+                        "SELECT actual_prompt_tokens FROM run_task_cost_observations "
+                        "WHERE run_id = :run_id AND task_id = :task_id AND role = :role "
+                        "ORDER BY id DESC LIMIT 1"
+                    ),
+                    {"run_id": run_id, "task_id": task_id, "role": role.value},
+                )
+            ).one_or_none()
+            prior_prompt = 0 if previous is None else int(previous.actual_prompt_tokens)
+            growth = max(0, usage.prompt_tokens - prior_prompt)
+            observation = await session.execute(
+                text(
+                    "INSERT INTO run_task_cost_observations "
+                    "(run_id, task_id, role, iteration, request_estimated_tokens, actual_prompt_tokens, "
+                    "actual_completion_tokens, tool_argument_tokens, write_patch_argument_tokens, "
+                    "context_growth_tokens, has_real_progress) "
+                    "VALUES (:run_id, :task_id, :role, :iteration, :estimated, :prompt, :completion, "
+                    ":arguments, :write_patch, :growth, :progress) RETURNING id"
+                ),
+                {
+                    "run_id": run_id,
+                    "task_id": task_id,
+                    "role": role.value,
+                    "iteration": iteration,
+                    "estimated": request_estimated_tokens,
+                    "prompt": usage.prompt_tokens,
+                    "completion": usage.completion_tokens,
+                    "arguments": tool_argument_tokens,
+                    "write_patch": write_patch_argument_tokens,
+                    "growth": growth,
+                    "progress": has_real_progress,
+                },
+            )
+            observation_id = int(observation.scalar_one())
+            predicted = self._next_input_prediction(
+                current_request_estimate=request_estimated_tokens,
+                observed_prompt_tokens=usage.prompt_tokens,
+                context_growth_tokens=growth,
+                tool_argument_tokens=tool_argument_tokens,
+                tool_result_tokens=0,
+                write_patch_argument_tokens=write_patch_argument_tokens,
+            )
+            await self._update_cost_prediction(
+                session=session,
+                run_id=run_id,
+                task_id=task_id,
+                prefix=prefix,
+                predicted_input_tokens=predicted,
+                max_output_tokens=max_output_tokens,
+                reason="当前请求、实际 Prompt、上下文增长和工具参数的最大预测值。",
+            )
+            return observation_id
+
+    async def record_tool_outcome_observation(
+        self,
+        *,
+        observation_id: int,
+        tool_result_tokens: int,
+        has_real_progress: bool,
+        max_output_tokens: int,
+        compacted_tool_argument_tokens: int = 0,
+    ) -> None:
+        """Complete the latest model-turn observation after controlled tools return."""
+
+        async with self._session_factory.begin() as session:
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT run_id, task_id, role, request_estimated_tokens, actual_prompt_tokens, "
+                        "tool_argument_tokens, write_patch_argument_tokens, context_growth_tokens, "
+                        "compacted_tool_argument_tokens "
+                        "FROM run_task_cost_observations WHERE id = :id FOR UPDATE"
+                    ),
+                    {"id": observation_id},
+                )
+            ).one_or_none()
+            if row is None:
+                return
+            await session.execute(
+                text(
+                    "UPDATE run_task_cost_observations SET tool_result_tokens = :results, "
+                    "compacted_tool_argument_tokens = :compacted_arguments, "
+                    "has_real_progress = has_real_progress OR :progress WHERE id = :id"
+                ),
+                {
+                    "id": observation_id,
+                    "results": tool_result_tokens,
+                    "compacted_arguments": compacted_tool_argument_tokens,
+                    "progress": has_real_progress,
+                },
+            )
+            prefix = "developer" if str(row.role) == AgentRole.DEVELOPER.value else "repair"
+            # A successful write/apply_patch group is omitted from the following model
+            # conversation.  Both the all-tool and write/patch predictors must exclude
+            # its payload; subtracting it from only one branch still lets the write floor
+            # recreate the same source-sized reservation.
+            retained_tool_arguments = max(
+                0, int(row.tool_argument_tokens) - compacted_tool_argument_tokens
+            )
+            retained_write_patch_arguments = max(
+                0, int(row.write_patch_argument_tokens) - compacted_tool_argument_tokens
+            )
+            predicted = self._next_input_prediction(
+                current_request_estimate=int(row.request_estimated_tokens),
+                observed_prompt_tokens=int(row.actual_prompt_tokens),
+                context_growth_tokens=int(row.context_growth_tokens),
+                tool_argument_tokens=retained_tool_arguments,
+                tool_result_tokens=tool_result_tokens,
+                write_patch_argument_tokens=retained_write_patch_arguments,
+            )
+            await self._update_cost_prediction(
+                session=session,
+                run_id=row.run_id,
+                task_id=str(row.task_id),
+                prefix=prefix,
+                predicted_input_tokens=predicted,
+                max_output_tokens=max_output_tokens,
+                reason="当前请求、实际 Prompt、增长率、工具结果与大写入参数的最大预测值。",
+            )
+
     async def reclaim_unused_task_budget(self, *, run_id: UUID, task_id: str) -> None:
         """Return a successfully completed package's unused Agent pools to FLEX."""
 
@@ -380,6 +599,54 @@ class PostgresRunTokenBudgetStore:
                 - int(row.repair_used_tokens)
                 - int(row.repair_reserved_tokens),
             )
+            loan_rows = (
+                await session.execute(
+                    text(
+                        "SELECT id, lender_task_id, amount_tokens FROM run_task_budget_loans "
+                        "WHERE run_id = :run_id AND borrower_task_id = :task_id AND state = 'ACTIVE' "
+                        "ORDER BY id FOR UPDATE"
+                    ),
+                    {"run_id": run_id, "task_id": task_id},
+                )
+            ).all()
+            # A lender only ever contributed capacity above its startup reserve.  Return
+            # the unused portion before releasing the borrower's remaining capacity to
+            # FLEX; consumed loan capacity is correctly settled as Run expenditure.
+            remaining_for_loans = developer
+            returned_to_lenders = 0
+            for loan in loan_rows:
+                returned = min(remaining_for_loans, int(loan.amount_tokens))
+                if returned:
+                    await session.execute(
+                        text(
+                            "UPDATE run_task_token_budgets SET total_budget_tokens = total_budget_tokens + :amount, "
+                            "developer_budget_tokens = developer_budget_tokens + :amount "
+                            "WHERE run_id = :run_id AND task_id = :task_id"
+                        ),
+                        {
+                            "run_id": run_id,
+                            "task_id": str(loan.lender_task_id),
+                            "amount": returned,
+                        },
+                    )
+                    remaining_for_loans -= returned
+                    returned_to_lenders += returned
+                await session.execute(
+                    text(
+                        "UPDATE run_task_budget_loans SET state = 'SETTLED', settled_at = now() WHERE id = :id"
+                    ),
+                    {"id": int(loan.id)},
+                )
+            if returned_to_lenders:
+                await session.execute(
+                    text(
+                        "UPDATE run_task_token_budgets SET total_budget_tokens = total_budget_tokens - :amount, "
+                        "developer_budget_tokens = developer_budget_tokens - :amount "
+                        "WHERE run_id = :run_id AND task_id = :task_id"
+                    ),
+                    {"run_id": run_id, "task_id": task_id, "amount": returned_to_lenders},
+                )
+            developer = remaining_for_loans
             reclaimed = developer + repair
             if reclaimed:
                 await session.execute(
@@ -444,7 +711,7 @@ class PostgresRunTokenBudgetStore:
             package_rows = (
                 await session.execute(
                     text(
-                        "SELECT task_id, complexity, total_budget_tokens, developer_budget_tokens, repair_budget_tokens, developer_used_tokens, repair_used_tokens, developer_reserved_tokens, repair_reserved_tokens, developer_borrowed_tokens, repair_borrowed_tokens, developer_reclaimed_tokens, repair_reclaimed_tokens, borrow_count, last_required_tokens, last_available_tokens, last_flex_available_tokens, last_borrowed_tokens, last_budget_decision, status FROM run_task_token_budgets WHERE run_id = :run_id ORDER BY task_id"
+                        "SELECT task_id, complexity, total_budget_tokens, developer_budget_tokens, repair_budget_tokens, developer_used_tokens, repair_used_tokens, developer_reserved_tokens, repair_reserved_tokens, developer_borrowed_tokens, repair_borrowed_tokens, developer_reclaimed_tokens, repair_reclaimed_tokens, developer_observed_prompt_tokens, repair_observed_prompt_tokens, developer_predicted_next_input_tokens, repair_predicted_next_input_tokens, developer_estimated_executable_turns, repair_estimated_executable_turns, developer_startup_reserve_tokens, complexity_upgrade_count, borrow_count, last_required_tokens, last_available_tokens, last_flex_available_tokens, last_downstream_available_tokens, last_borrowed_tokens, last_budget_decision, last_budget_reason, last_recovery_action, last_cost_prediction_reason, status FROM run_task_token_budgets WHERE run_id = :run_id ORDER BY task_id"
                     ),
                     {"run_id": run_id},
                 )
@@ -492,14 +759,42 @@ class PostgresRunTokenBudgetStore:
                     repair_borrowed_tokens=int(item.repair_borrowed_tokens),
                     developer_reclaimed_tokens=int(item.developer_reclaimed_tokens),
                     repair_reclaimed_tokens=int(item.repair_reclaimed_tokens),
+                    developer_observed_prompt_tokens=int(item.developer_observed_prompt_tokens),
+                    repair_observed_prompt_tokens=int(item.repair_observed_prompt_tokens),
+                    developer_predicted_next_input_tokens=int(
+                        item.developer_predicted_next_input_tokens
+                    ),
+                    repair_predicted_next_input_tokens=int(item.repair_predicted_next_input_tokens),
+                    developer_estimated_executable_turns=int(
+                        item.developer_estimated_executable_turns
+                    ),
+                    repair_estimated_executable_turns=int(item.repair_estimated_executable_turns),
+                    developer_startup_reserve_tokens=int(item.developer_startup_reserve_tokens),
+                    complexity_upgrade_count=int(item.complexity_upgrade_count),
                     borrow_count=int(item.borrow_count),
                     last_required_tokens=int(item.last_required_tokens),
                     last_available_tokens=int(item.last_available_tokens),
                     last_flex_available_tokens=int(item.last_flex_available_tokens),
+                    last_downstream_available_tokens=int(item.last_downstream_available_tokens),
                     last_borrowed_tokens=int(item.last_borrowed_tokens),
                     last_budget_decision=(
                         str(item.last_budget_decision)
                         if item.last_budget_decision is not None
+                        else None
+                    ),
+                    last_budget_reason=(
+                        str(item.last_budget_reason)
+                        if item.last_budget_reason is not None
+                        else None
+                    ),
+                    last_recovery_action=(
+                        str(item.last_recovery_action)
+                        if item.last_recovery_action is not None
+                        else None
+                    ),
+                    last_cost_prediction_reason=(
+                        str(item.last_cost_prediction_reason)
+                        if item.last_cost_prediction_reason is not None
                         else None
                     ),
                     status=TaskBudgetStatus(str(item.status)),
@@ -569,6 +864,7 @@ class PostgresRunTokenBudgetStore:
                 role=AgentRole(str(row.role)),
                 reserved=reserved,
                 used=total,
+                prompt_tokens=prompt,
             )
             if usage is not None:
                 await session.execute(
@@ -675,6 +971,136 @@ class PostgresRunTokenBudgetStore:
         repair = max(800, min(1_500, predicted_input))
         return node, developer, repair
 
+    def _next_input_prediction(
+        self,
+        *,
+        current_request_estimate: int,
+        observed_prompt_tokens: int,
+        context_growth_tokens: int,
+        tool_argument_tokens: int,
+        tool_result_tokens: int,
+        write_patch_argument_tokens: int,
+    ) -> int:
+        """Reserve the largest credible next-turn input, never an optimistic average."""
+
+        observed_floor = ceil(observed_prompt_tokens * self._token_estimate_safety_factor)
+        growth_floor = observed_prompt_tokens + ceil(
+            max(context_growth_tokens, tool_argument_tokens + tool_result_tokens)
+            * self._token_estimate_safety_factor
+        )
+        write_patch_floor = observed_prompt_tokens + ceil(
+            (write_patch_argument_tokens + tool_result_tokens)
+            * self._token_estimate_safety_factor
+        )
+        return max(current_request_estimate, observed_floor, growth_floor, write_patch_floor)
+
+    async def _update_cost_prediction(
+        self,
+        *,
+        session: AsyncSession,
+        run_id: UUID,
+        task_id: str,
+        prefix: str,
+        predicted_input_tokens: int,
+        max_output_tokens: int,
+        reason: str,
+    ) -> None:
+        row = (
+            await session.execute(
+                text(
+                    f"SELECT {prefix}_budget_tokens, {prefix}_used_tokens, "
+                    f"{prefix}_reserved_tokens FROM run_task_token_budgets "
+                    "WHERE run_id = :run_id AND task_id = :task_id FOR UPDATE"
+                ),
+                {"run_id": run_id, "task_id": task_id},
+            )
+        ).one_or_none()
+        if row is None:
+            return
+        remaining = max(
+            0,
+            int(getattr(row, f"{prefix}_budget_tokens"))
+            - int(getattr(row, f"{prefix}_used_tokens"))
+            - int(getattr(row, f"{prefix}_reserved_tokens")),
+        )
+        next_turn_cost = max(1, predicted_input_tokens + max_output_tokens)
+        await session.execute(
+            text(
+                f"UPDATE run_task_token_budgets SET {prefix}_predicted_next_input_tokens = :predicted, "
+                f"{prefix}_estimated_executable_turns = :turns, last_cost_prediction_reason = :reason "
+                "WHERE run_id = :run_id AND task_id = :task_id"
+            ),
+            {
+                "run_id": run_id,
+                "task_id": task_id,
+                "predicted": predicted_input_tokens,
+                "turns": remaining // next_turn_cost,
+                "reason": reason,
+            },
+        )
+
+    async def _calibrated_input_estimate(
+        self,
+        *,
+        session: AsyncSession,
+        run_id: UUID,
+        task_id: str,
+        role: AgentRole,
+        estimated_input_tokens: int,
+    ) -> int:
+        """Use real provider prompt usage as a durable floor for later Agent turns.
+
+        The local request estimator captures the current messages, tools and tool results.
+        After a first provider response, the observed prompt size is also persisted per
+        work package. The next reservation uses the larger value with a safety margin so a
+        tool-heavy conversation cannot surprise the package budget on its next turn.
+        """
+
+        if role not in {AgentRole.DEVELOPER, AgentRole.REPAIR}:
+            return estimated_input_tokens
+        prefix = "developer" if role is AgentRole.DEVELOPER else "repair"
+        row = (
+            await session.execute(
+                text(
+                    f"SELECT {prefix}_observed_prompt_tokens "
+                    "FROM run_task_token_budgets "
+                    "WHERE run_id = :run_id AND task_id = :task_id FOR UPDATE"
+                ),
+                {"run_id": run_id, "task_id": task_id},
+            )
+        ).one_or_none()
+        observed = 0 if row is None else int(getattr(row, f"{prefix}_observed_prompt_tokens"))
+        observation = (
+            await session.execute(
+                text(
+                    "SELECT actual_prompt_tokens, tool_argument_tokens, tool_result_tokens, "
+                    "write_patch_argument_tokens, context_growth_tokens, compacted_tool_argument_tokens "
+                    "FROM run_task_cost_observations "
+                    "WHERE run_id = :run_id AND task_id = :task_id AND role = :role "
+                    "ORDER BY id DESC LIMIT 1"
+                ),
+                {"run_id": run_id, "task_id": task_id, "role": role.value},
+            )
+        ).one_or_none()
+        if observation is None:
+            return max(
+                estimated_input_tokens,
+                ceil(observed * self._token_estimate_safety_factor),
+            )
+        compacted = int(observation.compacted_tool_argument_tokens)
+        return self._next_input_prediction(
+            current_request_estimate=estimated_input_tokens,
+            observed_prompt_tokens=max(observed, int(observation.actual_prompt_tokens)),
+            context_growth_tokens=int(observation.context_growth_tokens),
+            tool_argument_tokens=max(
+                0, int(observation.tool_argument_tokens) - compacted
+            ),
+            tool_result_tokens=int(observation.tool_result_tokens),
+            write_patch_argument_tokens=max(
+                0, int(observation.write_patch_argument_tokens) - compacted
+            ),
+        )
+
     async def _reserve_hierarchy(
         self,
         *,
@@ -686,6 +1112,7 @@ class PostgresRunTokenBudgetStore:
         estimated_input_tokens: int,
         max_output_tokens: int,
         has_progress: bool,
+        allow_initial_credit: bool = False,
     ) -> None:
         stage = self._stage_for(role)
         stage_row = (
@@ -719,7 +1146,8 @@ class PostgresRunTokenBudgetStore:
                 text(
                     "SELECT complexity, developer_budget_tokens, repair_budget_tokens, "
                     "developer_used_tokens, repair_used_tokens, developer_reserved_tokens, "
-                    "repair_reserved_tokens, borrow_count FROM run_task_token_budgets "
+                    "repair_reserved_tokens, developer_startup_reserve_tokens, "
+                    "complexity_upgrade_count, borrow_count FROM run_task_token_budgets "
                     "WHERE run_id = :run_id AND task_id = :task_id FOR UPDATE"
                 ),
                 {"run_id": run_id, "task_id": task_id},
@@ -763,87 +1191,263 @@ class PostgresRunTokenBudgetStore:
                 else 0
             )
             needed = max(required - available, required - stage_available, 0)
+            downstream_available = 0
             if needed:
-                consumed = int(getattr(task_row, f"{prefix}_used_tokens")) + int(
-                    getattr(task_row, f"{prefix}_reserved_tokens")
-                )
                 current_budget = int(getattr(task_row, f"{prefix}_budget_tokens"))
-                at_threshold = current_budget > 0 and consumed * 100 >= current_budget * 70
+                complexity = str(task_row.complexity)
                 maximum_budget = self._maximum_package_budget(
                     complexity=str(task_row.complexity), current_budget=current_budget
                 )
-                reason = self._borrow_denial_reason(
-                    has_progress=has_progress,
-                    at_borrow_threshold=at_threshold,
-                    borrow_count=int(task_row.borrow_count),
-                    needed=needed,
-                    flex_available=flex_available,
-                    budget=current_budget,
-                    maximum_budget=maximum_budget,
-                )
-                if reason is not None:
-                    await self._persist_budget_decision(
-                        session=session, run_id=run_id, task_id=task_id, role=role,
-                        estimated_input_tokens=estimated_input_tokens,
-                        max_output_tokens=max_output_tokens, required_tokens=required,
-                        package_available_tokens=available, flex_available_tokens=flex_available,
-                        borrowed_tokens=0, decision="DENIED", reason=reason,
+                upgraded = False
+                if (
+                    current_budget + needed > maximum_budget
+                    and complexity == "MEDIUM"
+                    and int(task_row.complexity_upgrade_count) == 0
+                    and has_progress
+                ):
+                    # A MEDIUM package which keeps producing verified progress may
+                    # receive one controlled ceiling upgrade.  This changes only the
+                    # ceiling; it never creates tokens by itself.
+                    complexity = "HIGH"
+                    maximum_budget = self._maximum_package_budget(
+                        complexity=complexity, current_budget=current_budget
                     )
-                    raise TokenBudgetReservationError(
+                    upgraded = True
+
+                downstream_rows = await self._dependency_lender_rows(
+                    session=session, run_id=run_id, borrower_task_id=task_id, role=role
+                )
+                downstream_available = sum(
+                    max(
+                        0,
+                        int(item.developer_budget_tokens)
+                        - int(item.developer_used_tokens)
+                        - int(item.developer_reserved_tokens)
+                        - int(item.developer_startup_reserve_tokens),
+                    )
+                    for item in downstream_rows
+                )
+                # A producer on the active dependency path may exceed the normal HIGH ceiling
+                # once, but only by the amount required for the next turn and never above the
+                # explicit critical-path ceiling.  The existing three-borrow limit, real-progress
+                # gate and Run total reservation remain hard guards.  This avoids terminating a
+                # verified core implementation while its blocked consumers still reserve capacity.
+                critical_path_expanded = False
+                if (
+                    role is AgentRole.DEVELOPER
+                    and has_progress
+                    and downstream_rows
+                    and current_budget + needed > maximum_budget
+                ):
+                    expanded_ceiling = min(24_000, current_budget + needed)
+                    if expanded_ceiling > maximum_budget:
+                        maximum_budget = expanded_ceiling
+                        critical_path_expanded = True
+                stage_shortfall = max(0, required - stage_available)
+                flex_borrow = min(needed, flex_available)
+                lender_borrow = max(0, needed - flex_borrow)
+                flags: list[str] = []
+                # Work-package and stage pools are scheduling credits, not a second
+                # hard budget. The Run reservation above is the single financial
+                # authority.  A producing task with evidence-backed progress must not
+                # stop merely because capacity is parked in a legacy stage or in a
+                # dependant that cannot run until this task succeeds.
+                reason = None
+                if not has_progress and not allow_initial_credit:
+                    flags.append("NO_VERIFIED_PROGRESS")
+                    reason = "本轮前没有可验证的代码、工具或验证进展。"
+                if stage_shortfall > flex_available:
+                    flags.append("FLEX_STAGE_CAPACITY")
+                if lender_borrow > downstream_available:
+                    flags.append("DEPENDENT_DOWNSTREAM_RESERVE")
+                if current_budget + needed > maximum_budget:
+                    flags.append("PACKAGE_CEILING")
+                if int(task_row.borrow_count) >= 3:
+                    flags.append("BORROW_LIMIT")
+                if reason is not None:
+                    recovery_action = (
+                        "continue_from_checkpoint"
+                        if has_progress
+                        else "fix_or_replan_work_package"
+                    )
+                    facts = BudgetDecisionFacts(
+                        run_id=run_id,
+                        task_id=task_id,
+                        role=role,
+                        estimated_input_tokens=estimated_input_tokens,
+                        max_output_tokens=max_output_tokens,
+                        required_tokens=required,
+                        package_available_tokens=available,
+                        flex_available_tokens=flex_available,
+                        downstream_available_tokens=downstream_available,
+                        borrowed_tokens=0,
+                        decision="DENIED",
+                        reason=reason,
+                        limit_flags=tuple(flags),
+                        recovery_action=recovery_action,
+                    )
+                    raise WorkPackageBudgetAllocationError(
                         f"工作包 {task_id} {prefix} 预算剩余 {available} Token；下一轮至少需 "
-                        f"{required} Token。FLEX 可借 {flex_available} Token，但未自动借款：{reason}"
+                        f"{required} Token。FLEX 可借 {flex_available} Token；可延期下游预算 "
+                        f"{downstream_available} Token，未自动借款：{reason}",
+                        decision=facts,
                     )
                 assert flex_row is not None
-                await session.execute(
+                # Any shortfall left after FLEX and directly blocked dependants is
+                # advanced from the Run-level credit.  The outer Run reservation has
+                # already locked and checked `used + reserved + required <= total`,
+                # so this cannot overspend the Run or double-spend under concurrency.
+                global_credit = max(0, lender_borrow - downstream_available)
+                if flex_borrow:
+                    await session.execute(
                     text(
-                        "UPDATE run_stage_token_budgets SET total_budget_tokens = total_budget_tokens - :needed "
+                        "UPDATE run_stage_token_budgets SET total_budget_tokens = total_budget_tokens - :amount "
                         "WHERE run_id = :run_id AND stage = :stage"
                     ),
-                    {"run_id": run_id, "stage": TokenBudgetStage.FLEX.value, "needed": needed},
-                )
-                if stage_row is not None:
+                    {"run_id": run_id, "stage": TokenBudgetStage.FLEX.value, "amount": flex_borrow},
+                    )
+                if stage_row is not None and flex_borrow:
                     await session.execute(
                         text(
-                            "UPDATE run_stage_token_budgets SET total_budget_tokens = total_budget_tokens + :needed "
+                            "UPDATE run_stage_token_budgets SET total_budget_tokens = total_budget_tokens + :amount "
                             "WHERE run_id = :run_id AND stage = :stage"
                         ),
-                        {"run_id": run_id, "stage": stage.value, "needed": needed},
+                        {"run_id": run_id, "stage": stage.value, "amount": flex_borrow},
                     )
+                # Lender capacity may be represented only at the package level in
+                # legacy Runs. Bring the development stage up to the required next
+                # reservation as an accounting projection; Run-level reservation is
+                # still the sole hard cap.
+                stage_credit = max(0, stage_shortfall - flex_borrow)
+                if stage_row is not None and stage_credit:
+                    await session.execute(
+                        text(
+                            "UPDATE run_stage_token_budgets SET total_budget_tokens = "
+                            "total_budget_tokens + :amount WHERE run_id = :run_id AND stage = :stage"
+                        ),
+                        {
+                            "run_id": run_id,
+                            "stage": stage.value,
+                            "amount": stage_credit,
+                        },
+                    )
+                remaining_lender_borrow = lender_borrow
+                for lender in downstream_rows:
+                    lender_available = max(
+                        0,
+                        int(lender.developer_budget_tokens)
+                        - int(lender.developer_used_tokens)
+                        - int(lender.developer_reserved_tokens)
+                        - int(lender.developer_startup_reserve_tokens),
+                    )
+                    amount = min(remaining_lender_borrow, lender_available)
+                    if amount == 0:
+                        continue
+                    await session.execute(
+                        text(
+                            "UPDATE run_task_token_budgets SET total_budget_tokens = total_budget_tokens - :amount, "
+                            "developer_budget_tokens = developer_budget_tokens - :amount "
+                            "WHERE run_id = :run_id AND task_id = :task_id"
+                        ),
+                        {"run_id": run_id, "task_id": str(lender.task_id), "amount": amount},
+                    )
+                    await session.execute(
+                        text(
+                            "INSERT INTO run_task_budget_loans "
+                            "(run_id, borrower_task_id, lender_task_id, role, amount_tokens) "
+                            "VALUES (:run_id, :borrower, :lender, :role, :amount)"
+                        ),
+                        {
+                            "run_id": run_id,
+                            "borrower": task_id,
+                            "lender": str(lender.task_id),
+                            "role": role.value,
+                            "amount": amount,
+                        },
+                    )
+                    remaining_lender_borrow -= amount
                 await session.execute(
                     text(
-                        f"UPDATE run_task_token_budgets SET {prefix}_budget_tokens = {prefix}_budget_tokens + :needed, "
+                        f"UPDATE run_task_token_budgets SET total_budget_tokens = total_budget_tokens + :needed, "
+                        f"{prefix}_budget_tokens = {prefix}_budget_tokens + :needed, "
                         f"{prefix}_borrowed_tokens = {prefix}_borrowed_tokens + :needed, "
-                        "borrow_count = borrow_count + 1 WHERE run_id = :run_id AND task_id = :task_id"
+                        "borrow_count = borrow_count + 1, complexity = :complexity, "
+                        "complexity_upgrade_count = complexity_upgrade_count + :upgrade "
+                        "WHERE run_id = :run_id AND task_id = :task_id"
                     ),
-                    {"run_id": run_id, "task_id": task_id, "needed": needed},
+                    {
+                        "run_id": run_id,
+                        "task_id": task_id,
+                        "needed": needed,
+                        "complexity": complexity,
+                        "upgrade": 1 if upgraded else 0,
+                    },
                 )
                 await self._persist_budget_decision(
-                    session=session, run_id=run_id, task_id=task_id, role=role,
-                    estimated_input_tokens=estimated_input_tokens,
-                    max_output_tokens=max_output_tokens, required_tokens=required,
-                    package_available_tokens=available, flex_available_tokens=flex_available,
-                    borrowed_tokens=needed, decision="BORROWED",
-                    reason="有效工具或代码进展后使用 FLEX 弹性池续接。",
+                    session=session,
+                    facts=BudgetDecisionFacts(
+                        run_id=run_id,
+                        task_id=task_id,
+                        role=role,
+                        estimated_input_tokens=estimated_input_tokens,
+                        max_output_tokens=max_output_tokens,
+                        required_tokens=required,
+                        package_available_tokens=available,
+                        flex_available_tokens=flex_available,
+                        downstream_available_tokens=downstream_available,
+                        borrowed_tokens=needed,
+                        decision="BORROWED",
+                        reason=self._credit_decision_reason(
+                            critical_path_expanded=critical_path_expanded,
+                            lender_borrow=lender_borrow,
+                            global_credit=global_credit,
+                            initial_credit=allow_initial_credit and not has_progress,
+                        ),
+                        limit_flags=tuple(flags),
+                    ),
                 )
             else:
                 await self._persist_budget_decision(
-                    session=session, run_id=run_id, task_id=task_id, role=role,
-                    estimated_input_tokens=estimated_input_tokens,
-                    max_output_tokens=max_output_tokens, required_tokens=required,
-                    package_available_tokens=available, flex_available_tokens=flex_available,
-                    borrowed_tokens=0, decision="RESERVED", reason=None,
+                    session=session,
+                    facts=BudgetDecisionFacts(
+                        run_id=run_id,
+                        task_id=task_id,
+                        role=role,
+                        estimated_input_tokens=estimated_input_tokens,
+                        max_output_tokens=max_output_tokens,
+                        required_tokens=required,
+                        package_available_tokens=available,
+                        flex_available_tokens=flex_available,
+                        downstream_available_tokens=0,
+                        borrowed_tokens=0,
+                        decision="RESERVED",
+                        reason=None,
+                    ),
                 )
             await session.execute(
                 text(
                     "UPDATE run_task_token_budgets SET last_required_tokens = :required, "
                     "last_available_tokens = :available, last_flex_available_tokens = :flex, "
-                    "last_borrowed_tokens = :borrowed, last_budget_decision = :decision "
+                    "last_downstream_available_tokens = :downstream, last_borrowed_tokens = :borrowed, "
+                    "last_budget_decision = :decision, last_budget_reason = :reason, "
+                    "last_recovery_action = NULL "
                     "WHERE run_id = :run_id AND task_id = :task_id"
                 ),
                 {
                     "run_id": run_id, "task_id": task_id, "required": required,
-                    "available": available, "flex": flex_available, "borrowed": needed,
+                    "available": available, "flex": flex_available,
+                    "downstream": downstream_available, "borrowed": needed,
                     "decision": "BORROWED" if needed else "RESERVED",
+                    "reason": (
+                        self._credit_decision_reason(
+                            critical_path_expanded=critical_path_expanded,
+                            lender_borrow=lender_borrow,
+                            global_credit=global_credit,
+                            initial_credit=allow_initial_credit and not has_progress,
+                        )
+                        if needed
+                        else None
+                    ),
                 },
             )
             await session.execute(
@@ -868,10 +1472,30 @@ class PostgresRunTokenBudgetStore:
         return max(current_budget, ceiling)
 
     @staticmethod
+    def _credit_decision_reason(
+        *,
+        critical_path_expanded: bool,
+        lender_borrow: int,
+        global_credit: int,
+        initial_credit: bool,
+    ) -> str:
+        parts: list[str] = []
+        if initial_credit:
+            parts.append("首次受控开发调用使用 Run 启动信用")
+        if critical_path_expanded:
+            parts.append("关键路径已扩展工作包软上限")
+        if global_credit:
+            parts.append(f"已从 Run 总预算信用流动 {global_credit} Token")
+        elif lender_borrow:
+            parts.append("已使用 FLEX 与被阻塞下游的可延期信用")
+        else:
+            parts.append("已使用 FLEX 信用")
+        return "；".join(parts) + "。"
+
+    @staticmethod
     def _borrow_denial_reason(
         *,
         has_progress: bool,
-        at_borrow_threshold: bool,
         borrow_count: int,
         needed: int,
         flex_available: int,
@@ -880,54 +1504,105 @@ class PostgresRunTokenBudgetStore:
     ) -> str | None:
         if not has_progress:
             return "本轮前没有可验证的代码或工具进展。"
-        if not at_borrow_threshold:
-            return "当前工作包尚未达到 70% 的预算使用阈值。"
         if borrow_count >= 3:
             return "已达到该工作包的 3 次 FLEX 借款上限。"
-        if needed > flex_available:
-            return "FLEX 弹性池余额不足。"
         if budget + needed > maximum_budget:
             return f"借款后将超过该复杂度的 {maximum_budget} Token 上限。"
         return None
 
-    @staticmethod
     async def _persist_budget_decision(
+        self,
         *,
         session: AsyncSession,
-        run_id: UUID,
-        task_id: str,
-        role: AgentRole,
-        estimated_input_tokens: int,
-        max_output_tokens: int,
-        required_tokens: int,
-        package_available_tokens: int,
-        flex_available_tokens: int,
-        borrowed_tokens: int,
-        decision: str,
-        reason: str | None,
+        facts: BudgetDecisionFacts,
     ) -> None:
         await session.execute(
             text(
                 "INSERT INTO run_token_budget_decisions "
                 "(run_id, task_id, role, estimated_input_tokens, max_output_tokens, required_tokens, "
-                "package_available_tokens, flex_available_tokens, borrowed_tokens, decision, reason) "
+                "package_available_tokens, flex_available_tokens, downstream_available_tokens, "
+                "borrowed_tokens, decision, reason, limit_flags, recovery_action) "
                 "VALUES (:run_id, :task_id, :role, :input, :output, :required, :available, :flex, "
-                ":borrowed, :decision, :reason)"
+                ":downstream, :borrowed, :decision, :reason, CAST(:flags AS jsonb), :recovery)"
             ),
             {
-                "run_id": run_id,
-                "task_id": task_id,
-                "role": role.value,
-                "input": estimated_input_tokens,
-                "output": max_output_tokens,
-                "required": required_tokens,
-                "available": package_available_tokens,
-                "flex": flex_available_tokens,
-                "borrowed": borrowed_tokens,
-                "decision": decision,
-                "reason": reason,
+                "run_id": facts.run_id,
+                "task_id": facts.task_id,
+                "role": facts.role.value,
+                "input": facts.estimated_input_tokens,
+                "output": facts.max_output_tokens,
+                "required": facts.required_tokens,
+                "available": facts.package_available_tokens,
+                "flex": facts.flex_available_tokens,
+                "downstream": facts.downstream_available_tokens,
+                "borrowed": facts.borrowed_tokens,
+                "decision": facts.decision,
+                "reason": facts.reason,
+                "flags": json.dumps(facts.limit_flags),
+                "recovery": facts.recovery_action,
             },
         )
+
+    async def _persist_budget_decision_independently(self, facts: BudgetDecisionFacts) -> None:
+        """Durably record a refusal after the reservation transaction has rolled back."""
+
+        async with self._session_factory.begin() as session:
+            await self._persist_budget_decision(session=session, facts=facts)
+            await session.execute(
+                text(
+                    "UPDATE run_task_token_budgets SET last_required_tokens = :required, "
+                    "last_available_tokens = :available, last_flex_available_tokens = :flex, "
+                    "last_downstream_available_tokens = :downstream, last_borrowed_tokens = :borrowed, "
+                    "last_budget_decision = :decision, last_budget_reason = :reason, "
+                    "last_recovery_action = :recovery "
+                    "WHERE run_id = :run_id AND task_id = :task_id"
+                ),
+                {
+                    "run_id": facts.run_id,
+                    "task_id": facts.task_id,
+                    "required": facts.required_tokens,
+                    "available": facts.package_available_tokens,
+                    "flex": facts.flex_available_tokens,
+                    "downstream": facts.downstream_available_tokens,
+                    "borrowed": facts.borrowed_tokens,
+                    "decision": facts.decision,
+                    "reason": facts.reason,
+                    "recovery": facts.recovery_action,
+                },
+            )
+
+    @staticmethod
+    async def _dependency_lender_rows(
+        *,
+        session: AsyncSession,
+        run_id: UUID,
+        borrower_task_id: str,
+        role: AgentRole,
+    ) -> tuple[object, ...]:
+        """Lock only direct, not-yet-ready dependants of the active producer.
+
+        A direct dependant cannot be ready while this producer is still executing;
+        a task without this edge may run independently and is never considered.
+        Only Developer capacity above its protected startup pool is loanable.
+        """
+
+        if role is not AgentRole.DEVELOPER:
+            return ()
+        result = await session.execute(
+            text(
+                "SELECT budget.task_id, budget.developer_budget_tokens, budget.developer_used_tokens, "
+                "budget.developer_reserved_tokens, budget.developer_startup_reserve_tokens "
+                "FROM run_task_token_budgets AS budget "
+                "JOIN tasks AS task ON task.run_id = budget.run_id AND task.task_id = budget.task_id "
+                "WHERE budget.run_id = :run_id "
+                "AND task.depends_on @> CAST(:dependency AS jsonb) "
+                "AND budget.status = 'ACTIVE' "
+                "ORDER BY budget.task_id FOR UPDATE"
+            ),
+            {"run_id": run_id, "dependency": json.dumps([borrower_task_id])},
+        )
+        rows = getattr(result, "all", None)
+        return tuple(rows()) if callable(rows) else ()
 
     async def _settle_hierarchy(
         self,
@@ -938,6 +1613,7 @@ class PostgresRunTokenBudgetStore:
         role: AgentRole,
         reserved: int,
         used: int,
+        prompt_tokens: int,
     ) -> None:
         stage = self._stage_for(role)
         await session.execute(
@@ -950,9 +1626,18 @@ class PostgresRunTokenBudgetStore:
             prefix = "developer" if role is AgentRole.DEVELOPER else "repair"
             await session.execute(
                 text(
-                    f"UPDATE run_task_token_budgets SET {prefix}_reserved_tokens = GREATEST(0, {prefix}_reserved_tokens - :reserved), {prefix}_used_tokens = {prefix}_used_tokens + :used WHERE run_id = :run_id AND task_id = :task_id"
+                    f"UPDATE run_task_token_budgets SET {prefix}_reserved_tokens = GREATEST(0, {prefix}_reserved_tokens - :reserved), "
+                    f"{prefix}_used_tokens = {prefix}_used_tokens + :used, "
+                    f"{prefix}_observed_prompt_tokens = GREATEST({prefix}_observed_prompt_tokens, :prompt) "
+                    "WHERE run_id = :run_id AND task_id = :task_id"
                 ),
-                {"run_id": run_id, "task_id": task_id, "reserved": reserved, "used": used},
+                {
+                    "run_id": run_id,
+                    "task_id": task_id,
+                    "reserved": reserved,
+                    "used": used,
+                    "prompt": prompt_tokens,
+                },
             )
 
     async def _record_stage_usage(

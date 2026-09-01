@@ -319,6 +319,11 @@ class LocalQueuedTaskExecutionBackend:
                 worktrees.commit_task_changes,
                 worktree_identity,
             )
+        context_state = run_result.context_state
+        if context_state is not None:
+            # The checkpoint commit, not the pre-slice worktree head, is the durable
+            # truth for the next compact Agent session.
+            context_state = context_state.model_copy(update={"repository_head": commit_sha})
         return TaskCheckpoint(
             task_id=task.task_id,
             base_commit=base_commit,
@@ -327,9 +332,9 @@ class LocalQueuedTaskExecutionBackend:
             reason=reason,
             summary=(
                 "已保存当前受控代码改动；从检查点继续时会复用仓库摘要和未变更文件哈希，"
-                "仅重新发送改动文件与未完成工作。"
+                "仅发送改动文件哈希、验证摘要与未完成工作。"
             ),
-            context_state=run_result.context_state,
+            context_state=context_state,
         )
 
     @staticmethod
@@ -446,6 +451,8 @@ class QueuedTaskWorker:
                 ),
             )
         effective_max_slices = self._effective_max_slices(complexity.score)
+        terminal_execution: WorkerExecutionEvidence | None = None
+        execution_evidence_persisted = False
         try:
             execution_base = await self._resolve_execution_base(snapshot, envelope.task_id)
             await self._record_dispatch_event(
@@ -574,6 +581,8 @@ class QueuedTaskWorker:
                 stage="worker",
                 run_token=run_token,
             )
+            terminal_execution = execution
+            execution_evidence_persisted = True
             if self._interface_contract_registry is not None:
                 if execution.status is WorkerExecutionStatus.SUCCEEDED:
                     await self._interface_contract_registry.mark_producer_satisfied(
@@ -586,10 +595,10 @@ class QueuedTaskWorker:
                         run_id=envelope.run_id,
                         task_id=envelope.task_id,
                     )
-            if (
-                execution.status is WorkerExecutionStatus.SUCCEEDED
-                and self._token_budget_manager is not None
-            ):
+            if self._token_budget_manager is not None:
+                # A failed terminal attempt cannot safely keep capacity borrowed from
+                # dependency-blocked packages. Reclaim/settle it just as a successful
+                # task does; the immutable Run evidence remains untouched.
                 await self._token_budget_manager.reclaim_unused_task_budget(
                     run_id=envelope.run_id,
                     task_id=envelope.task_id,
@@ -622,6 +631,15 @@ class QueuedTaskWorker:
                 )
             return execution
         except WorkerExecutionBoundaryError as exc:
+            if execution_evidence_persisted:
+                assert terminal_execution is not None
+                await self._persist_post_execution_finalization_failure(
+                    envelope=envelope,
+                    run_token=run_token,
+                    exception=exc,
+                    execution=terminal_execution,
+                )
+                raise
             # A boundary violation must remain visible to the lease/actor layers so they can
             # fail closed, but it also needs durable evidence before the lease is released.
             await self._persist_terminal_worker_exception(
@@ -633,6 +651,15 @@ class QueuedTaskWorker:
             )
             raise
         except Exception as exc:
+            if execution_evidence_persisted:
+                assert terminal_execution is not None
+                await self._persist_post_execution_finalization_failure(
+                    envelope=envelope,
+                    run_token=run_token,
+                    exception=exc,
+                    execution=terminal_execution,
+                )
+                return terminal_execution
             # Other runtime failures are converted to terminal evidence so a released lease
             # can never masquerade as a live but invisible task.
             return await self._persist_terminal_worker_exception(
@@ -642,6 +669,43 @@ class QueuedTaskWorker:
                 exception=exc,
                 boundary_violation=False,
             )
+
+    async def _persist_post_execution_finalization_failure(
+        self,
+        *,
+        envelope: TaskDispatchEnvelope,
+        run_token: UUID,
+        exception: Exception,
+        execution: WorkerExecutionEvidence,
+    ) -> None:
+        """Record cleanup failures without replacing already immutable execution evidence."""
+
+        failure = FailureReport(
+            failure_type=FailureType.TOOL_FAILURE,
+            source=FailureSource.RUNTIME,
+            message="Worker 已保存执行证据，但在完成预算或分派收尾时发生异常。",
+            retryable=False,
+            evidence=(
+                "terminalization=post_execution_finalization_failure",
+                f"exception_type={type(exception).__name__}",
+                "execution_evidence_preserved=true",
+            ),
+        )
+        await self._store.append_evidence(
+            run_id=envelope.run_id,
+            task_id=envelope.task_id,
+            evidence_key=f"dispatch:{envelope.dispatch_id}:post-execution-finalization-failure",
+            kind=PersistenceEvidenceKind.FAILURE_REPORT,
+            payload_model=failure,
+            stage="runtime",
+            run_token=run_token,
+        )
+        await self._record_dispatch_event(
+            envelope,
+            run_token=run_token,
+            phase=WorkerDispatchPhase.COMPLETED,
+            outcome=execution.status,
+        )
 
     async def _persist_terminal_worker_exception(
         self,

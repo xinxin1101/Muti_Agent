@@ -73,6 +73,14 @@ def test_workspace_root_must_be_git_top_level(tmp_path: Path) -> None:
         LocalGitWorkspace(root / "app")
 
 
+def test_workspace_can_check_whether_a_commit_is_present(tmp_path: Path) -> None:
+    workspace = LocalGitWorkspace(_make_repository(tmp_path))
+
+    assert workspace.has_commit(workspace.head_commit()) is True
+    assert workspace.has_commit("0" * 40) is False
+    assert workspace.has_commit("not-a-commit") is False
+
+
 def test_changed_files_collects_tracked_staged_and_untracked_changes(tmp_path: Path) -> None:
     root = _make_repository(tmp_path)
     workspace = LocalGitWorkspace(root)
