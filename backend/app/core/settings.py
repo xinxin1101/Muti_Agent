@@ -94,7 +94,7 @@ class Settings(BaseSettings):
     )
     siliconflow_base_url: str = "https://api.siliconflow.cn/v1"
     siliconflow_timeout_seconds: float = Field(default=60.0, gt=0.0, le=600.0)
-    siliconflow_max_retries: int = Field(default=0, ge=0, le=5)
+    siliconflow_max_retries: int = Field(default=2, ge=0, le=5)
     # Prefer an explicit model-provider proxy, while accepting the existing shared Clash proxy
     # variable for local development compatibility.
     siliconflow_proxy_url: str | None = Field(
