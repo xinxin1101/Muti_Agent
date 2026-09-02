@@ -1,5 +1,9 @@
 import asyncio
+import hashlib
+import json
+import re
 from enum import StrEnum
+from typing import Any
 
 import openai
 
@@ -12,6 +16,7 @@ class ProviderErrorCode(StrEnum):
     AUTHENTICATION = "authentication"
     PERMISSION = "permission"
     BAD_REQUEST = "bad_request"
+    INVALID_REQUEST = "invalid_request"
     CONNECTION = "connection"
     UNAVAILABLE = "unavailable"
     TOKEN_BUDGET_EXHAUSTED = "token_budget_exhausted"
@@ -50,6 +55,11 @@ class AgentProviderError(RuntimeError):
             failure_type = FailureType.TOKEN_BUDGET_EXHAUSTED
         elif self.code is ProviderErrorCode.WORK_PACKAGE_BUDGET_ALLOCATION_BLOCKED:
             failure_type = FailureType.WORK_PACKAGE_BUDGET_ALLOCATION_BLOCKED
+        elif self.code in {
+            ProviderErrorCode.BAD_REQUEST,
+            ProviderErrorCode.INVALID_REQUEST,
+        }:
+            failure_type = FailureType.PROVIDER_REQUEST_REJECTED
         else:
             failure_type = FailureType.TOOL_FAILURE
 
@@ -70,10 +80,86 @@ class AgentProviderError(RuntimeError):
         )
 
 
-def normalize_provider_error(exc: Exception, *, provider: str) -> AgentProviderError:
-    """Map SDK/network failures into stable DevFlow provider error semantics."""
+_SENSITIVE_ASSIGNMENT_RE = re.compile(
+    r"(?i)\\b(api[_-]?key|authorization|bearer|token|secret|password)\\b\\s*[:=]\\s*[^,;\\s]+"
+)
+_PROVIDER_ERROR_KEYS = ("code", "type", "param", "message")
+
+
+def _sanitize_provider_text(value: object, *, limit: int = 500) -> str:
+    text = " ".join(str(value).split())
+    text = _SENSITIVE_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}=<redacted>", text)
+    text = re.sub(r"(?i)\\bsk-[A-Za-z0-9_-]{8,}\\b", "sk-<redacted>", text)
+    text = re.sub(
+        r'(["\\\'])([^"\\\']{121,})\\1',
+        lambda match: f"{match.group(1)}<redacted-long-value>{match.group(1)}",
+        text,
+    )
+    if len(text) > limit:
+        return text[:limit] + "…"
+    return text
+
+
+def _provider_error_payload(exc: Exception) -> tuple[dict[str, str], str | None]:
+    body = getattr(exc, "body", None)
+    body_hash: str | None = None
+    if body is not None:
+        try:
+            serialized = json.dumps(body, ensure_ascii=False, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            serialized = str(body)
+        body_hash = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+    candidate: Any = body
+    if isinstance(candidate, dict) and isinstance(candidate.get("error"), dict):
+        candidate = candidate["error"]
+
+    fields: dict[str, str] = {}
+    if isinstance(candidate, dict):
+        for key in _PROVIDER_ERROR_KEYS:
+            value = candidate.get(key)
+            if value is not None:
+                fields[key] = _sanitize_provider_text(value)
+
+    request_id = getattr(exc, "request_id", None)
+    if not request_id:
+        response = getattr(exc, "response", None)
+        headers = getattr(response, "headers", None)
+        if headers is not None:
+            request_id = headers.get("x-request-id") or headers.get("x-requestid")
+    if request_id:
+        fields["request_id"] = _sanitize_provider_text(request_id, limit=200)
+    return fields, body_hash
+
+
+def _provider_error_evidence(
+    exc: Exception,
+    *,
+    request_evidence: list[str] | None,
+) -> list[str]:
+    evidence = list(request_evidence or ())
+    fields, body_hash = _provider_error_payload(exc)
+    for key in _PROVIDER_ERROR_KEYS:
+        value = fields.get(key)
+        if value:
+            evidence.append(f"provider_error_{key}={value}")
+    if fields.get("request_id"):
+        evidence.append(f"provider_request_id={fields['request_id']}")
+    if body_hash is not None:
+        evidence.append(f"provider_error_body_sha256={body_hash}")
+    return evidence
+
+
+def normalize_provider_error(
+    exc: Exception,
+    *,
+    provider: str,
+    request_evidence: list[str] | None = None,
+) -> AgentProviderError:
+    """Map SDK/network failures into stable, sanitized DevFlow provider error semantics."""
 
     status_code = getattr(exc, "status_code", None)
+    evidence = _provider_error_evidence(exc, request_evidence=request_evidence)
 
     if isinstance(exc, (openai.APITimeoutError, TimeoutError, asyncio.TimeoutError)):
         return AgentProviderError(
@@ -82,6 +168,7 @@ def normalize_provider_error(exc: Exception, *, provider: str) -> AgentProviderE
             message="Model request timed out.",
             retryable=True,
             status_code=status_code,
+            evidence=evidence,
         )
 
     if isinstance(exc, openai.RateLimitError) or status_code == 429:
@@ -91,6 +178,7 @@ def normalize_provider_error(exc: Exception, *, provider: str) -> AgentProviderE
             message="Provider rate limit was reached.",
             retryable=True,
             status_code=429,
+            evidence=evidence,
         )
 
     if isinstance(exc, openai.AuthenticationError) or status_code == 401:
@@ -100,6 +188,7 @@ def normalize_provider_error(exc: Exception, *, provider: str) -> AgentProviderE
             message="Provider authentication failed.",
             retryable=False,
             status_code=401,
+            evidence=evidence,
         )
 
     if isinstance(exc, openai.PermissionDeniedError) or status_code == 403:
@@ -109,6 +198,7 @@ def normalize_provider_error(exc: Exception, *, provider: str) -> AgentProviderE
             message="Provider permission was denied.",
             retryable=False,
             status_code=403,
+            evidence=evidence,
         )
 
     if isinstance(exc, (openai.BadRequestError, openai.NotFoundError)) or status_code in {
@@ -122,6 +212,7 @@ def normalize_provider_error(exc: Exception, *, provider: str) -> AgentProviderE
             message="Provider rejected the model request.",
             retryable=False,
             status_code=status_code,
+            evidence=evidence,
         )
 
     if isinstance(exc, openai.APIConnectionError):
@@ -131,6 +222,7 @@ def normalize_provider_error(exc: Exception, *, provider: str) -> AgentProviderE
             message="Provider connection failed.",
             retryable=True,
             status_code=status_code,
+            evidence=evidence,
         )
 
     if isinstance(exc, openai.InternalServerError) or (
@@ -142,6 +234,7 @@ def normalize_provider_error(exc: Exception, *, provider: str) -> AgentProviderE
             message="Provider service is temporarily unavailable.",
             retryable=True,
             status_code=status_code,
+            evidence=evidence,
         )
 
     return AgentProviderError(
@@ -150,4 +243,5 @@ def normalize_provider_error(exc: Exception, *, provider: str) -> AgentProviderE
         message="Unexpected provider failure.",
         retryable=False,
         status_code=status_code,
+        evidence=evidence,
     )
