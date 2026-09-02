@@ -457,3 +457,189 @@ def test_runtime_v3_stops_repeated_observation_after_mutation_gate(tmp_path: Pat
         "MUTATION REQUIRED" in message.content
         for message in driver.requests[3].messages
     )
+
+class _ProgressiveGameVerifier:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def verify(self, task, *, workspace):
+        self.calls += 1
+        source = (workspace.root / "src" / "gomoku_engine.py").read_text(encoding="utf-8")
+        command = task.verification_commands[0]
+        if "class GameLogic" not in source:
+            return models.VerificationResult(
+                passed=False,
+                checks=[
+                    models.CheckResult(
+                        check_type=models.CheckType.CUSTOM,
+                        name="progressive_game_contract",
+                        command=command,
+                        passed=False,
+                        exit_code=1,
+                        stderr=(
+                            "ImportError: cannot import name 'GameLogic' "
+                            "from 'src.gomoku_engine'"
+                        ),
+                        failure_type=models.FailureType.TEST_FAILURE,
+                    )
+                ],
+            )
+        if "def is_valid_move" not in source:
+            return models.VerificationResult(
+                passed=False,
+                checks=[
+                    models.CheckResult(
+                        check_type=models.CheckType.CUSTOM,
+                        name="progressive_game_contract",
+                        command=command,
+                        passed=False,
+                        exit_code=1,
+                        stderr=(
+                            "AttributeError: 'GameLogic' object has no attribute "
+                            "'is_valid_move'"
+                        ),
+                        failure_type=models.FailureType.TEST_FAILURE,
+                    )
+                ],
+            )
+        return models.VerificationResult(
+            passed=True,
+            checks=[
+                models.CheckResult(
+                    check_type=models.CheckType.CUSTOM,
+                    name="progressive_game_contract",
+                    command=command,
+                    passed=True,
+                    exit_code=0,
+                )
+            ],
+        )
+
+
+class _PassingReviewer:
+    async def review(self, task, verification, *, workspace, context_packet=None, trace=None):
+        del task, verification, workspace, context_packet, trace
+        return models.ReviewDecision(
+            decision=models.ReviewOutcome.PASS,
+            summary="Progressive runtime repair satisfied the deterministic contract.",
+            issues=[],
+        )
+
+
+def test_runtime_v3_progressive_import_then_attribute_repair_e2e(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "progressive-repo"
+    (root / "src").mkdir(parents=True)
+    target = root / "src" / "gomoku_engine.py"
+    target.write_text("BOARD_SIZE = 15\n", encoding="utf-8")
+    _git(root, "init")
+    _git(root, "config", "user.email", "devflow@example.com")
+    _git(root, "config", "user.name", "DevFlow Tests")
+    _git(root, "add", ".")
+    _git(root, "commit", "-m", "baseline")
+    workspace = LocalGitWorkspace(root)
+
+    task = models.TaskContract(
+        task_id="gomoku-progressive",
+        objective="Provide GameLogic with the is_valid_move interface.",
+        readable_files=["**"],
+        writable_files=["src/gomoku_engine.py"],
+        readonly_files=[],
+        acceptance_criteria=[
+            "src.gomoku_engine.GameLogic is importable",
+            "GameLogic().is_valid_move(7, 7) returns true",
+        ],
+        verification_commands=[
+            (
+                'python3 -c "from src.gomoku_engine import GameLogic; '
+                'g = GameLogic(); assert g.is_valid_move(7, 7)"'
+            )
+        ],
+        max_retries=1,
+    )
+
+    class_only = (
+        "BOARD_SIZE = 15\n\n"
+        "class GameLogic:\n"
+        "    def __init__(self):\n"
+        "        self.board_size = BOARD_SIZE\n"
+    )
+    complete = (
+        class_only
+        + "\n"
+        + "    def is_valid_move(self, row, col):\n"
+        + "        return 0 <= row < self.board_size and 0 <= col < self.board_size\n"
+    )
+    repair_driver = FakeDriver(
+        [
+            _response(
+                tool_calls=[
+                    models.ToolCall(
+                        id="create-class",
+                        name="apply_patch",
+                        arguments=json.dumps(
+                            {
+                                "path": "src/gomoku_engine.py",
+                                "old_text": "BOARD_SIZE = 15\n",
+                                "new_text": class_only,
+                            }
+                        ),
+                    )
+                ]
+            ),
+            _response(content="已修改文件: src/gomoku_engine.py"),
+            _response(
+                tool_calls=[
+                    models.ToolCall(
+                        id="add-method",
+                        name="apply_patch",
+                        arguments=json.dumps(
+                            {
+                                "path": "src/gomoku_engine.py",
+                                "old_text": class_only,
+                                "new_text": complete,
+                            }
+                        ),
+                    )
+                ]
+            ),
+            _response(content="已修改文件: src/gomoku_engine.py"),
+        ]
+    )
+    repair = agents.RepairAgent(
+        driver=repair_driver,
+        model="test/repair",
+        runtime_v3_enabled=True,
+        runtime_mutation_gate_enabled=True,
+        runtime_import_prefetch_enabled=True,
+    )
+    verifier = _ProgressiveGameVerifier()
+    orchestrator = SingleTaskOrchestrator(
+        developer=agents.DeveloperAgent(driver=FakeDriver([]), model="test/developer"),
+        verifier=verifier,  # type: ignore[arg-type]
+        reviewer=_PassingReviewer(),  # type: ignore[arg-type]
+        repair=repair,
+        developer_model="test/developer",
+        reviewer_model="test/reviewer",
+        repair_model="test/repair",
+        minimum_repair_attempts=1,
+    )
+
+    result = asyncio.run(
+        orchestrator.run(
+            task,
+            workspace=workspace,
+            resume_verification_first=True,
+        )
+    )
+
+    assert result.status is models.TaskRunState.SUCCEEDED
+    assert verifier.calls == 3
+    assert result.repair_attempts == 2
+    assert [item.progress.failure_stage_before for item in result.repairs] == [
+        "IMPORT_SYMBOL_MISSING|src/gomoku_engine.py|GameLogic|none",
+        "PYTHON_ATTRIBUTE_MISSING|src/gomoku_engine.py|GameLogic|is_valid_move",
+    ]
+    module = _load_gomoku_module(target)
+    assert module.GameLogic().is_valid_move(7, 7) is True
