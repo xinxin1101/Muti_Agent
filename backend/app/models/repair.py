@@ -82,6 +82,8 @@ class RepairProgressEvidence(BaseModel):
     patch_hash_after: str = Field(pattern=r"^[0-9a-f]{64}$")
     failure_signature_before: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     failure_signature_after: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    failure_stage_before: str | None = Field(default=None, max_length=1_000)
+    failure_stage_after: str | None = Field(default=None, max_length=1_000)
     validation_executed: bool = False
     validation_commands: list[str] = Field(default_factory=list)
 
