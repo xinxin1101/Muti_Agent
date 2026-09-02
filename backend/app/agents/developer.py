@@ -50,8 +50,9 @@ class DeveloperAgent:
         enable_thinking: bool = False,
         context_compaction_enabled: bool = True,
         role_context_projection_enabled: bool = True,
-        max_single_tool_result_tokens: int = 1_200,
-        max_tool_results_per_turn_tokens: int = 2_400,
+        max_retained_tool_groups: int = 1,
+        max_single_tool_result_tokens: int = 800,
+        max_tool_results_per_turn_tokens: int = 1_600,
         clock: Callable[[], float] = monotonic,
     ) -> None:
         normalized_model = model.strip()
@@ -87,6 +88,7 @@ class DeveloperAgent:
         self._enable_thinking = enable_thinking
         self._context_compaction_enabled = context_compaction_enabled
         self._role_context_projection_enabled = role_context_projection_enabled
+        self._max_retained_tool_groups = max_retained_tool_groups
         self._max_single_tool_result_tokens = max_single_tool_result_tokens
         self._max_tool_results_per_turn_tokens = max_tool_results_per_turn_tokens
         self._clock = clock
@@ -104,6 +106,7 @@ class DeveloperAgent:
         retention = AgentContextRetention(
             task_id=task.task_id,
             base_messages=self._initial_messages(task, context_packet=context_packet),
+            max_retained_tool_groups=self._max_retained_tool_groups,
             max_single_tool_result_tokens=self._max_single_tool_result_tokens,
             max_tool_results_per_turn_tokens=self._max_tool_results_per_turn_tokens,
         )
@@ -181,8 +184,14 @@ class DeveloperAgent:
                 max_output_tokens=effective_max_output_tokens,
                 enable_thinking=self._enable_thinking,
                 budget_progress=successful_tool_progress or bool(workspace.changed_files()),
+                # When role projection is enabled the provider request contains the smaller
+                # DeveloperContextView, not the full ContextPacket. BudgetedAgentDriver already
+                # estimates the actual messages + tool schemas, so the full packet must not act
+                # as an artificial reservation floor.
                 context_estimated_tokens=(
-                    context_packet.usage.billable_prompt_tokens
+                    0
+                    if self._role_context_projection_enabled
+                    else context_packet.usage.billable_prompt_tokens
                     if context_packet is not None
                     else 0
                 ),
