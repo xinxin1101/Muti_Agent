@@ -15,7 +15,11 @@ _ALLOWED_TRANSITIONS: dict[TaskRunState, set[TaskRunState]] = {
         TaskRunState.REPAIRING,
         TaskRunState.FAILED,
     },
-    TaskRunState.REPAIRING: {TaskRunState.VERIFYING, TaskRunState.FAILED},
+    TaskRunState.REPAIRING: {
+        TaskRunState.REPAIRING,
+        TaskRunState.VERIFYING,
+        TaskRunState.FAILED,
+    },
     TaskRunState.SUCCEEDED: set(),
     TaskRunState.FAILED: set(),
 }
