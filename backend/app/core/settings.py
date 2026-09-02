@@ -58,6 +58,12 @@ class Settings(BaseSettings):
     # independently for a safe rollback without changing execution authority.
     context_compaction_enabled: bool = True
     role_context_projection_enabled: bool = True
+    # Runtime V3 is intentionally enabled on the experimental xin_01 branch. Each layer
+    # remains independently switchable so production/main can adopt it incrementally.
+    agent_runtime_v3_enabled: bool = True
+    repair_runtime_v3_enabled: bool = True
+    runtime_mutation_gate_enabled: bool = True
+    runtime_import_prefetch_enabled: bool = True
     # Legacy/general tool-result bounds remain for compatibility. Developer now has a
     # narrower role-specific budget because its compact working state can recover older facts.
     agent_max_single_tool_result_tokens: int = Field(default=1_200, ge=128, le=32_768)
