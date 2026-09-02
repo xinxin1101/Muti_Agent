@@ -179,7 +179,11 @@ async def _production_agents_emit_metadata_only_generation_spans(tmp_path: Path)
                 _response(
                     model="test/repair",
                     content="repair secret completion",
-                )
+                ),
+                _response(
+                    model="test/repair",
+                    content="BLOCKED: trace-only synthetic blocker",
+                ),
             ]
         ),
         model="test/repair",
@@ -210,6 +214,7 @@ async def _production_agents_emit_metadata_only_generation_spans(tmp_path: Path)
         AgentRole.DEVELOPER,
         AgentRole.REVIEWER,
         AgentRole.REVIEWER,
+        AgentRole.REPAIR,
         AgentRole.REPAIR,
     ]
     assert len(tools) == 1
