@@ -423,11 +423,14 @@ class SingleTaskOrchestrator:
                 "attempt": attempt,
                 "workspace": workspace,
             }
-            # Production RepairAgent accepts the fresh handoff. Keep duck-typed test/custom
-            # repair implementations compatible while the interface rolls out.
-            if "handoff" in inspect.signature(self._repair.repair).parameters:
+            # Production RepairAgent consumes the fresh handoff. Keep duck-typed legacy/custom
+            # repair implementations compatible without rebuilding or replaying source context.
+            repair_parameters = inspect.signature(self._repair.repair).parameters
+            if "handoff" in repair_parameters:
                 repair_kwargs["handoff"] = repair_handoff
-            if trace is not None and "trace" in inspect.signature(self._repair.repair).parameters:
+            elif "context_packet" in repair_parameters:
+                repair_kwargs["context_packet"] = None
+            if trace is not None and "trace" in repair_parameters:
                 repair_kwargs["trace"] = trace
             repair_result = await self._repair.repair(
                 repair_task,
