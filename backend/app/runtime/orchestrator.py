@@ -587,13 +587,6 @@ class SingleTaskOrchestrator:
     def _repair_failure_hint(
         failures: Sequence[FailureReport],
     ) -> tuple[RepairFailureKind | None, str | None, str | None]:
-        text = "\n".join(
-            [
-                failure.message,
-                *failure.evidence,
-            ]
-            for failure in failures
-        )
         flattened = "\n".join(
             item
             for group in (
