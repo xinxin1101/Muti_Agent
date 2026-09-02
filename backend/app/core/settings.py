@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     # independently for a safe rollback without changing execution authority.
     context_compaction_enabled: bool = True
     role_context_projection_enabled: bool = True
+    # Tool result retention is a context-window control, not a financial budget.
+    agent_max_single_tool_result_tokens: int = Field(default=1_200, ge=128, le=32_768)
+    agent_max_tool_results_per_turn_tokens: int = Field(default=2_400, ge=128, le=65_536)
     adaptive_package_budget_enabled: bool = True
     adaptive_work_package_routing_enabled: bool = True
     # Lifecycle/recovery mutations can be enabled progressively without hiding their
@@ -265,6 +268,10 @@ class Settings(BaseSettings):
             raise ValueError("developer model turn limit must not exceed developer duration")
         if self.repair_max_model_turn_seconds > self.repair_max_duration_seconds:
             raise ValueError("repair model turn limit must not exceed repair duration")
+        if self.agent_max_tool_results_per_turn_tokens < self.agent_max_single_tool_result_tokens:
+            raise ValueError(
+                "per-turn tool-result context budget must cover one complete tool result"
+            )
         return self
 
     @property

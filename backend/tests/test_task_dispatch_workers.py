@@ -541,8 +541,11 @@ def _time_limited_result(task_id: str) -> SingleTaskRunResult:
 
 
 class _ContinuationBackend:
-    def __init__(self, task_id: str) -> None:
+    def __init__(
+        self, task_id: str, *, checkpoint_reason: CheckpointReason = CheckpointReason.TIME_LIMIT
+    ) -> None:
         self.task_id = task_id
+        self.checkpoint_reason = checkpoint_reason
         self.bases: list[str] = []
         self.contexts = []
 
@@ -562,7 +565,7 @@ class _ContinuationBackend:
                     base_commit=base_commit,
                     commit_sha=checkpoint_commit,
                     changed_files=("module.py",),
-                    reason=CheckpointReason.TIME_LIMIT,
+                    reason=self.checkpoint_reason,
                     summary="partial change saved",
                     context_state=ContextContinuationState(
                         summary_version="repository_summary_v1",
@@ -702,3 +705,30 @@ def test_worker_automatically_continues_time_limited_checkpoint_from_its_commit(
     assert evidence.continuation.slices_started == 2
     assert any("checkpoint:slice:0001" in item[1] for item in store.appended)
     assert store.finalized and store.finalized[0][0].status is TaskRunState.SUCCEEDED
+
+
+@pytest.mark.parametrize(
+    "checkpoint_reason",
+    [CheckpointReason.ITERATION_LIMIT, CheckpointReason.TOOL_CALL_LIMIT],
+)
+def test_worker_continues_any_bounded_checkpoint_with_real_changes(
+    checkpoint_reason: CheckpointReason,
+) -> None:
+    task = _task("QUEUE-BOUNDED-CONTINUE")
+    run_id = uuid4()
+    snapshot = SimpleNamespace(
+        status=PersistedRunStatus.RUNNING,
+        run_id=run_id,
+        project_id=uuid4(),
+        base_commit="a" * 40,
+        tasks=(SimpleNamespace(task=task),),
+    )
+    store = _RecordingStore(snapshot)
+    backend = _ContinuationBackend(task.task_id, checkpoint_reason=checkpoint_reason)
+    worker = QueuedTaskWorker(store=store, backend=backend, continuation_max_slices=3)
+    envelope = TaskDispatchEnvelope(dispatch_id=uuid4(), run_id=run_id, task_id=task.task_id)
+
+    evidence = asyncio.run(worker.execute(envelope, run_token=uuid4()))
+
+    assert evidence.status is WorkerExecutionStatus.SUCCEEDED
+    assert backend.bases == ["a" * 40, "b" * 40]

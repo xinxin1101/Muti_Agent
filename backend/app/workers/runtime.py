@@ -102,6 +102,8 @@ def build_single_task_runner(
         enable_thinking=settings.developer_enable_thinking,
         context_compaction_enabled=settings.context_compaction_enabled,
         role_context_projection_enabled=settings.role_context_projection_enabled,
+        max_single_tool_result_tokens=settings.agent_max_single_tool_result_tokens,
+        max_tool_results_per_turn_tokens=settings.agent_max_tool_results_per_turn_tokens,
     )
     reviewer = ReviewerAgent(
         driver=driver,
@@ -120,6 +122,8 @@ def build_single_task_runner(
         enable_thinking=settings.repair_enable_thinking,
         context_compaction_enabled=settings.context_compaction_enabled,
         role_context_projection_enabled=settings.role_context_projection_enabled,
+        max_single_tool_result_tokens=settings.agent_max_single_tool_result_tokens,
+        max_tool_results_per_turn_tokens=settings.agent_max_tool_results_per_turn_tokens,
     )
     return SingleTaskOrchestrator(
         developer=developer,
@@ -330,6 +334,8 @@ async def execute_task_from_settings(
                 enable_thinking=settings.developer_enable_thinking,
                 context_compaction_enabled=settings.context_compaction_enabled,
                 role_context_projection_enabled=settings.role_context_projection_enabled,
+                max_single_tool_result_tokens=settings.agent_max_single_tool_result_tokens,
+                max_tool_results_per_turn_tokens=settings.agent_max_tool_results_per_turn_tokens,
             ),
             verifier=build_verifier(settings),
             repair_root=settings.workspace_root / "integration-repairs",

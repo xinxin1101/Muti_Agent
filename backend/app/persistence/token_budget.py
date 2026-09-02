@@ -31,6 +31,60 @@ class TokenBudgetReservationError(RuntimeError):
     """Raised before a provider call when a Run cannot reserve enough tokens."""
 
 
+@dataclass(frozen=True)
+class RunBudgetExhaustionFacts:
+    """Reservation-aware facts for one refused Run-level model call."""
+
+    total_budget_tokens: int
+    used_total_tokens: int
+    reserved_tokens: int
+    next_prompt_tokens: int
+    completion_limit_tokens: int
+
+    @property
+    def remaining_tokens(self) -> int:
+        return max(0, self.total_budget_tokens - self.used_total_tokens - self.reserved_tokens)
+
+    @property
+    def required_tokens(self) -> int:
+        return self.next_prompt_tokens + self.completion_limit_tokens
+
+    @property
+    def shortfall_tokens(self) -> int:
+        return max(0, self.required_tokens - self.remaining_tokens)
+
+    def evidence(self) -> list[str]:
+        return [
+            "budget_source=runtime-budget",
+            "provider_called=false",
+            f"run_total_budget_tokens={self.total_budget_tokens}",
+            f"run_used_total_tokens={self.used_total_tokens}",
+            f"run_reserved_tokens={self.reserved_tokens}",
+            f"run_remaining_tokens={self.remaining_tokens}",
+            f"next_prompt_tokens={self.next_prompt_tokens}",
+            f"completion_limit_tokens={self.completion_limit_tokens}",
+            f"next_required_tokens={self.required_tokens}",
+            f"budget_shortfall_tokens={self.shortfall_tokens}",
+        ]
+
+    def message(self) -> str:
+        return (
+            "Run 总模型预算不足，未向模型服务发起请求。"
+            f"总预算={self.total_budget_tokens}，已使用={self.used_total_tokens}，"
+            f"当前预留={self.reserved_tokens}，剩余={self.remaining_tokens}，"
+            f"下一轮 Prompt 预计={self.next_prompt_tokens}，Completion 上限={self.completion_limit_tokens}，"
+            f"下一轮需要={self.required_tokens}，缺口={self.shortfall_tokens}。"
+        )
+
+
+class RunBudgetExhaustedError(TokenBudgetReservationError):
+    """A hard Run budget refusal with durable, user-safe diagnostic facts."""
+
+    def __init__(self, facts: RunBudgetExhaustionFacts) -> None:
+        super().__init__(facts.message())
+        self.facts = facts
+
+
 class WorkPackageBudgetAllocationError(TokenBudgetReservationError):
     """A recoverable work-package allocation block rather than a provider failure."""
 
@@ -144,11 +198,10 @@ class PostgresRunTokenBudgetStore:
         dag: TaskDAG,
         developer_max_output_tokens: int = 1_400,
     ) -> None:
-        """Allocate bounded work-package pools before the first task is dispatched.
+        """Persist non-authoritative scheduler shares for work-package observability.
 
-        Reservations are still made per provider call.  These pools prevent the first active
-        task from consuming the amounts explicitly reserved for independent downstream work.
-        Legacy DAGs have no work-package metadata and retain the previous Run-only behavior.
+        Per-call Run reservation is the only admission control. Package and stage figures
+        remain available for legacy dashboards and fair scheduling only.
         """
         nodes = tuple(node for node in dag.tasks if node.budget_allocation is not None)
         if not nodes:
@@ -175,27 +228,19 @@ class PostgresRunTokenBudgetStore:
                     ),
                     {"run_id": run_id, "total": total},
                 )
-            # Planning has already been settled against the launch-scoped PlanningTokenBudget
-            # before a Run exists.  Keeping a second planning pool here strands usable Run
-            # capacity after the DAG is accepted, precisely when the critical work package may
-            # need another bounded turn.  Its Run share therefore enters FLEX immediately.
+            # Planning is settled against its launch-scoped budget before a Run exists.
+            # No permanent stage/FLEX allocation can reduce capacity available to a Run call.
             planning = 0
-            # Review/publication is a terminal, bounded activity.  It keeps only a small floor;
-            # all surplus belongs to the execution critical path until it is actually needed.
-            review_publication = min(1_000, max(500, total // 30))
+            review_publication = 0
             raw = [
                 self._initial_package_allocation(node, developer_max_output_tokens)
                 for node in nodes
             ]
-            developer_total = 0
-            repair_total = 0
             for node, developer, repair in raw:
                 if node.execution_mode is WorkflowExecutionMode.WORKFLOW:
                     developer = 0
                     repair = 0
                 package_total = developer + repair
-                developer_total += developer
-                repair_total += repair
                 await session.execute(
                     text(
                         "INSERT INTO run_task_token_budgets "
@@ -213,22 +258,16 @@ class PostgresRunTokenBudgetStore:
                         "total": package_total,
                         "developer": developer,
                         "repair": repair,
-                        # One normal Developer turn remains protected. The second
-                        # startup turn is deferred capacity: while a direct dependant
-                        # is blocked by this producer it may be loaned safely and is
-                        # settled before the dependant can be dispatched.
+                        # This is a displayed scheduler share only, not protected capacity.
                         "startup": developer // 2,
                     },
                 )
             stage_budgets = {
                 TokenBudgetStage.PLANNING: planning,
-                TokenBudgetStage.DEVELOPMENT: developer_total,
-                TokenBudgetStage.VERIFICATION_REPAIR: repair_total,
+                TokenBudgetStage.DEVELOPMENT: total,
+                TokenBudgetStage.VERIFICATION_REPAIR: 0,
                 TokenBudgetStage.REVIEW_PUBLICATION: review_publication,
-                TokenBudgetStage.FLEX: max(
-                    0,
-                    total - planning - developer_total - repair_total - review_publication,
-                ),
+                TokenBudgetStage.FLEX: 0,
             }
             for stage, amount in stage_budgets.items():
                 await session.execute(
@@ -242,29 +281,15 @@ class PostgresRunTokenBudgetStore:
     def validate_hierarchy_plan(
         self, *, dag: TaskDAG, developer_max_output_tokens: int = 1_400
     ) -> None:
+        """Validate work-package shape without treating suggested shares as a hard budget."""
+
         nodes = tuple(node for node in dag.tasks if node.budget_allocation is not None)
         if not nodes:
             return
-        total = self._default_total_budget_tokens
-        # The planner has its own launch budget.  Run budget validation must match the
-        # post-planning hierarchy created above, otherwise it rejects plans based on capacity
-        # that will in fact be available to FLEX.
-        planning = 0
-        review_publication = min(1_000, max(500, total // 30))
-        required_packages = sum(
-            developer + repair
-            for _, developer, repair in (
-                self._initial_package_allocation(node, developer_max_output_tokens)
-                for node in nodes
-            )
-        )
-        available_for_packages = max(0, total - planning - review_publication)
-        if required_packages > available_for_packages:
-            raise TokenBudgetPlanError(
-                "工作包预算计划不可执行：最低开发轮次需要 "
-                f"{required_packages} Token，但在规划与审查预留后仅有 "
-                f"{available_for_packages} Token。请拆分任务或提高本次运行预算。"
-            )
+        for node in nodes:
+            # Keep the allocator's deterministic shape checks while deliberately avoiding a
+            # total comparison. Only a concrete Run-level reserve can reject provider work.
+            self._initial_package_allocation(node, developer_max_output_tokens)
 
     async def reserve(
         self,
@@ -307,19 +332,23 @@ class PostgresRunTokenBudgetStore:
                     )
                 ).one()
                 total = int(row.total_budget_tokens)
-                projected = int(row.used_total_tokens) + int(row.reserved_tokens) + required
+                used_total = int(row.used_total_tokens)
+                reserved_tokens = int(row.reserved_tokens)
+                projected = used_total + reserved_tokens + required
                 status = self._status_for(projected, total)
                 if projected > total:
                     await self._update_status(session, run_id, RunTokenBudgetStatus.EXHAUSTED)
-                    raise TokenBudgetReservationError("本次运行模型预算已用尽，未向模型服务发起请求。")
-                if status is RunTokenBudgetStatus.CRITICAL and role not in {
-                    AgentRole.DEVELOPER,
-                    AgentRole.REPAIR,
-                }:
-                    await self._update_status(session, run_id, status)
-                    raise TokenBudgetReservationError(
-                        "本次运行模型预算已进入临界区，仅允许开发或修复调用。"
+                    raise RunBudgetExhaustedError(
+                        RunBudgetExhaustionFacts(
+                            total_budget_tokens=total,
+                            used_total_tokens=used_total,
+                            reserved_tokens=reserved_tokens,
+                            next_prompt_tokens=estimated_input_tokens,
+                            completion_limit_tokens=max_output_tokens,
+                        )
                     )
+                # WARNING/CRITICAL are observable budget states, not secondary admission
+                # controls. A request is rejected only when it would exceed the Run total.
                 await self._reserve_hierarchy(
                     session=session,
                     run_id=run_id,
@@ -361,6 +390,12 @@ class PostgresRunTokenBudgetStore:
             if exc.decision is not None:
                 await self._persist_budget_decision_independently(exc.decision)
             raise
+        except RunBudgetExhaustedError:
+            # The failed reservation transaction must roll back. Persist only the
+            # observable hard-gate state in a separate transaction; no reservation
+            # is retained for a provider call that never happened.
+            await self._persist_run_exhausted_status(run_id)
+            raise
         return TokenBudgetReservation(
             reservation_id=reservation_id,
             run_id=run_id,
@@ -368,6 +403,18 @@ class PostgresRunTokenBudgetStore:
             reserved_input_tokens=estimated_input_tokens,
             reserved_output_tokens=max_output_tokens,
         )
+
+    async def _persist_run_exhausted_status(self, run_id: UUID) -> None:
+        """Record a refused Run-level call without retaining a reservation."""
+
+        async with self._session_factory.begin() as session:
+            await session.execute(
+                text(
+                    "UPDATE run_token_budgets SET status = :status, updated_at = now() "
+                    "WHERE run_id = :run_id"
+                ),
+                {"run_id": run_id, "status": RunTokenBudgetStatus.EXHAUSTED.value},
+            )
 
     async def cancel(self, reservation: TokenBudgetReservation) -> None:
         await self._finish_reservation(reservation, usage=None)
@@ -572,7 +619,24 @@ class PostgresRunTokenBudgetStore:
             )
 
     async def reclaim_unused_task_budget(self, *, run_id: UUID, task_id: str) -> None:
-        """Return a successfully completed package's unused Agent pools to FLEX."""
+        """Mark legacy work-package allocation as completed without moving funds.
+
+        New runs do not permanently transfer package allocation into FLEX.  Unused
+        per-call reservations are released by ``settle``; moving historical package
+        numbers here would recreate the old cumulative-allocation model.
+        """
+
+        async with self._session_factory.begin() as session:
+            await session.execute(
+                text(
+                    "UPDATE run_task_token_budgets SET status = 'RECLAIMED', "
+                    "last_budget_decision = 'SOFT_SHARE_RELEASED', "
+                    "last_budget_reason = '工作包额度仅为兼容性 soft share，未发生 FLEX 划拨。' "
+                    "WHERE run_id = :run_id AND task_id = :task_id"
+                ),
+                {"run_id": run_id, "task_id": task_id},
+            )
+        return
 
         async with self._session_factory.begin() as session:
             row = (
@@ -1126,13 +1190,29 @@ class PostgresRunTokenBudgetStore:
                 {"run_id": run_id, "stage": stage.value},
             )
         ).one_or_none()
-        if role not in {AgentRole.DEVELOPER, AgentRole.REPAIR}:
-            if stage_row is not None and int(stage_row.used_tokens) + int(
-                stage_row.reserved_tokens
-            ) + required > int(stage_row.total_budget_tokens):
-                raise TokenBudgetReservationError(
-                    f"{stage.value} 阶段 Token 子预算已用尽，未向模型服务发起请求。"
+        # Compatibility note: stage and work-package allocations are retained for
+        # historical dashboards and fair-share scheduling, but they are no longer
+        # financial admission controls. The Run reservation in ``reserve`` above is
+        # the only hard Token limit for new executions.
+        if role in {AgentRole.DEVELOPER, AgentRole.REPAIR}:
+            await self._record_soft_share_reservation(
+                session=session,
+                run_id=run_id,
+                task_id=task_id,
+                role=role,
+                required=required,
+                liveness_credit=liveness_credit,
+            )
+            if stage_row is not None:
+                await session.execute(
+                    text(
+                        "UPDATE run_stage_token_budgets SET reserved_tokens = reserved_tokens + :required "
+                        "WHERE run_id = :run_id AND stage = :stage"
+                    ),
+                    {"run_id": run_id, "stage": stage.value, "required": required},
                 )
+            return
+        if role not in {AgentRole.DEVELOPER, AgentRole.REPAIR}:
             if stage_row is not None:
                 await session.execute(
                     text(
@@ -1495,6 +1575,71 @@ class PostgresRunTokenBudgetStore:
         ceiling = {"LOW": 6_000, "MEDIUM": 12_000, "HIGH": 18_000}.get(complexity, 12_000)
         return max(current_budget, ceiling)
 
+    async def _record_soft_share_reservation(
+        self,
+        *,
+        session: AsyncSession,
+        run_id: UUID,
+        task_id: str,
+        role: AgentRole,
+        required: int,
+        liveness_credit: LivenessCredit,
+    ) -> None:
+        """Record legacy package figures as soft-share telemetry only.
+
+        This intentionally contains no denial path.  The enclosing Run lock has
+        already enforced the only financial invariant: used + reserved + required
+        must remain within the Run total.  Existing package columns remain useful
+        for fairness reporting and old Run rendering without deciding whether an
+        active complex task may continue.
+        """
+
+        prefix = "developer" if role is AgentRole.DEVELOPER else "repair"
+        row = (
+            await session.execute(
+                text(
+                    f"SELECT {prefix}_budget_tokens, {prefix}_used_tokens, "
+                    f"{prefix}_reserved_tokens FROM run_task_token_budgets "
+                    "WHERE run_id = :run_id AND task_id = :task_id FOR UPDATE"
+                ),
+                {"run_id": run_id, "task_id": task_id},
+            )
+        ).one_or_none()
+        if row is None:
+            return
+        available = max(
+            0,
+            int(getattr(row, f"{prefix}_budget_tokens"))
+            - int(getattr(row, f"{prefix}_used_tokens"))
+            - int(getattr(row, f"{prefix}_reserved_tokens")),
+        )
+        soft_share_exceeded = required > available
+        await session.execute(
+            text(
+                f"UPDATE run_task_token_budgets SET {prefix}_reserved_tokens = "
+                f"{prefix}_reserved_tokens + :required, last_required_tokens = :required, "
+                "last_available_tokens = :available, last_borrowed_tokens = 0, "
+                "last_budget_decision = :decision, last_budget_reason = :reason, "
+                "last_recovery_action = NULL, last_liveness_credit = :liveness_credit, "
+                "tool_recovery_credit_used = tool_recovery_credit_used OR :tool_recovery_credit "
+                "WHERE run_id = :run_id AND task_id = :task_id"
+            ),
+            {
+                "run_id": run_id,
+                "task_id": task_id,
+                "required": required,
+                "available": available,
+                "decision": "SOFT_SHARE_EXCEEDED" if soft_share_exceeded else "RESERVED",
+                "reason": (
+                    "工作包 soft share 仅用于调度参考；本次调用由 Run 总预算批准。"
+                    if soft_share_exceeded
+                    else "工作包 soft share 充足；本次调用由 Run 总预算批准。"
+                ),
+                "liveness_credit": liveness_credit.value,
+                "tool_recovery_credit": liveness_credit is LivenessCredit.TOOL_RECOVERY,
+            },
+        )
+
     @staticmethod
     def _credit_decision_reason(
         *,
@@ -1533,12 +1678,9 @@ class PostgresRunTokenBudgetStore:
         budget: int,
         maximum_budget: int,
     ) -> str | None:
-        if not has_progress:
-            return "本轮前没有可验证的代码或工具进展。"
-        if borrow_count >= 3:
-            return "已达到该工作包的 3 次 FLEX 借款上限。"
-        if budget + needed > maximum_budget:
-            return f"借款后将超过该复杂度的 {maximum_budget} Token 上限。"
+        # Deprecated compatibility helper. New runtime admission is solely the
+        # Run-level reservation; callers may still display these facts as metrics.
+        del has_progress, borrow_count, needed, flex_available, budget, maximum_budget
         return None
 
     async def _persist_budget_decision(

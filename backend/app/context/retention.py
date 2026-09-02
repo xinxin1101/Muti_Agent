@@ -6,6 +6,7 @@ from hashlib import sha256
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.context.token_estimator import TokenEstimator
 from app.models.agent import AgentMessage, MessageRole
 from app.models.tools import ToolCall, ToolExecutionResult
 
@@ -93,21 +94,37 @@ class AgentContextRetention:
         task_id: str,
         base_messages: list[AgentMessage],
         max_retained_tool_groups: int = 2,
+        max_single_tool_result_tokens: int = 1_200,
+        max_tool_results_per_turn_tokens: int = 2_400,
     ) -> None:
         if not 1 <= max_retained_tool_groups <= 4:
             raise ValueError("max_retained_tool_groups must be between 1 and 4")
+        if max_single_tool_result_tokens < 128:
+            raise ValueError("max_single_tool_result_tokens must be at least 128")
+        if max_tool_results_per_turn_tokens < max_single_tool_result_tokens:
+            raise ValueError("per-turn tool-result budget must cover one tool result")
         self._base_messages = list(base_messages)
         self._max_retained_tool_groups = max_retained_tool_groups
         self._groups: list[ToolCallGroup] = []
         self._compacted_code_mutation_group_count = 0
+        self._compacted_tool_result_group_count = 0
+        self._tool_result_truncation_count = 0
+        self._max_single_tool_result_tokens = max_single_tool_result_tokens
+        self._max_tool_results_per_turn_tokens = max_tool_results_per_turn_tokens
+        self._token_estimator = TokenEstimator()
         self._state = _StateBuilder(task_id=task_id)
 
     @property
     def compacted_group_count(self) -> int:
         return (
             self._compacted_code_mutation_group_count
+            + self._compacted_tool_result_group_count
             + max(0, len(self._groups) - self._max_retained_tool_groups)
         )
+
+    @property
+    def tool_result_truncation_count(self) -> int:
+        return self._tool_result_truncation_count
 
     def add_group(
         self,
@@ -122,16 +139,32 @@ class AgentContextRetention:
             raise ValueError("tool group calls must match assistant tool calls")
         if tuple(result.tool_call_id for result in results) != tuple(call.id for call in calls):
             raise ValueError("tool group results must match calls in order")
-        messages = tuple(
-            AgentMessage(
-                role=MessageRole.TOOL,
-                content=result.model_dump_json(),
-                tool_call_id=result.tool_call_id,
+        remaining_tool_result_tokens = self._max_tool_results_per_turn_tokens
+        bounded_messages: list[AgentMessage] = []
+        for result in results:
+            message = self._bounded_tool_result_message(
+                result=result,
+                remaining_tokens=remaining_tool_result_tokens,
             )
-            for result in results
-        )
+            bounded_messages.append(message)
+            remaining_tool_result_tokens = max(
+                0,
+                remaining_tool_result_tokens
+                - self._token_estimator.billable_token_estimate(message.content),
+            )
+        messages = tuple(bounded_messages)
         for call, result in zip(calls, results, strict=True):
             self._observe(call, result)
+        # Keep provider tool-call ordering valid: if the structured envelopes alone would
+        # exceed the turn allowance, compact this entire completed group into WorkingState
+        # rather than keeping orphan or over-budget tool responses.
+        result_message_tokens = sum(
+            self._token_estimator.billable_token_estimate(message.content)
+            for message in messages
+        )
+        if result_message_tokens > self._max_tool_results_per_turn_tokens:
+            self._compacted_tool_result_group_count += 1
+            return True
         # A successful write can contain an entire source file in assistant tool-call arguments.
         # The repository and its content hash are now the code truth, so replaying that payload on
         # every later turn is both costly and unnecessary. Omit the whole completed tool group to
@@ -141,6 +174,60 @@ class AgentContextRetention:
             return True
         self._groups.append(ToolCallGroup(assistant=assistant, results=messages))
         return False
+
+    def _bounded_tool_result_message(
+        self, *, result: ToolExecutionResult, remaining_tokens: int
+    ) -> AgentMessage:
+        payload = result.model_dump(mode="json")
+        original = result.content
+        # Later results remain structurally valid but are represented by a bounded
+        # observation once this turn's result budget has been consumed.
+        payload["content"] = ""
+        envelope_tokens = self._token_estimator.billable_token_estimate(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        )
+        content_limit = min(
+            self._max_single_tool_result_tokens,
+            max(0, remaining_tokens - envelope_tokens),
+        )
+        if content_limit < 128:
+            payload["content"] = (
+                "[DevFlow omitted this tool result from the Agent context because the "
+                "per-turn result budget is exhausted; use a scoped read/search command.]"
+            )
+            self._tool_result_truncation_count += 1
+            return AgentMessage(
+                role=MessageRole.TOOL,
+                content=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                tool_call_id=result.tool_call_id,
+            )
+        if self._token_estimator.billable_token_estimate(original) > content_limit:
+            payload["content"] = self._bounded_preview(original, content_limit)
+            self._tool_result_truncation_count += 1
+        return AgentMessage(
+            role=MessageRole.TOOL,
+            content=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            tool_call_id=result.tool_call_id,
+        )
+
+    def _bounded_preview(self, content: str, limit: int) -> str:
+        """Keep a useful prefix without exceeding the provider-neutral content budget."""
+
+        suffix = (
+            "\n[DevFlow truncated this tool result for the Agent context; "
+            "use a scoped read/search command for more detail.]"
+        )
+        low, high = 0, len(content)
+        while low < high:
+            middle = (low + high + 1) // 2
+            candidate = content[:middle] + suffix
+            if self._token_estimator.billable_token_estimate(candidate) <= limit:
+                low = middle
+            else:
+                high = middle - 1
+        if low == 0:
+            return suffix
+        return content[:low] + suffix
 
     def messages(self) -> list[AgentMessage]:
         retained = self._groups[-self._max_retained_tool_groups :]

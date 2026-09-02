@@ -4,9 +4,11 @@ from uuid import UUID
 
 from app.context.token_estimator import TokenEstimator
 from app.models.agent import AgentRequest, AgentResponse, LivenessCredit
+from app.models.failure import FailureSource
 from app.models.tools import ToolExecutionResult
 from app.persistence.token_budget import (
     PostgresRunTokenBudgetStore,
+    RunBudgetExhaustedError,
     TokenBudgetReservationError,
     WorkPackageBudgetAllocationError,
 )
@@ -67,11 +69,14 @@ class BudgetedAgentDriver:
                 retryable=False,
             ) from exc
         except TokenBudgetReservationError as exc:
+            facts = exc.facts if isinstance(exc, RunBudgetExhaustedError) else None
             raise AgentProviderError(
-                provider="devflow-token-budget",
+                provider="runtime-budget",
                 code=ProviderErrorCode.TOKEN_BUDGET_EXHAUSTED,
                 message=str(exc),
                 retryable=False,
+                evidence=(facts.evidence() if facts is not None else ["provider_called=false"]),
+                failure_source=FailureSource.RUNTIME,
             ) from exc
         try:
             response = await self._driver.complete(request)

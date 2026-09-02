@@ -50,6 +50,8 @@ class DeveloperAgent:
         enable_thinking: bool = False,
         context_compaction_enabled: bool = True,
         role_context_projection_enabled: bool = True,
+        max_single_tool_result_tokens: int = 1_200,
+        max_tool_results_per_turn_tokens: int = 2_400,
         clock: Callable[[], float] = monotonic,
     ) -> None:
         normalized_model = model.strip()
@@ -85,6 +87,8 @@ class DeveloperAgent:
         self._enable_thinking = enable_thinking
         self._context_compaction_enabled = context_compaction_enabled
         self._role_context_projection_enabled = role_context_projection_enabled
+        self._max_single_tool_result_tokens = max_single_tool_result_tokens
+        self._max_tool_results_per_turn_tokens = max_tool_results_per_turn_tokens
         self._clock = clock
 
     async def run(
@@ -100,6 +104,8 @@ class DeveloperAgent:
         retention = AgentContextRetention(
             task_id=task.task_id,
             base_messages=self._initial_messages(task, context_packet=context_packet),
+            max_single_tool_result_tokens=self._max_single_tool_result_tokens,
+            max_tool_results_per_turn_tokens=self._max_tool_results_per_turn_tokens,
         )
         messages = retention.messages()
         started_at = self._clock()

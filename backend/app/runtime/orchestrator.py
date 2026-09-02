@@ -69,6 +69,7 @@ class SingleTaskOrchestrator:
         workspace: LocalGitWorkspace,
         trace: TaskTraceCollector | None = None,
         continuation_context: ContextContinuationState | None = None,
+        resume_verification_first: bool = False,
     ) -> SingleTaskRunResult:
         self._latest_context_packet = None
         machine = TaskStateMachine()
@@ -77,111 +78,89 @@ class SingleTaskOrchestrator:
         repairs = []
         developer_result = None
 
-        machine.transition(TaskRunState.RUNNING, detail="Developer Agent started initial work.")
-        try:
-            developer_context = await self._build_context(
-                task,
-                workspace=workspace,
-                resume=continuation_context,
-            )
-        except ContextBuildError as exc:
+        machine.transition(
+            TaskRunState.RUNNING,
+            detail=(
+                "从验证失败检查点恢复；先执行确定性验证。"
+                if resume_verification_first
+                else "Developer Agent started initial work."
+            ),
+        )
+        if resume_verification_first:
+            # Git already contains the fenced checkpoint. Re-running Developer here would
+            # duplicate code generation and discard the most useful verification evidence.
             machine.transition(
-                TaskRunState.FAILED,
-                detail="Developer ContextPacket construction failed.",
+                TaskRunState.VERIFYING,
+                detail="Checkpoint Commit 已装载；确定性验证开始。",
             )
-            return self._result(
-                task=task,
-                machine=machine,
-                workspace=workspace,
-                developer=developer_result,
-                verifications=verifications,
-                reviews=reviews,
-                repairs=repairs,
-                failures=[self._context_failure(exc, stage="developer")],
-            )
-
-        try:
-            if trace is None:
-                developer_result = await self._developer.run(
+        else:
+            try:
+                developer_context = await self._build_context(
                     task,
                     workspace=workspace,
-                    context_packet=developer_context,
+                    resume=continuation_context,
                 )
-            else:
-                developer_result = await self._developer.run(
-                    task,
-                    workspace=workspace,
-                    context_packet=developer_context,
-                    trace=trace,
+            except ContextBuildError as exc:
+                machine.transition(
+                    TaskRunState.FAILED, detail="Developer ContextPacket construction failed."
                 )
-        except AgentProviderError as exc:
+                return self._result(
+                    task=task, machine=machine, workspace=workspace, developer=developer_result,
+                    verifications=verifications, reviews=reviews, repairs=repairs,
+                    failures=[self._context_failure(exc, stage="developer")],
+                )
+            try:
+                kwargs = {"workspace": workspace, "context_packet": developer_context}
+                if trace is not None:
+                    kwargs["trace"] = trace
+                developer_result = await self._developer.run(task, **kwargs)
+            except AgentProviderError as exc:
+                machine.transition(TaskRunState.FAILED, detail="Developer model provider failed.")
+                return self._result(
+                    task=task, machine=machine, workspace=workspace, developer=developer_result,
+                    verifications=verifications, reviews=reviews, repairs=repairs,
+                    failures=[exc.to_failure_report()],
+                )
+            except ValueError as exc:
+                machine.transition(TaskRunState.FAILED, detail="Developer context gate failed.")
+                return self._result(
+                    task=task, machine=machine, workspace=workspace, developer=developer_result,
+                    verifications=verifications, reviews=reviews, repairs=repairs,
+                    failures=[self._runtime_failure(str(exc))],
+                )
+            if (
+                developer_result.stop_reason is not DeveloperStopReason.MODEL_STOP
+                and not workspace.changed_files()
+            ):
+                machine.transition(
+                    TaskRunState.FAILED,
+                    detail="Developer Agent stopped before a normal model completion.",
+                )
+                return self._result(
+                    task=task, machine=machine, workspace=workspace, developer=developer_result,
+                    verifications=verifications, reviews=reviews, repairs=repairs,
+                    failures=[self._developer_stop_failure(developer_result)],
+                )
+            if not workspace.changed_files():
+                machine.transition(TaskRunState.FAILED, detail="Developer produced no Git changes.")
+                return self._result(
+                    task=task, machine=machine, workspace=workspace, developer=developer_result,
+                    verifications=verifications, reviews=reviews, repairs=repairs,
+                    failures=[
+                        self._runtime_failure(
+                            "Developer Agent completed without producing repository changes.",
+                            evidence=["changed_files=0"],
+                        )
+                    ],
+                )
             machine.transition(
-                TaskRunState.FAILED,
+                TaskRunState.VERIFYING,
                 detail=(
-                    "Developer work-package budget allocation was blocked; "
-                    "recovery can reuse the persisted DAG."
-                    if exc.code is ProviderErrorCode.WORK_PACKAGE_BUDGET_ALLOCATION_BLOCKED
-                    else "Developer model provider failed."
+                    "Developer 正常完成；确定性验证开始。"
+                    if developer_result.stop_reason is DeveloperStopReason.MODEL_STOP
+                    else "Developer 受控 Slice 已结束且存在改动；跳过额外模型调用并进入确定性验证。"
                 ),
             )
-            return self._result(
-                task=task,
-                machine=machine,
-                workspace=workspace,
-                developer=developer_result,
-                verifications=verifications,
-                reviews=reviews,
-                repairs=repairs,
-                failures=[exc.to_failure_report()],
-            )
-        except ValueError as exc:
-            machine.transition(TaskRunState.FAILED, detail="Developer context gate failed.")
-            return self._result(
-                task=task,
-                machine=machine,
-                workspace=workspace,
-                developer=developer_result,
-                verifications=verifications,
-                reviews=reviews,
-                repairs=repairs,
-                failures=[self._runtime_failure(str(exc))],
-            )
-
-        if developer_result.stop_reason is not DeveloperStopReason.MODEL_STOP:
-            machine.transition(
-                TaskRunState.FAILED,
-                detail="Developer Agent stopped before a normal model completion.",
-            )
-            return self._result(
-                task=task,
-                machine=machine,
-                workspace=workspace,
-                developer=developer_result,
-                verifications=verifications,
-                reviews=reviews,
-                repairs=repairs,
-                failures=[self._developer_stop_failure(developer_result)],
-            )
-
-        if not workspace.changed_files():
-            machine.transition(TaskRunState.FAILED, detail="Developer produced no Git changes.")
-            return self._result(
-                task=task,
-                machine=machine,
-                workspace=workspace,
-                developer=developer_result,
-                verifications=verifications,
-                reviews=reviews,
-                repairs=repairs,
-                failures=[
-                    self._runtime_failure(
-                        "Developer Agent completed without producing repository changes.",
-                        evidence=["changed_files=0"],
-                    )
-                ],
-            )
-
-        machine.transition(TaskRunState.VERIFYING, detail="Deterministic hard gate started.")
 
         while True:
             verification_started = trace.clock() if trace is not None else 0.0

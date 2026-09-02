@@ -6,6 +6,7 @@ from collections import deque
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.models.checkpoint import TaskResumeContext
 from app.models.task import TaskContract
 from app.models.work_package import (
     PlanningComplexity,
@@ -33,6 +34,9 @@ class TaskNode(BaseModel):
     complexity: PlanningComplexity | None = None
     budget_allocation: TaskBudgetAllocation | None = None
     complexity_assessment: PlanningComplexityAssessment | None = None
+    # Present only on a server-created recovery DAG. It is bounded state from a
+    # fenced checkpoint, never browser/model supplied execution authority.
+    resume_context: TaskResumeContext | None = None
 
     @field_validator("depends_on")
     @classmethod

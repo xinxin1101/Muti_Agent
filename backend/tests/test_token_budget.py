@@ -21,11 +21,13 @@ from app.models.work_package import PlanningComplexity, TaskBudgetAllocation
 from app.persistence.planning_budget import (
     PlanningTokenBudgetReservation,
     PlanningTokenBudgetReservationError,
+    PostgresPlanningTokenBudgetStore,
 )
 from app.persistence.token_budget import (
     BudgetDecisionFacts,
     PostgresRunTokenBudgetStore,
-    TokenBudgetPlanError,
+    RunBudgetExhaustedError,
+    RunBudgetExhaustionFacts,
     TokenBudgetReservation,
     TokenBudgetReservationError,
     WorkPackageBudgetAllocationError,
@@ -47,6 +49,11 @@ class _Driver:
             usage=TokenUsage(prompt_tokens=12, completion_tokens=8, total_tokens=20),
             latency_ms=1,
         )
+
+
+class _ProviderFailureDriver:
+    async def complete(self, _request: AgentRequest) -> AgentResponse:
+        raise TimeoutError("provider timed out")
 
 
 @pytest.fixture
@@ -92,6 +99,28 @@ class _BudgetStore:
         self.tool_outcomes.append(dict(kwargs))
 
 
+class _ExhaustedBudgetStore(_BudgetStore):
+    async def reserve(self, **_kwargs):  # type: ignore[no-untyped-def]
+        raise RunBudgetExhaustedError(
+            RunBudgetExhaustionFacts(
+                total_budget_tokens=30_000,
+                used_total_tokens=25_000,
+                reserved_tokens=1_200,
+                next_prompt_tokens=2_800,
+                completion_limit_tokens=1_400,
+            )
+        )
+
+
+class _CancelableBudgetStore(_BudgetStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.cancelled: TokenBudgetReservation | None = None
+
+    async def cancel(self, reservation: TokenBudgetReservation) -> None:
+        self.cancelled = reservation
+
+
 class _PlanningBudgetStore:
     def __init__(self, *, blocked: bool = False) -> None:
         self.blocked = blocked
@@ -120,6 +149,29 @@ class _PlanningBudgetStore:
         if self.blocked:
             raise PlanningTokenBudgetReservationError("启动规划预算不足")
         self.capacity = (kwargs["required_tokens"], kwargs["required_calls"])
+
+
+class _PlanningLinkSession:
+    def __init__(self) -> None:
+        self.run_id = None
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    async def execute(self, statement, parameters):  # type: ignore[no-untyped-def]
+        rendered = str(statement)
+        values = dict(parameters)
+        self.calls.append((rendered, values))
+        if "SELECT run_id, used_prompt_tokens" in rendered:
+            return _RowResult(
+                _Row(
+                    run_id=self.run_id,
+                    used_prompt_tokens=700,
+                    used_completion_tokens=300,
+                    used_total_tokens=1_000,
+                )
+            )
+        if "UPDATE planning_token_budgets SET run_id" in rendered:
+            self.run_id = values["run_id"]
+        return _RowResult(None)
 
 
 class _HierarchyResult:
@@ -162,6 +214,10 @@ class _RowResult:
     def one_or_none(self) -> _Row | None:
         return self._row
 
+    def one(self) -> _Row:
+        assert self._row is not None
+        return self._row
+
 
 class _BorrowingSession:
     """Minimal SQL boundary fake for the atomic FLEX borrowing branch."""
@@ -191,7 +247,7 @@ class _BorrowingSession:
             return _RowResult(
                 self._flex if values["stage"] == "FLEX" else self._development
             )
-        if "SELECT complexity, developer_budget_tokens" in rendered:
+        if "FROM run_task_token_budgets" in rendered:
             return _RowResult(self._package)
         return _RowResult(None)
 
@@ -253,7 +309,7 @@ class _DependencyLendingSession:
             return _RowsResult((self._lender,))
         if "SELECT total_budget_tokens, used_tokens, reserved_tokens FROM run_stage" in rendered:
             return _RowResult(self._flex if values["stage"] == "FLEX" else self._development)
-        if "SELECT complexity, developer_budget_tokens" in rendered:
+        if "FROM run_task_token_budgets" in rendered:
             return _RowResult(self._package)
         return _RowResult(None)
 
@@ -424,6 +480,66 @@ async def test_budgeted_driver_does_not_contact_provider_when_reservation_is_rej
     assert exc_info.value.to_failure_report().failure_type is FailureType.TOKEN_BUDGET_EXHAUSTED
 
 
+@pytest.mark.anyio
+async def test_run_hard_budget_rejection_exposes_reservation_aware_runtime_facts() -> None:
+    driver = _Driver()
+    guarded = BudgetedAgentDriver(
+        driver=driver,
+        budget_store=_ExhaustedBudgetStore(),  # type: ignore[arg-type]
+        run_id=uuid4(),
+        task_id="task-a",
+    )
+
+    with pytest.raises(AgentProviderError) as exc_info:
+        await guarded.complete(_request())
+
+    failure = exc_info.value.to_failure_report()
+    assert driver.calls == 0
+    assert failure.source.value == "runtime"
+    assert "provider_called=false" in failure.evidence
+    assert "run_total_budget_tokens=30000" in failure.evidence
+    assert "run_remaining_tokens=3800" in failure.evidence
+    assert "next_required_tokens=4200" in failure.evidence
+    assert "budget_shortfall_tokens=400" in failure.evidence
+
+
+@pytest.mark.anyio
+async def test_provider_timeout_cancels_the_run_reservation() -> None:
+    store = _CancelableBudgetStore()
+    guarded = BudgetedAgentDriver(
+        driver=_ProviderFailureDriver(),
+        budget_store=store,  # type: ignore[arg-type]
+        run_id=uuid4(),
+        task_id="task-a",
+    )
+
+    with pytest.raises(TimeoutError):
+        await guarded.complete(_request())
+
+    assert store.reserved is not None
+    assert store.cancelled is not None
+    assert store.settled is None
+
+
+def test_settlement_uses_actual_usage_and_releases_the_unused_reservation() -> None:
+    reservation = TokenBudgetReservation(
+        reservation_id=uuid4(),
+        run_id=uuid4(),
+        role=AgentRole.DEVELOPER,
+        reserved_input_tokens=3_000,
+        reserved_output_tokens=1_400,
+    )
+    store = object.__new__(PostgresRunTokenBudgetStore)
+
+    prompt, completion = store._actual_usage(
+        TokenUsage(prompt_tokens=1_100, completion_tokens=500, total_tokens=1_600),
+        reservation,
+    )
+
+    assert (prompt, completion) == (1_100, 500)
+    assert reservation.reserved_tokens - (prompt + completion) == 2_800
+
+
 def test_medium_work_package_reserves_two_startup_turns_before_flex_borrowing() -> None:
     task = TaskContract(
         task_id="core",
@@ -514,11 +630,12 @@ async def test_hierarchy_initialization_unpacks_every_work_package_allocation() 
     # Planning is settled before a Run exists. Its former Run-stage share must be
     # immediately usable by the active critical path rather than stranded here.
     assert stage_writes["PLANNING"] == 0
-    assert stage_writes["REVIEW_PUBLICATION"] <= 1_000
-    assert stage_writes["FLEX"] > 0
+    assert stage_writes["DEVELOPMENT"] == 30_000
+    assert stage_writes["REVIEW_PUBLICATION"] == 0
+    assert stage_writes["FLEX"] == 0
 
 
-def test_budget_plan_rejects_only_when_safe_startup_cannot_be_funded() -> None:
+def test_budget_plan_keeps_work_package_shares_non_blocking() -> None:
     def package(task_id: str) -> TaskNode:
         return TaskNode(
             task=TaskContract(
@@ -538,23 +655,24 @@ def test_budget_plan_rejects_only_when_safe_startup_cannot_be_funded() -> None:
     store = object.__new__(PostgresRunTokenBudgetStore)
     store._default_total_budget_tokens = 30_000
 
-    with pytest.raises(TokenBudgetPlanError, match="预算计划不可执行"):
-        store.validate_hierarchy_plan(
-            dag=TaskDAG(tasks=tuple(package(f"package-{index}") for index in range(5))),
-            developer_max_output_tokens=1_400,
-        )
+    store.validate_hierarchy_plan(
+        dag=TaskDAG(tasks=tuple(package(f"package-{index}") for index in range(5))),
+        developer_max_output_tokens=1_400,
+    )
 
 
-def test_flex_borrow_denial_needs_progress_and_is_bounded() -> None:
-    reason = PostgresRunTokenBudgetStore._borrow_denial_reason(
+def test_legacy_package_borrow_facts_are_not_admission_controls() -> None:
+    assert (
+        PostgresRunTokenBudgetStore._borrow_denial_reason(
         has_progress=False,
         borrow_count=0,
         needed=1_200,
         flex_available=6_000,
         budget=8_000,
         maximum_budget=12_000,
+        )
+        is None
     )
-    assert reason == "本轮前没有可验证的代码或工具进展。"
     assert PostgresRunTokenBudgetStore._borrow_denial_reason(
         has_progress=True,
         borrow_count=3,
@@ -562,265 +680,61 @@ def test_flex_borrow_denial_needs_progress_and_is_bounded() -> None:
         flex_available=6_000,
         budget=8_000,
         maximum_budget=12_000,
-    ) == "已达到该工作包的 3 次 FLEX 借款上限。"
+    ) is None
 
 
 @pytest.mark.anyio
-async def test_flex_borrows_immediately_when_next_call_does_not_fit_and_task_progressed() -> None:
-    """Regression for 3617 used / 2177 left / 5481 required / 9115 FLEX."""
+async def test_soft_share_never_blocks_a_complex_work_package() -> None:
+    """The old 12K/18K ceilings are telemetry; Run reservation is the hard gate."""
 
     store = object.__new__(PostgresRunTokenBudgetStore)
     session = _BorrowingSession()
-
     await store._reserve_hierarchy(
         session=session,  # type: ignore[arg-type]
-        run_id=uuid4(),
-        task_id="gomoku-core",
-        role=AgentRole.DEVELOPER,
-        estimated_input_tokens=4_081,
-        max_output_tokens=1_400,
-        required=5_481,
+        run_id=uuid4(), task_id="gomoku-core", role=AgentRole.DEVELOPER,
+        estimated_input_tokens=8_000, max_output_tokens=2_000, required=10_000,
         has_progress=True,
     )
 
-    flex_updates = [
-        values
-        for statement, values in session.calls
-        if (
-            "UPDATE run_stage_token_budgets SET total_budget_tokens = total_budget_tokens -"
-            in statement
-        )
-    ]
-    package_updates = [
-        values
-        for statement, values in session.calls
-        if "developer_budget_tokens = developer_budget_tokens + :needed" in statement
-    ]
-    assert len(flex_updates) == 1
-    assert flex_updates[0]["stage"] == "FLEX"
-    assert flex_updates[0]["amount"] == 3_304
-    assert package_updates[0]["needed"] == 3_304
+    assert not any("run_task_budget_loans" in statement for statement, _ in session.calls)
+    assert not any(
+        "developer_budget_tokens = developer_budget_tokens +" in statement
+        for statement, _ in session.calls
+    )
 
 
 @pytest.mark.anyio
-async def test_initial_startup_credit_can_use_run_credit_before_any_tool_progress() -> None:
+async def test_soft_share_records_liveness_without_turning_it_into_admission_control() -> None:
     store = object.__new__(PostgresRunTokenBudgetStore)
     session = _BorrowingSession()
-
     await store._reserve_hierarchy(
         session=session,  # type: ignore[arg-type]
-        run_id=uuid4(),
-        task_id="gomoku-core",
-        role=AgentRole.DEVELOPER,
-        estimated_input_tokens=4_081,
-        max_output_tokens=1_400,
-        required=5_481,
-        has_progress=False,
-        liveness_credit=LivenessCredit.INITIAL_STARTUP,
-    )
-
-    decision = next(
-        values
-        for statement, values in session.calls
-        if "INSERT INTO run_token_budget_decisions" in statement
-    )
-    assert "首次受控开发调用使用 Run 启动活性信用" in str(decision["reason"])
-
-
-@pytest.mark.anyio
-async def test_tool_recovery_credit_allows_exactly_one_unverified_flex_correction() -> None:
-    store = object.__new__(PostgresRunTokenBudgetStore)
-    session = _BorrowingSession()
-
-    await store._reserve_hierarchy(
-        session=session,  # type: ignore[arg-type]
-        run_id=uuid4(),
-        task_id="gomoku-core",
-        role=AgentRole.DEVELOPER,
-        estimated_input_tokens=4_081,
-        max_output_tokens=1_400,
-        required=5_481,
-        has_progress=False,
-        liveness_credit=LivenessCredit.TOOL_RECOVERY,
+        run_id=uuid4(), task_id="gomoku-core", role=AgentRole.DEVELOPER,
+        estimated_input_tokens=4_081, max_output_tokens=1_400, required=5_481,
+        has_progress=False, liveness_credit=LivenessCredit.CHECKPOINT_RESUME,
     )
 
     update = next(
-        values
-        for statement, values in session.calls
-        if "tool_recovery_credit_used = tool_recovery_credit_used" in statement
+        values for statement, values in session.calls if "last_liveness_credit" in statement
     )
-    assert update["tool_recovery_credit"] is True
-    assert update["liveness_credit"] == LivenessCredit.TOOL_RECOVERY.value
-
-    session._package.tool_recovery_credit_used = True
-    with pytest.raises(WorkPackageBudgetAllocationError, match="已使用过一次工具纠错活性信用"):
-        await store._reserve_hierarchy(
-            session=session,  # type: ignore[arg-type]
-            run_id=uuid4(),
-            task_id="gomoku-core",
-            role=AgentRole.DEVELOPER,
-            estimated_input_tokens=4_081,
-            max_output_tokens=1_400,
-            required=5_481,
-            has_progress=False,
-            liveness_credit=LivenessCredit.TOOL_RECOVERY,
-        )
+    assert update["liveness_credit"] == LivenessCredit.CHECKPOINT_RESUME.value
 
 
 @pytest.mark.anyio
-async def test_checkpoint_resume_credit_is_distinct_from_initial_startup_credit() -> None:
-    store = object.__new__(PostgresRunTokenBudgetStore)
-    session = _BorrowingSession()
-
-    await store._reserve_hierarchy(
-        session=session,  # type: ignore[arg-type]
-        run_id=uuid4(),
-        task_id="gomoku-core",
-        role=AgentRole.DEVELOPER,
-        estimated_input_tokens=4_081,
-        max_output_tokens=1_400,
-        required=5_481,
-        has_progress=False,
-        liveness_credit=LivenessCredit.CHECKPOINT_RESUME,
-    )
-
-    decision = next(
-        values
-        for statement, values in session.calls
-        if "INSERT INTO run_token_budget_decisions" in statement
-    )
-    assert "检查点恢复使用受控活性信用" in str(decision["reason"])
-
-
-@pytest.mark.anyio
-async def test_work_package_reservation_without_borrowing_records_zero_downstream() -> None:
-    """A first call that fits the package budget must not read an uninitialized lender value."""
-
-    store = object.__new__(PostgresRunTokenBudgetStore)
-    session = _BorrowingSession()
-
-    await store._reserve_hierarchy(
-        session=session,  # type: ignore[arg-type]
-        run_id=uuid4(),
-        task_id="gomoku-core",
-        role=AgentRole.DEVELOPER,
-        estimated_input_tokens=600,
-        max_output_tokens=400,
-        required=1_000,
-        has_progress=False,
-    )
-
-    snapshot_write = next(
-        values
-        for statement, values in session.calls
-        if "last_downstream_available_tokens" in statement
-    )
-    assert snapshot_write["downstream"] == 0
-    assert snapshot_write["borrowed"] == 0
-    assert snapshot_write["liveness_credit"] == LivenessCredit.NORMAL.value
-
-
-@pytest.mark.anyio
-async def test_dependency_blocked_lender_can_supply_only_capacity_above_startup_pool() -> None:
+async def test_legacy_borrow_count_and_ceiling_cannot_reject_new_reservations() -> None:
     store = object.__new__(PostgresRunTokenBudgetStore)
     session = _DependencyLendingSession()
-
+    session._package.borrow_count = 99
+    session._package.developer_budget_tokens = 1
+    session._package.developer_used_tokens = 1
     await store._reserve_hierarchy(
         session=session,  # type: ignore[arg-type]
-        run_id=uuid4(),
-        task_id="core",
-        role=AgentRole.DEVELOPER,
-        estimated_input_tokens=12_600,
-        max_output_tokens=1_400,
-        required=14_000,
+        run_id=uuid4(), task_id="core", role=AgentRole.DEVELOPER,
+        estimated_input_tokens=20_000, max_output_tokens=2_000, required=22_000,
         has_progress=True,
     )
 
-    loan_writes = [
-        values
-        for statement, values in session.calls
-        if "INSERT INTO run_task_budget_loans" in statement
-    ]
-    upgrade_writes = [
-        values
-        for statement, values in session.calls
-        if "complexity_upgrade_count = complexity_upgrade_count + :upgrade" in statement
-    ]
-    assert loan_writes == [
-        {
-            "run_id": loan_writes[0]["run_id"],
-            "borrower": "core",
-            "lender": "ui",
-            "role": "developer",
-            "amount": 2_500,
-        }
-    ]
-    assert upgrade_writes[0]["complexity"] == "HIGH"
-    assert upgrade_writes[0]["upgrade"] == 1
-
-
-@pytest.mark.anyio
-async def test_high_critical_path_package_can_expand_once_without_independent_budget() -> None:
-    store = object.__new__(PostgresRunTokenBudgetStore)
-    session = _DependencyLendingSession()
-    session._package.complexity = "HIGH"
-    session._package.developer_budget_tokens = 14_049
-    session._package.developer_used_tokens = 11_805
-    session._package.borrow_count = 2
-    session._flex.total_budget_tokens = 4_845
-    session._lender.developer_budget_tokens = 6_106
-    session._lender.developer_startup_reserve_tokens = 3_053
-
-    await store._reserve_hierarchy(
-        session=session,  # type: ignore[arg-type]
-        run_id=uuid4(),
-        task_id="gomoku-core",
-        role=AgentRole.DEVELOPER,
-        estimated_input_tokens=6_959,
-        max_output_tokens=2_048,
-        required=9_007,
-        has_progress=True,
-    )
-
-    package_update = next(
-        values
-        for statement, values in session.calls
-        if "developer_budget_tokens = developer_budget_tokens + :needed" in statement
-    )
-    loan = next(
-        values
-        for statement, values in session.calls
-        if "INSERT INTO run_task_budget_loans" in statement
-    )
-    assert package_update["needed"] == 6_763
-    assert loan["amount"] == 1_918
-
-
-@pytest.mark.anyio
-async def test_blocked_lender_startup_pool_is_preserved_and_run_credit_continues() -> None:
-    store = object.__new__(PostgresRunTokenBudgetStore)
-    session = _DependencyLendingSession(protect_lender=True)
-
-    await store._reserve_hierarchy(
-        session=session,  # type: ignore[arg-type]
-        run_id=uuid4(),
-        task_id="core",
-        role=AgentRole.DEVELOPER,
-        estimated_input_tokens=12_600,
-        max_output_tokens=1_400,
-        required=14_000,
-        has_progress=True,
-    )
-
-    assert not any(
-        "INSERT INTO run_task_budget_loans" in statement for statement, _ in session.calls
-    )
-    decision = next(
-        values
-        for statement, values in session.calls
-        if "INSERT INTO run_token_budget_decisions" in statement
-    )
-    assert "Run 总预算信用流动" in str(decision["reason"])
+    assert not any("PACKAGE_CEILING" in str(values) for _, values in session.calls)
 
 
 @pytest.mark.anyio
@@ -998,3 +912,18 @@ async def test_planning_driver_preflight_rejects_before_any_provider_contact() -
 
     assert driver.calls == 0
     assert exc_info.value.to_failure_report().failure_type is FailureType.TOKEN_BUDGET_EXHAUSTED
+
+
+@pytest.mark.anyio
+async def test_planner_usage_links_to_a_run_exactly_once_after_response_retry() -> None:
+    session = _PlanningLinkSession()
+    store = object.__new__(PostgresPlanningTokenBudgetStore)
+    store._session_factory = _HierarchySessionFactory(session)  # type: ignore[assignment]
+    launch_id = uuid4()
+    run_id = uuid4()
+
+    first = await store.link_to_run(launch_id=launch_id, run_id=run_id)
+    repeated = await store.link_to_run(launch_id=launch_id, run_id=run_id)
+
+    assert first == TokenUsage(prompt_tokens=700, completion_tokens=300, total_tokens=1_000)
+    assert repeated == TokenUsage()

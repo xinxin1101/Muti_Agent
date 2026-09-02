@@ -413,6 +413,42 @@ def test_developer_time_limit_is_not_misclassified_as_a_tool_failure(tmp_path: P
     assert "developer_model_latency_ms=3" in result.failures[0].evidence
 
 
+def test_bounded_developer_slice_with_changes_verifies_without_an_extra_model_turn(
+    tmp_path: Path,
+) -> None:
+    root = _repository(tmp_path)
+    workspace = LocalGitWorkspace(root)
+    developer_driver = FakeDriver(
+        [_response(tool_calls=[_patch("change", "VALUE = 1", "VALUE = 2")])]
+    )
+    times = iter([0.0, 0.0, 2.0])
+    developer = agents.DeveloperAgent(
+        driver=developer_driver,
+        model="fake/developer",
+        max_duration_seconds=1.0,
+        max_model_turn_seconds=1.0,
+        clock=lambda: next(times),
+    )
+    reviewer_driver = FakeDriver([_response(content=_review_pass())])
+    orchestrator = SingleTaskOrchestrator(
+        developer=developer,
+        verifier=SequenceVerifier([True]),  # type: ignore[arg-type]
+        reviewer=agents.ReviewerAgent(driver=reviewer_driver, model="fake/reviewer"),
+        repair=agents.RepairAgent(driver=FakeDriver([]), model="fake/repair"),
+        developer_model="fake/developer",
+        reviewer_model="fake/reviewer",
+        repair_model="fake/repair",
+    )
+
+    result = asyncio.run(orchestrator.run(_task(), workspace=workspace))
+
+    assert result.status is TaskRunState.SUCCEEDED
+    assert result.developer is not None
+    assert result.developer.stop_reason is models.DeveloperStopReason.TIME_LIMIT
+    assert len(developer_driver.requests) == 1
+    assert len(result.verifications) == 1
+
+
 def test_repair_without_patch_stops_without_repeating_verification(tmp_path: Path) -> None:
     root = _repository(tmp_path)
     workspace = LocalGitWorkspace(root)
@@ -501,6 +537,40 @@ def test_repair_patch_records_failure_signature_progress(
         assert progress.failure_signature_before != progress.failure_signature_after
     else:
         assert progress.failure_signature_before == progress.failure_signature_after
+
+
+def test_verification_failure_resume_verifies_then_repairs_without_developer_replay(
+    tmp_path: Path,
+) -> None:
+    root = _repository(tmp_path)
+    workspace = LocalGitWorkspace(root)
+    developer_driver = FakeDriver([])
+    repair = WritesPatchRepair(value=2)
+    verifier = SequenceVerifier([False, True], failure_summaries=["baseline assertion failed"])
+    reviewer_driver = FakeDriver([_response(content=_review_pass())])
+    orchestrator = SingleTaskOrchestrator(
+        developer=agents.DeveloperAgent(driver=developer_driver, model="fake/developer"),
+        verifier=verifier,  # type: ignore[arg-type]
+        reviewer=agents.ReviewerAgent(driver=reviewer_driver, model="fake/reviewer"),
+        repair=repair,  # type: ignore[arg-type]
+        developer_model="fake/developer",
+        reviewer_model="fake/reviewer",
+        repair_model="fake/repair",
+    )
+
+    result = asyncio.run(
+        orchestrator.run(
+            _task(max_retries=1),
+            workspace=workspace,
+            resume_verification_first=True,
+        )
+    )
+
+    assert result.status is TaskRunState.SUCCEEDED
+    assert developer_driver.requests == []
+    assert verifier.calls == 2
+    assert repair.attempts == [1]
+    assert result.developer is None
 
 
 def test_state_machine_rejects_invalid_transition() -> None:

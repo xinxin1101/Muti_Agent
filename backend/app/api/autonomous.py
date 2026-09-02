@@ -39,6 +39,12 @@ from app.api.session_commands import DevelopmentSessionCommandPreviewer
 from app.context.token_estimator import TokenEstimator
 from app.dispatch.errors import TaskDispatchBrokerError
 from app.models.agent import AgentRole
+from app.models.checkpoint import (
+    CheckpointReason,
+    CheckpointResumeStrategy,
+    TaskCheckpoint,
+    TaskResumeContext,
+)
 from app.models.dag import TaskDAG
 from app.models.development_session import (
     DevelopmentSessionBaselineState,
@@ -47,7 +53,7 @@ from app.models.development_session import (
     DevelopmentSessionTimelineKind,
     DevelopmentWorkPackageState,
 )
-from app.models.dispatch import TaskDispatchReceipt
+from app.models.dispatch import TaskDispatchReceipt, WorkerExecutionEvidence, WorkerExecutionStatus
 from app.models.integration_gate import HumanGateDecision, IntegrationGateSnapshot
 from app.models.merge import MergeAttemptOutcome, MergeQueueSnapshot
 from app.models.operation_audit import OperationAuditAction, OperationAuditOutcome
@@ -986,6 +992,77 @@ class AutonomousProductRuntimeService(ProductRuntimeServiceWithGitHubPublication
         )
 
     @staticmethod
+    def _completed_task_ids(snapshot: PersistedRunSnapshot) -> set[str]:
+        """Read only accepted terminal evidence; never infer completion from a UI state."""
+
+        completed: set[str] = set()
+        for evidence in snapshot.evidence:
+            if evidence.kind is not PersistenceEvidenceKind.WORKER_EXECUTION:
+                continue
+            execution = WorkerExecutionEvidence.model_validate(evidence.payload)
+            if execution.status is WorkerExecutionStatus.SUCCEEDED:
+                completed.add(execution.task_id)
+        return completed
+
+    @staticmethod
+    def _resumable_task_checkpoint(snapshot: PersistedRunSnapshot) -> TaskCheckpoint | None:
+        """Return the original checkpoint, including compact continuation state."""
+
+        if snapshot.status is not PersistedRunStatus.FAILED:
+            return None
+        executions: list[WorkerExecutionEvidence] = []
+        for evidence in snapshot.evidence:
+            if evidence.kind is PersistenceEvidenceKind.WORKER_EXECUTION:
+                executions.append(WorkerExecutionEvidence.model_validate(evidence.payload))
+        checkpoints = [item.checkpoint for item in executions if item.checkpoint is not None]
+        # A multi-package Run can have completed upstream work plus one failed
+        # checkpointed package.  Completed packages must be reused, not make that
+        # checkpoint ineligible for a new Run.
+        if len(checkpoints) != 1:
+            return None
+        checkpoint = checkpoints[0]
+        assert checkpoint is not None
+        if checkpoint.base_commit != snapshot.base_commit:
+            raise PersistenceCorruptionError(
+                "checkpoint does not descend from the persisted Run base"
+            )
+        return checkpoint
+
+    @staticmethod
+    def _with_checkpoint_resume_context(
+        *,
+        dag: TaskDAG,
+        checkpoint: TaskCheckpoint,
+        source_run_id: UUID,
+    ) -> TaskDAG:
+        """Bind one recovered task to bounded checkpoint facts on a new server DAG."""
+
+        strategy = (
+            CheckpointResumeStrategy.VERIFY_THEN_REPAIR
+            if checkpoint.reason is CheckpointReason.VERIFICATION_FAILURE
+            else CheckpointResumeStrategy.CONTINUE_DEVELOPMENT
+        )
+        context = TaskResumeContext(
+            source_run_id=source_run_id,
+            checkpoint_commit_sha=checkpoint.commit_sha,
+            strategy=strategy,
+            context_state=checkpoint.context_state,
+            verification_summary=checkpoint.verification_summary,
+            failure_summary=checkpoint.failure_summary,
+            remaining_summary=checkpoint.remaining_summary,
+        )
+        if checkpoint.task_id not in dag.task_ids:
+            raise PersistenceCorruptionError("checkpoint task is absent from resumed DAG")
+        return TaskDAG(
+            tasks=tuple(
+                node.model_copy(update={"resume_context": context})
+                if node.task.task_id == checkpoint.task_id
+                else node
+                for node in dag.tasks
+            )
+        )
+
+    @staticmethod
     def _product_development_session(session) -> ProductDevelopmentSession:
         return ProductDevelopmentSession(
             session_id=session.session_id,
@@ -1019,7 +1096,7 @@ class AutonomousProductRuntimeService(ProductRuntimeServiceWithGitHubPublication
         previous = await self._evidence_store.load_run(run_id)
         if previous.status is not PersistedRunStatus.FAILED:
             raise PersistenceConflictError("only a failed Run can continue from a checkpoint")
-        checkpoint = self._checkpoint_summary(previous)
+        checkpoint = self._resumable_task_checkpoint(previous)
         if checkpoint is None:
             raise PersistenceConflictError(
                 "this failed Run has no unambiguous continuation checkpoint"
@@ -1032,7 +1109,15 @@ class AutonomousProductRuntimeService(ProductRuntimeServiceWithGitHubPublication
             self._resolve_planning_workspace(previous.project_id)
         )
         persisted_dag = await self._dag_store.load_dag(run_id)
-        dag = TaskDAG.model_validate(persisted_dag.dag.model_dump(mode="python"))
+        full_dag = TaskDAG.model_validate(persisted_dag.dag.model_dump(mode="python"))
+        dag = self._remaining_session_dag(full_dag, self._completed_task_ids(previous))
+        if dag is None:
+            raise PersistenceConflictError("this failed Run has no remaining task to continue")
+        dag = self._with_checkpoint_resume_context(
+            dag=dag,
+            checkpoint=checkpoint,
+            source_run_id=run_id,
+        )
         self._validate_run_token_budget_plan(dag)
         dependency_preflight = await self._preflight_workspace(
             self._resolve_planning_workspace(previous.project_id),
@@ -1044,6 +1129,27 @@ class AutonomousProductRuntimeService(ProductRuntimeServiceWithGitHubPublication
             base_commit=checkpoint.commit_sha,
         )
         await self._initialize_run_token_budget(new_run_id, dag)
+        attached_to_session = False
+        if self._development_session_store is not None:
+            session_id = await self._development_session_store.find_session_id_by_run(run_id)
+            if session_id is not None:
+                await self._development_session_store.capture_run_progress(
+                    session_id=session_id,
+                    snapshot=previous,
+                )
+                await self._attach_development_session_run(
+                    session_id,
+                    run_id=new_run_id,
+                    resumed_from_run_id=run_id,
+                )
+                attached_to_session = True
+        if not attached_to_session and (
+            run_recovery_store := getattr(self, "_run_recovery_store", None)
+        ) is not None:
+            await run_recovery_store.set_resumed_from(
+                run_id=new_run_id,
+                source_run_id=run_id,
+            )
         new_persisted_dag = await self._dag_store.load_dag(new_run_id)
         initial_ready = tuple(dag.ready_task_ids(completed_task_ids=set(), failed_task_ids=set()))
         if not initial_ready:
@@ -1074,6 +1180,7 @@ class AutonomousProductRuntimeService(ProductRuntimeServiceWithGitHubPublication
             launch_state=launch_state,
             dispatches=dispatches,
             dependency_preflight=dependency_preflight,
+            resumed_from_run_id=run_id,
         )
 
     async def explain_run_failure(self, run_id: UUID) -> ProductFailureExplanation:

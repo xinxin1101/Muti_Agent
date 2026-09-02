@@ -372,6 +372,7 @@ def normalize_task_dag(dag: TaskDAG) -> TaskDAG:
                 complexity=dag.node(task_id).complexity,
                 budget_allocation=dag.node(task_id).budget_allocation,
                 complexity_assessment=dag.node(task_id).complexity_assessment,
+                resume_context=dag.node(task_id).resume_context,
             )
             for task_id in dag.topological_order()
         )
@@ -396,6 +397,11 @@ def _node_metadata(node: TaskNode) -> dict | None:
             if node.complexity_assessment is not None
             else None
         ),
+        "resume_context": (
+            node.resume_context.model_dump(mode="json")
+            if node.resume_context is not None
+            else None
+        ),
     }
     return payload if any(value not in (None, [], "AGENT") for value in payload.values()) else None
 
@@ -412,6 +418,7 @@ def _decode_node_metadata(row: TaskRow) -> dict:
             "complexity": payload.get("complexity"),
             "budget_allocation": payload.get("budget_allocation"),
             "complexity_assessment": payload.get("complexity_assessment"),
+            "resume_context": payload.get("resume_context"),
         }
     except (TypeError, ValueError) as exc:
         raise PersistenceCorruptionError(

@@ -42,6 +42,7 @@ class SingleTaskRunner(Protocol):
         *,
         workspace: LocalGitWorkspace,
         continuation_context: ContextContinuationState | None = None,
+        resume_verification_first: bool = False,
     ) -> SingleTaskRunResult: ...
 
 
@@ -71,6 +72,7 @@ class QueuedTaskExecutionBackend(Protocol):
         run_token: UUID,
         base_commit: str,
         continuation_context: ContextContinuationState | None = None,
+        resume_verification_first: bool = False,
     ) -> WorkerExecutionEvidence: ...
 
 
@@ -179,6 +181,7 @@ class LocalQueuedTaskExecutionBackend:
         run_token: UUID,
         base_commit: str,
         continuation_context: ContextContinuationState | None = None,
+        resume_verification_first: bool = False,
     ) -> WorkerExecutionEvidence:
         started_at = perf_counter()
         record: TaskWorktreeRecord | None = None
@@ -216,6 +219,8 @@ class LocalQueuedTaskExecutionBackend:
             run_kwargs = {"workspace": workspace}
             if continuation_context is not None:
                 run_kwargs["continuation_context"] = continuation_context
+            if resume_verification_first:
+                run_kwargs["resume_verification_first"] = True
             run_result = await runner.run(task, **run_kwargs)
             if run_result.status is TaskRunState.FAILED:
                 checkpoint = await self._checkpoint_failed_work(
@@ -466,7 +471,16 @@ class QueuedTaskWorker:
             previous_changed_files: tuple[str, ...] | None = None
             repeated_file_slices = 0
             resumed_from_commits: list[str] = []
-            continuation_context: ContextContinuationState | None = None
+            continuation_context: ContextContinuationState | None = (
+                node.resume_context.context_state
+                if node is not None and node.resume_context is not None
+                else None
+            )
+            resume_verification_first = bool(
+                node is not None
+                and node.resume_context is not None
+                and node.resume_context.strategy.value == "VERIFY_THEN_REPAIR"
+            )
             while True:
                 execution_kwargs = {
                     "task": task,
@@ -478,6 +492,8 @@ class QueuedTaskWorker:
                 }
                 if continuation_context is not None:
                     execution_kwargs["continuation_context"] = continuation_context
+                if resume_verification_first:
+                    execution_kwargs["resume_verification_first"] = True
                 execution = await self._backend.execute(**execution_kwargs)
                 checkpoint = self._checkpoint_with_slice_facts(
                     execution=execution,
@@ -529,6 +545,9 @@ class QueuedTaskWorker:
                 resumed_from_commits.append(checkpoint.commit_sha)
                 execution_base = checkpoint.commit_sha
                 continuation_context = checkpoint.context_state
+                # Later slices were created by a bounded Developer stop, so normal
+                # continuation is correct after the first resumed verification pass.
+                resume_verification_first = False
                 slice_index += 1
 
             if slice_index > 1:
@@ -920,7 +939,12 @@ class QueuedTaskWorker:
         if (
             execution.status is not WorkerExecutionStatus.FAILED
             or checkpoint is None
-            or checkpoint.reason is not CheckpointReason.TIME_LIMIT
+            or checkpoint.reason
+            not in {
+                CheckpointReason.TIME_LIMIT,
+                CheckpointReason.ITERATION_LIMIT,
+                CheckpointReason.TOOL_CALL_LIMIT,
+            }
         ):
             return False
         if slice_index >= max_slices:
@@ -984,17 +1008,12 @@ class QueuedTaskWorker:
         remaining = None
         if self._token_budget_reader is not None:
             budget = await self._token_budget_reader.snapshot(run_id)
-            package = next(
-                (item for item in budget.work_packages if item.task_id == execution.task_id),
-                None,
+            # A checkpoint is resumable while the Run has budget, not while a
+            # historical work-package allocation happens to have headroom.
+            remaining = max(
+                0,
+                budget.total_budget_tokens - budget.used_total_tokens - budget.reserved_tokens,
             )
-            if package is not None:
-                remaining = max(
-                    0,
-                    package.developer_budget_tokens
-                    - package.developer_used_tokens
-                    - package.developer_reserved_tokens,
-                )
             checkpoint = checkpoint.model_copy(update={"remaining_budget_tokens": remaining})
         return execution.model_copy(update={"checkpoint": checkpoint})
 

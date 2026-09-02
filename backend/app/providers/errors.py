@@ -30,12 +30,16 @@ class AgentProviderError(RuntimeError):
         message: str,
         retryable: bool,
         status_code: int | None = None,
+        evidence: list[str] | None = None,
+        failure_source: FailureSource | None = None,
     ) -> None:
         super().__init__(message)
         self.provider = provider
         self.code = code
         self.retryable = retryable
         self.status_code = status_code
+        self.evidence = tuple(evidence or ())
+        self.failure_source = failure_source
 
     def to_failure_report(self) -> FailureReport:
         if self.code is ProviderErrorCode.TIMEOUT:
@@ -49,13 +53,13 @@ class AgentProviderError(RuntimeError):
         else:
             failure_type = FailureType.TOOL_FAILURE
 
-        evidence = [f"provider={self.provider}", f"code={self.code.value}"]
+        evidence = [f"provider={self.provider}", f"code={self.code.value}", *self.evidence]
         if self.status_code is not None:
             evidence.append(f"status_code={self.status_code}")
 
         return FailureReport(
             failure_type=failure_type,
-            source=(
+            source=self.failure_source or (
                 FailureSource.RUNTIME
                 if self.code is ProviderErrorCode.WORK_PACKAGE_BUDGET_ALLOCATION_BLOCKED
                 else FailureSource.PROVIDER

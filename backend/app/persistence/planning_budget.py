@@ -255,12 +255,20 @@ class PostgresPlanningTokenBudgetStore:
             row = (
                 await session.execute(
                     text(
-                        "SELECT used_prompt_tokens, used_completion_tokens, used_total_tokens "
+                        "SELECT run_id, used_prompt_tokens, used_completion_tokens, "
+                        "used_total_tokens "
                         "FROM planning_token_budgets WHERE launch_id = :launch_id FOR UPDATE"
                     ),
                     {"launch_id": launch_id},
                 )
             ).one()
+            existing_run_id = row.run_id
+            if existing_run_id is not None:
+                if UUID(str(existing_run_id)) != run_id:
+                    raise ValueError("planning launch is already linked to a different Run")
+                # The caller may be retried after a response boundary failure. Returning
+                # zero makes the subsequent Run-side ``record_usage`` idempotent.
+                return TokenUsage(prompt_tokens=0, completion_tokens=0, total_tokens=0)
             await session.execute(
                 text(
                     "UPDATE planning_token_budgets SET run_id = :run_id, updated_at = now() "
