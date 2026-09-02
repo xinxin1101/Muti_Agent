@@ -57,7 +57,8 @@ async def _exercise_catalog() -> None:
         project = next(item for item in projects if item.project_id == project_id)
         assert project.repository_url == repository_url
         assert project.run_count == 1
-        assert project.provision_status == "READY"
+        # ensure_project() only creates durable identity; provisioning completes later.
+        assert project.provision_status == "PROVISIONING"
         assert project.provision_error_code is None
 
         runs = await catalog.list_runs(project_id=project_id)

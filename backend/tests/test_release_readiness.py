@@ -15,7 +15,7 @@ from app.persistence.schema import (
 
 
 def test_database_schema_preflight_uses_checked_in_alembic_head() -> None:
-    assert EXPECTED_ALEMBIC_REVISION == "0019_session_timeline"
+    assert EXPECTED_ALEMBIC_REVISION == "0024_liveness_credit"
 
 
 class _FakeScalarResult:
