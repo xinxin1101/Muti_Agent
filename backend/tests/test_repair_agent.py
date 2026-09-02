@@ -177,22 +177,67 @@ def test_repair_agent_uses_repair_role_targeted_evidence_and_same_tools(
     request = driver.requests[0]
     assert request.role is models.AgentRole.REPAIR
     assert {tool.name for tool in request.tools} == {
-        "list_files",
-            "read_file",
-            "read_files",
-            "read_range",
-            "read_symbol",
-            "search_code",
+        "read_range",
+        "read_symbol",
+        "search_code",
         "search_code_many",
         "write_file",
         "apply_patch",
     }
     assert "stderr=expected VALUE = 2" in request.messages[1].content
     assert "attempt 1 of 2" in request.messages[1].content
-    assert "not a success verdict" in request.messages[0].content
+    assert "do not claim success" in request.messages[0].content
     assert request.max_output_tokens == 1_000
-    assert "Prefer tool calls over prose" in request.messages[0].content
-    assert "exactly three concise items" in request.messages[0].content
+    assert "fresh issue-scoped session" in request.messages[0].content
+    assert "已修改文件" in request.messages[0].content
+
+
+
+def test_fresh_repair_handoff_has_no_developer_history_or_context_floor(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    workspace = LocalGitWorkspace(root)
+    task = _task()
+    failure = _test_failure()
+    handoff = models.RepairHandoff(
+        task_id=task.task_id,
+        objective=task.objective,
+        repository_head=workspace.head_commit(),
+        acceptance_criteria=tuple(task.acceptance_criteria),
+        verification_commands=tuple(task.verification_commands),
+        writable_files=tuple(task.writable_files),
+        readonly_files=tuple(task.readonly_files),
+        changed_files=("module.py",),
+        relevant_paths=("module.py",),
+        failures=(
+            models.RepairFailureDigest(
+                failure_type=failure.failure_type,
+                source=failure.source,
+                message=failure.message,
+                evidence=tuple(failure.evidence),
+            ),
+        ),
+    )
+    driver = FakeDriver([_response(content="No patch needed for this prompt-shape test.")])
+    agent = agents.RepairAgent(driver=driver, model="test/repair")
+
+    asyncio.run(
+        agent.repair(
+            task,
+            [failure],
+            attempt=1,
+            workspace=workspace,
+            handoff=handoff,
+        )
+    )
+
+    request = driver.requests[0]
+    assert request.context_estimated_tokens == 0
+    assert len(request.messages) == 2
+    assert "Fresh targeted RepairHandoff" in request.messages[1].content
+    assert "module.py" in request.messages[1].content
+    assert "Original validated TaskContract" not in request.messages[1].content
+    assert "ContextPacket" not in request.messages[1].content
+    assert all(message.role is not models.MessageRole.TOOL for message in request.messages)
 
 
 def test_first_verification_failure_is_targeted_repaired_then_passes(tmp_path: Path) -> None:
