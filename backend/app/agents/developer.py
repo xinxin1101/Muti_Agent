@@ -5,6 +5,7 @@ import json
 from collections.abc import Callable
 from time import monotonic
 
+from app.agent_runtime import AgentLoop, AgentRuntimePolicy, AgentRuntimeStopReason
 from app.context.projector import AgentContextProjector
 from app.context.retention import AgentContextRetention
 from app.context.token_estimator import TokenEstimator
@@ -53,6 +54,8 @@ class DeveloperAgent:
         max_retained_tool_groups: int = 1,
         max_single_tool_result_tokens: int = 800,
         max_tool_results_per_turn_tokens: int = 1_600,
+        runtime_v3_enabled: bool = False,
+        runtime_mutation_gate_enabled: bool = True,
         clock: Callable[[], float] = monotonic,
     ) -> None:
         normalized_model = model.strip()
@@ -91,6 +94,8 @@ class DeveloperAgent:
         self._max_retained_tool_groups = max_retained_tool_groups
         self._max_single_tool_result_tokens = max_single_tool_result_tokens
         self._max_tool_results_per_turn_tokens = max_tool_results_per_turn_tokens
+        self._runtime_v3_enabled = runtime_v3_enabled
+        self._runtime_mutation_gate_enabled = runtime_mutation_gate_enabled
         self._clock = clock
 
     async def run(
@@ -103,6 +108,14 @@ class DeveloperAgent:
     ) -> DeveloperRunResult:
         self._validate_context_packet(task, context_packet)
         toolbox = RepositoryToolbox(workspace=workspace, task=task)
+        if self._runtime_v3_enabled:
+            return await self._run_with_runtime_v3(
+                task=task,
+                workspace=workspace,
+                toolbox=toolbox,
+                context_packet=context_packet,
+                trace=trace,
+            )
         retention = AgentContextRetention(
             task_id=task.task_id,
             base_messages=self._initial_messages(task, context_packet=context_packet),
@@ -489,6 +502,97 @@ class DeveloperAgent:
                 total_tokens=total_tokens,
             ),
             latency_ms=total_latency_ms,
+        )
+
+    async def _run_with_runtime_v3(
+        self,
+        *,
+        task: TaskContract,
+        workspace: LocalGitWorkspace,
+        toolbox: RepositoryToolbox,
+        context_packet: ContextPacket | None,
+        trace: TaskTraceCollector | None,
+    ) -> DeveloperRunResult:
+        tool_definitions = tuple(toolbox.definitions())
+        initial_liveness_credit = (
+            LivenessCredit.CHECKPOINT_RESUME
+            if context_packet is not None and context_packet.resume is not None
+            else LivenessCredit.INITIAL_STARTUP
+        )
+        runtime_result = await AgentLoop(
+            driver=self._driver,
+            clock=self._clock,
+        ).run(
+            policy=AgentRuntimePolicy(
+                role=AgentRole.DEVELOPER,
+                model=self._model,
+                max_iterations=self._max_iterations,
+                max_duration_seconds=self._max_duration_seconds,
+                max_model_turn_seconds=self._max_model_turn_seconds,
+                max_tool_calls_per_turn=self._max_tool_calls_per_turn,
+                temperature=self._temperature,
+                max_output_tokens=self._max_output_tokens,
+                enable_thinking=self._enable_thinking,
+                allowed_tool_names=frozenset(item.name for item in tool_definitions),
+                tool_definitions=tool_definitions,
+                max_retained_tool_groups=self._max_retained_tool_groups,
+                max_single_tool_result_tokens=self._max_single_tool_result_tokens,
+                max_tool_results_per_turn_tokens=self._max_tool_results_per_turn_tokens,
+                mutation_gate_enabled=self._runtime_mutation_gate_enabled,
+                max_observation_turns_without_mutation=3,
+                max_mutation_gate_violations=1,
+                tool_recovery_enabled=True,
+                tool_recovery_max_output_tokens=self._invalid_tool_retry_max_output_tokens,
+                repeated_tool_failure_limit=2,
+                initial_liveness_credit=initial_liveness_credit,
+            ),
+            task_id=task.task_id,
+            base_messages=self._initial_messages(task, context_packet=context_packet),
+            toolbox=toolbox,
+            workspace=workspace,
+            context_estimated_tokens=(
+                0
+                if self._role_context_projection_enabled
+                else context_packet.usage.billable_prompt_tokens
+                if context_packet is not None
+                else 0
+            ),
+            context_usage=context_packet.usage if context_packet is not None else None,
+            trace=trace,
+        )
+        stop_reason = {
+            AgentRuntimeStopReason.MODEL_STOP: DeveloperStopReason.MODEL_STOP,
+            AgentRuntimeStopReason.NO_PROGRESS: DeveloperStopReason.NO_PROGRESS,
+            AgentRuntimeStopReason.EXPLICIT_BLOCKER: DeveloperStopReason.EXPLICIT_BLOCKER,
+            AgentRuntimeStopReason.TIME_LIMIT: DeveloperStopReason.TIME_LIMIT,
+            AgentRuntimeStopReason.TOOL_CALL_LIMIT: DeveloperStopReason.TOOL_CALL_LIMIT,
+            AgentRuntimeStopReason.ITERATION_LIMIT: DeveloperStopReason.ITERATION_LIMIT,
+            AgentRuntimeStopReason.REPEATED_TOOL_FAILURE: DeveloperStopReason.REPEATED_TOOL_FAILURE,
+        }[runtime_result.stop_reason]
+        bounded_reasons = {
+            DeveloperStopReason.TIME_LIMIT: "time budget elapsed",
+            DeveloperStopReason.TOOL_CALL_LIMIT: "per-turn tool-call budget was exceeded",
+            DeveloperStopReason.ITERATION_LIMIT: "iteration budget was reached",
+        }
+        if workspace.changed_files() and stop_reason in bounded_reasons:
+            return self._bounded_completion_after_changes(
+                reason=bounded_reasons[stop_reason],
+                stop_reason=stop_reason,
+                iterations=runtime_result.iterations,
+                tool_calls=runtime_result.tool_calls,
+                workspace=workspace,
+                usage=runtime_result.usage,
+                latency_ms=runtime_result.latency_ms,
+            )
+        return self._result(
+            stop_reason=stop_reason,
+            iterations=runtime_result.iterations,
+            tool_calls=runtime_result.tool_calls,
+            workspace=workspace,
+            final_message=runtime_result.final_message,
+            usage=runtime_result.usage,
+            latency_ms=runtime_result.latency_ms,
+            tool_failure_evidence=runtime_result.tool_failure_evidence,
         )
 
     async def _record_tool_cost_outcome(
