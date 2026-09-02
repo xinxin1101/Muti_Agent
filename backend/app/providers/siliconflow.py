@@ -1,3 +1,4 @@
+import asyncio
 from time import perf_counter
 from typing import Any
 from urllib.parse import urlparse
@@ -30,8 +31,8 @@ class SiliconFlowDriver:
     ) -> None:
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be greater than zero")
-        if max_retries < 0:
-            raise ValueError("max_retries must be non-negative")
+        if not 0 <= max_retries <= 5:
+            raise ValueError("max_retries must be between 0 and 5")
 
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
@@ -51,7 +52,8 @@ class SiliconFlowDriver:
             "api_key": normalized_key,
             "base_url": self.base_url,
             "timeout": timeout_seconds,
-            "max_retries": max_retries,
+            # DevFlow owns retry classification/backoff so SDK retries cannot double-submit.
+            "max_retries": 0,
         }
         if self.proxy_url is not None:
             # Keep proxy routing inside the provider client. It must not leak into Agent tools or
@@ -125,14 +127,10 @@ class SiliconFlowDriver:
         if "dashscope.aliyuncs.com" in self.base_url:
             payload["extra_body"] = {"enable_thinking": request.enable_thinking}
 
-        try:
-            completion = await self._client.chat.completions.create(**payload)
-        except Exception as exc:
-            raise normalize_provider_error(
-                exc,
-                provider=self.provider_name,
-                request_evidence=request_evidence,
-            ) from exc
+        completion = await self._create_completion_with_retry(
+            payload,
+            request_evidence=request_evidence,
+        )
 
         latency_ms = max(0, int((perf_counter() - started_at) * 1000))
         choices = getattr(completion, "choices", None)
@@ -163,6 +161,65 @@ class SiliconFlowDriver:
             usage=usage,
             latency_ms=latency_ms,
             finish_reason=getattr(choice, "finish_reason", None),
+        )
+
+    async def _create_completion_with_retry(
+        self,
+        payload: dict[str, Any],
+        *,
+        request_evidence: list[str],
+    ) -> Any:
+        """Retry only normalized transient provider failures within a small bounded budget."""
+
+        for retry_index in range(self.max_retries + 1):
+            try:
+                return await self._client.chat.completions.create(**payload)
+            except Exception as exc:
+                error = normalize_provider_error(
+                    exc,
+                    provider=self.provider_name,
+                    request_evidence=request_evidence,
+                )
+                if not error.retryable or retry_index >= self.max_retries:
+                    attempts = retry_index + 1
+                    if attempts > 1:
+                        error = self._with_retry_evidence(error, attempts=attempts)
+                    raise error from exc
+                await asyncio.sleep(self._retry_delay_seconds(exc, retry_index=retry_index))
+
+        raise RuntimeError("unreachable provider retry state")
+
+    @staticmethod
+    def _retry_delay_seconds(exc: Exception, *, retry_index: int) -> float:
+        response = getattr(exc, "response", None)
+        headers = getattr(response, "headers", None)
+        if headers is not None:
+            raw_retry_after = headers.get("retry-after") or headers.get("Retry-After")
+            if raw_retry_after is not None:
+                try:
+                    return min(5.0, max(0.0, float(raw_retry_after)))
+                except (TypeError, ValueError):
+                    pass
+        return min(2.0, 0.25 * (2**retry_index))
+
+    @staticmethod
+    def _with_retry_evidence(
+        error: AgentProviderError,
+        *,
+        attempts: int,
+    ) -> AgentProviderError:
+        return AgentProviderError(
+            provider=error.provider,
+            code=error.code,
+            message=str(error),
+            retryable=error.retryable,
+            status_code=error.status_code,
+            evidence=[
+                *error.evidence,
+                f"provider_attempts={attempts}",
+                f"provider_retries={attempts - 1}",
+            ],
+            failure_source=error.failure_source,
         )
 
     def _safe_request_evidence(self, request: AgentRequest) -> list[str]:
