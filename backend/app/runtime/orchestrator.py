@@ -34,7 +34,6 @@ from app.trace.collector import TaskTraceCollector
 from app.verification import DeterministicVerifier
 from app.workspace import LocalGitWorkspace
 
-
 _MAX_TOTAL_REPAIR_ATTEMPTS = 5
 
 
