@@ -550,7 +550,7 @@ class SingleTaskOrchestrator:
         workspace: LocalGitWorkspace,
     ) -> RepairHandoff:
         changed_files = tuple(workspace.changed_files())
-        failure_kind, suspected_path, suspected_symbol = (
+        failure_kind, suspected_path, suspected_symbol, suspected_member = (
             SingleTaskOrchestrator._repair_failure_hint(failures)
         )
         relevant_paths: list[str] = []
@@ -573,6 +573,7 @@ class SingleTaskOrchestrator:
             failure_kind=failure_kind,
             suspected_path=suspected_path,
             suspected_symbol=suspected_symbol,
+            suspected_member=suspected_member,
             failures=tuple(
                 RepairFailureDigest(
                     failure_type=failure.failure_type,
@@ -587,7 +588,7 @@ class SingleTaskOrchestrator:
     @staticmethod
     def _repair_failure_hint(
         failures: Sequence[FailureReport],
-    ) -> tuple[RepairFailureKind | None, str | None, str | None]:
+    ) -> tuple[RepairFailureKind | None, str | None, str | None, str | None]:
         flattened = "\n".join(
             item
             for group in (
@@ -596,18 +597,46 @@ class SingleTaskOrchestrator:
             )
             for item in group
         )
-        match = re.search(
+
+        # Prefer the more advanced failure state. A previous ImportError may remain in
+        # accumulated evidence even after Repair has created the class; when verification
+        # progresses to AttributeError, the missing member is now the actionable fact.
+        attribute_match = re.search(
+            r"AttributeError:\s*['\"](?P<owner>[A-Za-z_][A-Za-z0-9_]*)['\"]"
+            r"\s+object has no attribute\s+['\"]"
+            r"(?P<member>[A-Za-z_][A-Za-z0-9_]*)['\"]",
+            flattened,
+        )
+        if attribute_match is not None:
+            owner = attribute_match.group("owner")
+            member = attribute_match.group("member")
+            imported = re.search(
+                r"from\s+(?P<module>[A-Za-z_][A-Za-z0-9_.]*)\s+import\s+"
+                + re.escape(owner)
+                + r"\b",
+                flattened,
+            )
+            if imported is not None:
+                suspected_path = imported.group("module").replace(".", "/") + ".py"
+                return (
+                    RepairFailureKind.PYTHON_ATTRIBUTE_MISSING,
+                    suspected_path,
+                    owner,
+                    member,
+                )
+
+        import_match = re.search(
             r"ImportError:\s*cannot import name ['\"]"
             r"(?P<symbol>[A-Za-z_][A-Za-z0-9_]*)['\"]\s+from\s+['\"]"
             r"(?P<module>[A-Za-z_][A-Za-z0-9_.]*)['\"]",
             flattened,
         )
-        if match is None:
-            return None, None, None
-        symbol = match.group("symbol")
-        module = match.group("module")
+        if import_match is None:
+            return None, None, None, None
+        symbol = import_match.group("symbol")
+        module = import_match.group("module")
         suspected_path = module.replace(".", "/") + ".py"
-        return RepairFailureKind.IMPORT_SYMBOL_MISSING, suspected_path, symbol
+        return RepairFailureKind.IMPORT_SYMBOL_MISSING, suspected_path, symbol, None
 
     async def _build_context(
         self,
