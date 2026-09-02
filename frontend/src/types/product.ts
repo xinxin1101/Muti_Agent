@@ -173,6 +173,7 @@ export type ProductRunFailure = Readonly<{
     | "RATE_LIMIT"
     | "INVALID_AGENT_OUTPUT"
     | "INVALID_TOOL_ARGUMENTS"
+    | "PROVIDER_REQUEST_REJECTED"
     | "TOOL_FAILURE"
     | "SCOPE_VIOLATION"
     | "TEST_FAILURE"
