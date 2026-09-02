@@ -563,7 +563,7 @@ def test_second_no_patch_repair_becomes_terminal_without_reverification(tmp_path
         (
             ["original assertion", "different assertion"],
             models.RepairProgressStatus.PROGRESS_MADE,
-            [1, 2],
+            [1],
         ),
         (
             ["same assertion", "same assertion"],
@@ -615,6 +615,58 @@ def test_repair_patch_records_failure_signature_progress(
         assert progress.failure_signature_before != progress.failure_signature_after
     else:
         assert progress.failure_signature_before == progress.failure_signature_after
+
+
+def test_repair_stage_key_changes_only_for_semantic_interface_progress() -> None:
+    import_failure = models.FailureReport(
+        failure_type=models.FailureType.TEST_FAILURE,
+        source=models.FailureSource.VERIFICATION,
+        message="Deterministic custom verification failed.",
+        retryable=True,
+        evidence=[
+            (
+                'command=python3 -c "from src.gomoku_engine import GameLogic; '
+                'g = GameLogic(); assert g.is_valid_move(7, 7)"\n'
+                "ImportError: cannot import name 'GameLogic' from 'src.gomoku_engine'"
+            )
+        ],
+    )
+    attribute_failure = models.FailureReport(
+        failure_type=models.FailureType.TEST_FAILURE,
+        source=models.FailureSource.VERIFICATION,
+        message="Deterministic custom verification failed.",
+        retryable=True,
+        evidence=[
+            (
+                'command=python3 -c "from src.gomoku_engine import GameLogic; '
+                'g = GameLogic(); assert g.is_valid_move(7, 7)"\n'
+                "AttributeError: 'GameLogic' object has no attribute 'is_valid_move'"
+            )
+        ],
+    )
+    generic_a = models.FailureReport(
+        failure_type=models.FailureType.TEST_FAILURE,
+        source=models.FailureSource.VERIFICATION,
+        message="assert 3 == 2",
+        retryable=True,
+        evidence=["actual=3"],
+    )
+    generic_b = generic_a.model_copy(
+        update={"message": "assert 4 == 2", "evidence": ["actual=4"]}
+    )
+
+    import_stage = SingleTaskOrchestrator._repair_stage_key([import_failure])
+    attribute_stage = SingleTaskOrchestrator._repair_stage_key([attribute_failure])
+    generic_stage_a = SingleTaskOrchestrator._repair_stage_key([generic_a])
+    generic_stage_b = SingleTaskOrchestrator._repair_stage_key([generic_b])
+
+    assert import_stage == "IMPORT_SYMBOL_MISSING|src/gomoku_engine.py|GameLogic|none"
+    assert (
+        attribute_stage
+        == "PYTHON_ATTRIBUTE_MISSING|src/gomoku_engine.py|GameLogic|is_valid_move"
+    )
+    assert import_stage != attribute_stage
+    assert generic_stage_a == generic_stage_b
 
 
 def test_verification_failure_resume_verifies_then_repairs_without_developer_replay(
