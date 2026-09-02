@@ -126,6 +126,11 @@ def build_single_task_runner(
         max_single_tool_result_tokens=settings.repair_max_single_tool_result_tokens,
         max_tool_results_per_turn_tokens=settings.repair_max_tool_results_per_turn_tokens,
         max_read_range_lines=settings.repair_max_read_range_lines,
+        runtime_v3_enabled=(
+            settings.agent_runtime_v3_enabled and settings.repair_runtime_v3_enabled
+        ),
+        runtime_mutation_gate_enabled=settings.runtime_mutation_gate_enabled,
+        runtime_import_prefetch_enabled=settings.runtime_import_prefetch_enabled,
     )
     return SingleTaskOrchestrator(
         developer=developer,
