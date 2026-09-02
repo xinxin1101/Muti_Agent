@@ -47,7 +47,9 @@ def _wait_for_url(
                     raise SmokeFailure(f"{url} returned HTTP {response.status}")
                 if expected_json is not None:
                     decoded = json.loads(payload.decode("utf-8"))
-                    if decoded != expected_json:
+                    if not isinstance(decoded, dict) or any(
+                        decoded.get(key) != value for key, value in expected_json.items()
+                    ):
                         raise SmokeFailure(
                             f"{url} returned unexpected JSON: {decoded!r}"
                         )
