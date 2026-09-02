@@ -16,6 +16,7 @@ MODEL_IDS = (
 )
 
 PLANNER_MARKER = "DevFlow Multi-Agent Planner"
+PLANNER_RECOVERY_MARKER = "Return exactly one valid WorkPackagePlan JSON object"
 DEVELOPER_MARKER = "DevFlow Developer Agent"
 REVIEWER_MARKER = "DevFlow Independent Reviewer Agent"
 REPAIR_MARKER = "DevFlow Repair Agent"
@@ -164,7 +165,7 @@ class FakeOpenAIHandler(BaseHTTPRequestHandler):
 
     @staticmethod
     def _agent_from_system(system_text: str) -> str:
-        if PLANNER_MARKER in system_text:
+        if PLANNER_MARKER in system_text or PLANNER_RECOVERY_MARKER in system_text:
             return "planner"
         if DEVELOPER_MARKER in system_text:
             return "developer"
@@ -200,52 +201,52 @@ class FakeOpenAIHandler(BaseHTTPRequestHandler):
     def _planner_content(cls) -> str:
         return json.dumps(
             {
-                "tasks": [
+                "packages": [
                     {
-                        "task": {
-                            "task_id": "distributed-e2e-a",
-                            "objective": (
-                                "Create distributed_e2e_a.txt containing the first V2.5 "
-                                "distributed release marker."
-                            ),
-                            "readable_files": ["README.md"],
-                            "writable_files": ["distributed_e2e_a.txt"],
-                            "readonly_files": [],
-                            "acceptance_criteria": [
-                                "distributed_e2e_a.txt contains the first deterministic marker"
-                            ],
-                            "verification_commands": [
-                                cls._verification_command(
-                                    "distributed_e2e_a.txt",
-                                    "DevFlow V2.5 distributed E2E A",
-                                )
-                            ],
-                            "max_retries": 0,
-                        },
-                        "depends_on": [],
+                        "package_id": "distributed-e2e-a",
+                        "objective": (
+                            "Create distributed_e2e_a.txt containing the first V2.5 "
+                            "distributed release marker."
+                        ),
+                        "deliverable": "first distributed release marker file",
+                        "owned_paths": ["distributed_e2e_a.txt"],
+                        "readable_paths": ["README.md"],
+                        "produces": ["distributed.e2e.marker.a"],
+                        "consumes": [],
+                        "acceptance_criteria": [
+                            "distributed_e2e_a.txt contains the first deterministic marker"
+                        ],
+                        "verification_commands": [
+                            cls._verification_command(
+                                "distributed_e2e_a.txt",
+                                "DevFlow V2.5 distributed E2E A",
+                            )
+                        ],
+                        "estimated_complexity": "MEDIUM",
+                        "recommended_token_budget": 6000,
                     },
                     {
-                        "task": {
-                            "task_id": "distributed-e2e-b",
-                            "objective": (
-                                "After distributed-e2e-a is integrated, create "
-                                "distributed_e2e_b.txt containing the second V2.5 marker."
-                            ),
-                            "readable_files": ["distributed_e2e_a.txt"],
-                            "writable_files": ["distributed_e2e_b.txt"],
-                            "readonly_files": ["distributed_e2e_a.txt"],
-                            "acceptance_criteria": [
-                                "distributed_e2e_b.txt contains the second deterministic marker"
-                            ],
-                            "verification_commands": [
-                                cls._verification_command(
-                                    "distributed_e2e_b.txt",
-                                    "DevFlow V2.5 distributed E2E B",
-                                )
-                            ],
-                            "max_retries": 0,
-                        },
-                        "depends_on": ["distributed-e2e-a"],
+                        "package_id": "distributed-e2e-b",
+                        "objective": (
+                            "After the first marker is available, create distributed_e2e_b.txt "
+                            "containing the second V2.5 distributed release marker."
+                        ),
+                        "deliverable": "second distributed release marker file",
+                        "owned_paths": ["distributed_e2e_b.txt"],
+                        "readable_paths": ["distributed_e2e_a.txt"],
+                        "produces": ["distributed.e2e.marker.b"],
+                        "consumes": ["distributed.e2e.marker.a"],
+                        "acceptance_criteria": [
+                            "distributed_e2e_b.txt contains the second deterministic marker"
+                        ],
+                        "verification_commands": [
+                            cls._verification_command(
+                                "distributed_e2e_b.txt",
+                                "DevFlow V2.5 distributed E2E B",
+                            )
+                        ],
+                        "estimated_complexity": "MEDIUM",
+                        "recommended_token_budget": 6000,
                     },
                 ]
             },
