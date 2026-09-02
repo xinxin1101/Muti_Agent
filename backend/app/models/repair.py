@@ -8,6 +8,7 @@ from app.models.failure import FailureSource, FailureType
 
 class RepairFailureKind(StrEnum):
     IMPORT_SYMBOL_MISSING = "IMPORT_SYMBOL_MISSING"
+    PYTHON_ATTRIBUTE_MISSING = "PYTHON_ATTRIBUTE_MISSING"
 
 
 class RepairFailureDigest(BaseModel):
@@ -38,6 +39,11 @@ class RepairHandoff(BaseModel):
     failure_kind: RepairFailureKind | None = None
     suspected_path: str | None = Field(default=None, max_length=500)
     suspected_symbol: str | None = Field(
+        default=None,
+        pattern=r"^[A-Za-z_][A-Za-z0-9_]*$",
+        max_length=256,
+    )
+    suspected_member: str | None = Field(
         default=None,
         pattern=r"^[A-Za-z_][A-Za-z0-9_]*$",
         max_length=256,
