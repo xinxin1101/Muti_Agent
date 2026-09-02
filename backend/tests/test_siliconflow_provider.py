@@ -7,6 +7,7 @@ import app.providers.siliconflow as siliconflow_module
 from app.core.settings import Settings
 from app.models.agent import AgentMessage, AgentRequest, AgentRole, MessageRole
 from app.models.failure import FailureSource, FailureType
+from app.models.tools import ToolCall, ToolDefinition
 from app.providers import (
     AgentDriver,
     AgentProviderError,
@@ -36,9 +37,17 @@ class FakeClient:
 
 
 class FakeStatusError(Exception):
-    def __init__(self, status_code: int) -> None:
+    def __init__(
+        self,
+        status_code: int,
+        *,
+        body=None,
+        request_id: str | None = None,
+    ) -> None:
         super().__init__(f"status={status_code}")
         self.status_code = status_code
+        self.body = body
+        self.request_id = request_id
 
 
 def make_request() -> AgentRequest:
@@ -178,6 +187,158 @@ def test_dashscope_requests_explicitly_control_qwen_thinking(
     )
 
     assert completions.calls[0]["extra_body"] == {"enable_thinking": enable_thinking}
+
+
+def test_complete_accepts_structurally_valid_tool_history() -> None:
+    response = SimpleNamespace(
+        model="model-a",
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content="done", tool_calls=None),
+                finish_reason="stop",
+            )
+        ],
+        usage=None,
+    )
+    completions = FakeCompletions(response=response)
+    driver = SiliconFlowDriver(client=FakeClient(completions))
+    request = make_request().model_copy(
+        update={
+            "messages": [
+                AgentMessage(role=MessageRole.SYSTEM, content="You are a coding agent."),
+                AgentMessage(role=MessageRole.USER, content="Inspect the repository."),
+                AgentMessage(
+                    role=MessageRole.ASSISTANT,
+                    tool_calls=[
+                        ToolCall(
+                            id="call-1",
+                            name="read_range",
+                            arguments='{"path":"src/app.py","start_line":1,"end_line":20}',
+                        )
+                    ],
+                ),
+                AgentMessage(
+                    role=MessageRole.TOOL,
+                    tool_call_id="call-1",
+                    content='{"ok":true,"path":"src/app.py"}',
+                ),
+            ],
+            "tools": [
+                ToolDefinition(
+                    name="read_range",
+                    description="Read a bounded line range.",
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "start_line": {"type": "integer"},
+                            "end_line": {"type": "integer"},
+                        },
+                        "required": ["path", "start_line", "end_line"],
+                    },
+                )
+            ],
+            "execution_iteration": 3,
+        }
+    )
+
+    result = asyncio.run(driver.complete(request))
+
+    assert result.content == "done"
+    assert len(completions.calls) == 1
+
+
+def test_local_preflight_rejects_orphan_tool_message_without_calling_provider() -> None:
+    completions = FakeCompletions(response=None)
+    driver = SiliconFlowDriver(client=FakeClient(completions))
+    request = make_request().model_copy(
+        update={
+            "messages": [
+                AgentMessage(role=MessageRole.SYSTEM, content="You are a coding agent."),
+                AgentMessage(
+                    role=MessageRole.TOOL,
+                    tool_call_id="orphan-call",
+                    content='{"ok":false}',
+                ),
+            ],
+            "execution_iteration": 4,
+        }
+    )
+
+    with pytest.raises(AgentProviderError) as exc_info:
+        asyncio.run(driver.complete(request))
+
+    error = exc_info.value
+    assert error.code is ProviderErrorCode.INVALID_REQUEST
+    assert error.retryable is False
+    assert completions.calls == []
+    report = error.to_failure_report()
+    assert report.failure_type is FailureType.PROVIDER_REQUEST_REJECTED
+    assert report.source is FailureSource.RUNTIME
+    assert "validation_stage=local_preflight" in report.evidence
+    assert "validation_code=orphan_tool_message" in report.evidence
+    assert "provider_called=false" in report.evidence
+    assert "request_role=developer" in report.evidence
+    assert "request_iteration=4" in report.evidence
+
+
+def test_provider_rejection_keeps_sanitized_error_and_request_shape() -> None:
+    error = FakeStatusError(
+        404,
+        body={
+            "error": {
+                "code": "ModelNotFound",
+                "type": "invalid_request_error",
+                "param": "model",
+                "message": (
+                    "Model not exist; api_key=super-secret-value; "
+                    + "'"
+                    + ("source-content-" * 20)
+                    + "'"
+                ),
+            }
+        },
+        request_id="req-test-123",
+    )
+    completions = FakeCompletions(error=error)
+    driver = SiliconFlowDriver(
+        client=FakeClient(completions),
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+    )
+
+    with pytest.raises(AgentProviderError) as exc_info:
+        asyncio.run(
+            driver.complete(
+                make_request().model_copy(
+                    update={
+                        "model": "wrong-provider/model-id",
+                        "execution_iteration": 5,
+                    }
+                )
+            )
+        )
+
+    normalized = exc_info.value
+    assert normalized.code is ProviderErrorCode.BAD_REQUEST
+    report = normalized.to_failure_report()
+    assert report.failure_type is FailureType.PROVIDER_REQUEST_REJECTED
+    assert report.source is FailureSource.PROVIDER
+    assert "status_code=404" in report.evidence
+    assert "request_role=developer" in report.evidence
+    assert "request_model=wrong-provider/model-id" in report.evidence
+    assert "request_iteration=5" in report.evidence
+    assert "provider_base_host=dashscope.aliyuncs.com" in report.evidence
+    assert "provider_error_code=ModelNotFound" in report.evidence
+    assert "provider_error_type=invalid_request_error" in report.evidence
+    assert "provider_error_param=model" in report.evidence
+    assert "provider_request_id=req-test-123" in report.evidence
+    assert any(item.startswith("provider_error_body_sha256=") for item in report.evidence)
+    message_evidence = next(
+        item for item in report.evidence if item.startswith("provider_error_message=")
+    )
+    assert "super-secret-value" not in message_evidence
+    assert "<redacted>" in message_evidence
+    assert "source-content-" not in message_evidence
 
 
 def test_complete_defaults_missing_usage_to_zero() -> None:
