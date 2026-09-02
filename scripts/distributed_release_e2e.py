@@ -300,6 +300,10 @@ def main() -> int:
                 "DEVFLOW_DEVELOPER_MODEL": "devflow-e2e-developer",
                 "DEVFLOW_REVIEWER_MODEL": "devflow-e2e-reviewer",
                 "DEVFLOW_REPAIR_MODEL": "devflow-e2e-repair",
+                # Readiness validates every configured role, including the optional on-demand
+                # failure explainer. Reuse a fake-provider model because the happy-path E2E never
+                # invokes failure explanation.
+                "DEVFLOW_FAILURE_EXPLANATION_MODEL": "devflow-e2e-reviewer",
                 "DEVFLOW_WORKSPACE_ROOT": str(workspace_root),
                 "DEVFLOW_DRAMATIQ_NAMESPACE": f"devflow-v25-{os.getpid()}",
                 "DEVFLOW_DRAMATIQ_QUEUE_NAME": "devflow_v25_tasks",
