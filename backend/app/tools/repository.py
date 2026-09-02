@@ -154,10 +154,16 @@ class RepositoryToolbox:
         workspace: LocalGitWorkspace,
         task: TaskContract,
         scope_enforcer: ScopeEnforcer | None = None,
+        max_read_range_lines: int = _MAX_READ_RANGE_LINES,
     ) -> None:
+        if not 1 <= max_read_range_lines <= _MAX_READ_RANGE_LINES:
+            raise ValueError(
+                f"max_read_range_lines must be between 1 and {_MAX_READ_RANGE_LINES}"
+            )
         self.workspace = workspace
         self.task = task
         self.scope_enforcer = scope_enforcer or ScopeEnforcer()
+        self._max_read_range_lines = max_read_range_lines
         self._relevance_extractor = RelevantCodeExtractor()
         self._handlers: dict[str, Callable[[dict], str]] = {
             "list_files": self._list_files,
@@ -347,6 +353,12 @@ class RepositoryToolbox:
 
     def _read_range(self, arguments: dict) -> str:
         args = ReadRangeArgs.model_validate(arguments)
+        requested_lines = args.end_line - args.start_line + 1
+        if requested_lines > self._max_read_range_lines:
+            raise RepositoryToolError(
+                ToolErrorCode.INVALID_ARGUMENTS,
+                f"read_range is limited to {self._max_read_range_lines} lines for this agent",
+            )
         relative, path = self._resolve_file_for_read(args.path)
         lines = self._read_text_file(path).splitlines(keepends=True)
         if args.start_line > len(lines):
