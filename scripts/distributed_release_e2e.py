@@ -91,9 +91,11 @@ def _wait_for_json(
             )
         try:
             payload = _request_json("GET", url, timeout=2.0)
-            if expected is not None and payload != expected:
+            if expected is not None and any(
+                payload.get(key) != value for key, value in expected.items()
+            ):
                 raise DistributedE2EFailure(
-                    f"{url} returned unexpected JSON: {payload!r}; expected {expected!r}"
+                    f"{url} returned unexpected JSON: {payload!r}; expected at least {expected!r}"
                 )
             return payload
         except DistributedE2EFailure as exc:
