@@ -8,6 +8,7 @@ from pathlib import Path
 
 from app import agents, models
 from app.providers.base import AgentDriver
+from app.runtime.orchestrator import SingleTaskOrchestrator
 from app.workspace import LocalGitWorkspace
 
 
@@ -191,6 +192,146 @@ def test_runtime_v3_import_prefetch_drives_gameengine_patch(tmp_path: Path) -> N
 
     module = _load_gomoku_module(root / "src" / "gomoku_logic.py")
     assert module.GameEngine().is_valid_move(7, 7) is True
+
+
+def test_failure_hint_prefers_new_attribute_error_over_stale_import_error() -> None:
+    failure = models.FailureReport(
+        failure_type=models.FailureType.TEST_FAILURE,
+        source=models.FailureSource.VERIFICATION,
+        message="Deterministic custom verification failed.",
+        retryable=True,
+        evidence=[
+            (
+                'check=custom\n'
+                'command=python3 -c "from src.gomoku_engine import GameLogic; '
+                'g = GameLogic(); assert g.is_valid_move(7, 7)"\n'
+                "stderr=Traceback (most recent call last):\n"
+                "ImportError: cannot import name 'GameLogic' from 'src.gomoku_engine'\n"
+                "previous_repair_progress=PROGRESS_MADE\n"
+                "latest_stderr=AttributeError: 'GameLogic' object has no attribute "
+                "'is_valid_move'"
+            )
+        ],
+    )
+
+    kind, path, symbol, member = SingleTaskOrchestrator._repair_failure_hint([failure])
+
+    assert kind is models.RepairFailureKind.PYTHON_ATTRIBUTE_MISSING
+    assert path == "src/gomoku_engine.py"
+    assert symbol == "GameLogic"
+    assert member == "is_valid_move"
+
+
+def test_runtime_v3_attribute_prefetch_repairs_missing_method(tmp_path: Path) -> None:
+    original = (
+        "class GameLogic:\n"
+        "    def __init__(self):\n"
+        "        self.board_size = 15\n"
+    )
+    replacement = (
+        "class GameLogic:\n"
+        "    def __init__(self):\n"
+        "        self.board_size = 15\n"
+        "\n"
+        "    def is_valid_move(self, row, col):\n"
+        "        return 0 <= row < self.board_size and 0 <= col < self.board_size\n"
+    )
+    root = _repository(tmp_path, original)
+    source = root / "src" / "gomoku_logic.py"
+    engine_path = root / "src" / "gomoku_engine.py"
+    source.rename(engine_path)
+    _git(root, "add", "-A")
+    _git(root, "commit", "-m", "use gomoku engine fixture")
+    workspace = LocalGitWorkspace(root)
+    task = _task().model_copy(
+        update={
+            "writable_files": ["src/gomoku_engine.py"],
+            "acceptance_criteria": [
+                "src.gomoku_engine.GameLogic is importable",
+                "GameLogic().is_valid_move(7, 7) returns true",
+            ],
+            "verification_commands": [
+                (
+                    'python3 -c "from src.gomoku_engine import GameLogic; '
+                    'g = GameLogic(); assert g.is_valid_move(7, 7)"'
+                )
+            ],
+        }
+    )
+    failure = models.FailureReport(
+        failure_type=models.FailureType.TEST_FAILURE,
+        source=models.FailureSource.VERIFICATION,
+        message="Deterministic custom verification failed.",
+        retryable=True,
+        evidence=[
+            (
+                'check=custom\n'
+                'command=python3 -c "from src.gomoku_engine import GameLogic; '
+                'g = GameLogic(); assert g.is_valid_move(7, 7)"\n'
+                "exit_code=1\n"
+                "stderr=Traceback (most recent call last):\n"
+                "AttributeError: 'GameLogic' object has no attribute 'is_valid_move'"
+            )
+        ],
+    )
+    handoff = SingleTaskOrchestrator._repair_handoff(
+        task,
+        failures=[failure],
+        workspace=workspace,
+    )
+    assert handoff.failure_kind is models.RepairFailureKind.PYTHON_ATTRIBUTE_MISSING
+    assert handoff.suspected_path == "src/gomoku_engine.py"
+    assert handoff.suspected_symbol == "GameLogic"
+    assert handoff.suspected_member == "is_valid_move"
+
+    patch = models.ToolCall(
+        id="repair-method",
+        name="apply_patch",
+        arguments=json.dumps(
+            {
+                "path": "src/gomoku_engine.py",
+                "old_text": original,
+                "new_text": replacement,
+            }
+        ),
+    )
+    driver = FakeDriver(
+        [
+            _response(tool_calls=[patch]),
+            _response(content="已修改文件: src/gomoku_engine.py"),
+        ]
+    )
+    repair = agents.RepairAgent(
+        driver=driver,
+        model="test/repair",
+        runtime_v3_enabled=True,
+        runtime_mutation_gate_enabled=True,
+        runtime_import_prefetch_enabled=True,
+    )
+
+    result = asyncio.run(
+        repair.repair(
+            task,
+            [failure],
+            attempt=1,
+            workspace=workspace,
+            handoff=handoff,
+        )
+    )
+
+    assert result.stop_reason is models.RepairStopReason.MODEL_STOP
+    assert result.changed_files == ["src/gomoku_engine.py"]
+    first_prompt = "\n".join(message.content for message in driver.requests[0].messages)
+    assert "failure_kind=PYTHON_ATTRIBUTE_MISSING" in first_prompt
+    assert "path=src/gomoku_engine.py" in first_prompt
+    assert "symbol=GameLogic" in first_prompt
+    assert "member=is_valid_move" in first_prompt
+    assert "symbol_found=True" in first_prompt
+    assert "class GameLogic:" in first_prompt
+    assert "ensure GameLogic.is_valid_move exists" in first_prompt
+
+    module = _load_gomoku_module(engine_path)
+    assert module.GameLogic().is_valid_move(7, 7) is True
 
 
 def test_runtime_v3_forces_mutation_after_two_observation_turns(tmp_path: Path) -> None:
