@@ -307,18 +307,7 @@ class LocalQueuedTaskExecutionBackend:
         changed_files = tuple(workspace.changed_files())
         if not changed_files:
             return None
-        reason = CheckpointReason.VERIFICATION_FAILURE
-        if any(
-            failure.failure_type is FailureType.TOKEN_BUDGET_EXHAUSTED
-            for failure in run_result.failures
-        ):
-            reason = CheckpointReason.RUN_TOKEN_BUDGET_EXHAUSTED
-        elif run_result.developer is not None:
-            reason = {
-                DeveloperStopReason.TIME_LIMIT: CheckpointReason.TIME_LIMIT,
-                DeveloperStopReason.ITERATION_LIMIT: CheckpointReason.ITERATION_LIMIT,
-                DeveloperStopReason.TOOL_CALL_LIMIT: CheckpointReason.TOOL_CALL_LIMIT,
-            }.get(run_result.developer.stop_reason, reason)
+        reason = self._checkpoint_reason(run_result)
         async with self._git_fence.guard_task_git_mutation(
             run_id=run_id,
             task_id=task.task_id,
@@ -346,6 +335,23 @@ class LocalQueuedTaskExecutionBackend:
             ),
             context_state=context_state,
         )
+
+    @staticmethod
+    def _checkpoint_reason(run_result: SingleTaskRunResult) -> CheckpointReason:
+        if any(
+            failure.failure_type is FailureType.TOKEN_BUDGET_EXHAUSTED
+            for failure in run_result.failures
+        ):
+            return CheckpointReason.RUN_TOKEN_BUDGET_EXHAUSTED
+        if run_result.developer is not None:
+            bounded_reason = {
+                DeveloperStopReason.TIME_LIMIT: CheckpointReason.TIME_LIMIT,
+                DeveloperStopReason.ITERATION_LIMIT: CheckpointReason.ITERATION_LIMIT,
+                DeveloperStopReason.TOOL_CALL_LIMIT: CheckpointReason.TOOL_CALL_LIMIT,
+            }.get(run_result.developer.stop_reason)
+            if bounded_reason is not None:
+                return bounded_reason
+        return CheckpointReason.VERIFICATION_FAILURE
 
     @staticmethod
     def _worktree_identity(
