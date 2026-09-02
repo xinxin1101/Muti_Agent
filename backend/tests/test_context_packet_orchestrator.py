@@ -175,7 +175,8 @@ def test_orchestrator_rebuilds_context_from_current_worktree_for_each_agent_stag
     assert "VALUE = 1" in developer_prompt
     assert "Fresh targeted RepairHandoff" in repair_prompt
     assert "module.py" in repair_prompt
-    assert "VALUE = 3" not in repair_prompt
+    assert "selected_files" not in repair_prompt
+    assert "\"snippets\"" not in repair_prompt
     assert repair_driver.requests[0].context_estimated_tokens == 0
     assert "ReviewerContextView" in reviewer_prompt
     assert "VALUE = 2" in reviewer_prompt
