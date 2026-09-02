@@ -163,7 +163,9 @@ class RepairAgent:
         total_tokens = 0
         total_latency_ms = 0
         tool_call_count = 0
-        successful_tool_progress = bool(workspace.changed_files())
+        repair_start_patch_hash = workspace.change_snapshot().patch_hash
+        successful_tool_progress = False
+        consecutive_no_patch_stops = 0
 
         for iteration in range(1, self._max_iterations + 1):
             remaining = self._max_duration_seconds - (self._clock() - started_at)
@@ -191,7 +193,10 @@ class RepairAgent:
                 temperature=self._temperature,
                 max_output_tokens=self._max_output_tokens,
                 enable_thinking=self._enable_thinking,
-                budget_progress=successful_tool_progress or bool(workspace.changed_files()),
+                budget_progress=(
+                    successful_tool_progress
+                    or workspace.change_snapshot().patch_hash != repair_start_patch_hash
+                ),
                 # Fresh RepairHandoff is the complete role-projected provider input.
                 # Do not reuse the full Developer ContextPacket estimate as a reservation floor.
                 context_estimated_tokens=(
@@ -251,22 +256,75 @@ class RepairAgent:
             )
 
             if not response.tool_calls:
-                return self._result(
-                    task=task,
-                    failures=repairable,
-                    attempt=attempt,
-                    stop_reason=RepairStopReason.MODEL_STOP,
-                    iterations=iteration,
-                    tool_calls=tool_call_count,
-                    workspace=workspace,
-                    final_message=response.content,
-                    usage=TokenUsage(
-                        prompt_tokens=prompt_tokens,
-                        completion_tokens=completion_tokens,
-                        total_tokens=total_tokens,
-                    ),
-                    latency_ms=total_latency_ms,
+                has_patch = (
+                    workspace.change_snapshot().patch_hash != repair_start_patch_hash
                 )
+                if has_patch:
+                    return self._result(
+                        task=task,
+                        failures=repairable,
+                        attempt=attempt,
+                        stop_reason=RepairStopReason.MODEL_STOP,
+                        iterations=iteration,
+                        tool_calls=tool_call_count,
+                        workspace=workspace,
+                        final_message=response.content,
+                        usage=TokenUsage(
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=completion_tokens,
+                            total_tokens=total_tokens,
+                        ),
+                        latency_ms=total_latency_ms,
+                    )
+
+                if self._is_explicit_blocker(response.content):
+                    return self._result(
+                        task=task,
+                        failures=repairable,
+                        attempt=attempt,
+                        stop_reason=RepairStopReason.EXPLICIT_BLOCKER,
+                        iterations=iteration,
+                        tool_calls=tool_call_count,
+                        workspace=workspace,
+                        final_message=response.content,
+                        usage=TokenUsage(
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=completion_tokens,
+                            total_tokens=total_tokens,
+                        ),
+                        latency_ms=total_latency_ms,
+                    )
+
+                consecutive_no_patch_stops += 1
+                if consecutive_no_patch_stops >= 2 or iteration >= self._max_iterations:
+                    return self._result(
+                        task=task,
+                        failures=repairable,
+                        attempt=attempt,
+                        stop_reason=RepairStopReason.NO_PROGRESS,
+                        iterations=iteration,
+                        tool_calls=tool_call_count,
+                        workspace=workspace,
+                        final_message=response.content,
+                        usage=TokenUsage(
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=completion_tokens,
+                            total_tokens=total_tokens,
+                        ),
+                        latency_ms=total_latency_ms,
+                    )
+
+                messages = [
+                    *messages,
+                    assistant_message,
+                    AgentMessage(
+                        role=MessageRole.USER,
+                        content=self._no_patch_recovery_prompt(handoff),
+                    ),
+                ]
+                continue
+
+            consecutive_no_patch_stops = 0
 
             if len(response.tool_calls) > self._max_tool_calls_per_turn:
                 return self._result(
@@ -396,6 +454,28 @@ class RepairAgent:
                 total_tokens=total_tokens,
             ),
             latency_ms=total_latency_ms,
+        )
+
+    @staticmethod
+    def _is_explicit_blocker(content: str) -> bool:
+        return content.lstrip().upper().startswith("BLOCKED:")
+
+    @staticmethod
+    def _no_patch_recovery_prompt(handoff: RepairHandoff | None) -> str:
+        hint = ""
+        if handoff is not None and handoff.failure_kind is not None:
+            hint = (
+                f" Failure hint: kind={handoff.failure_kind.value};"
+                f" path={handoff.suspected_path or 'unknown'};"
+                f" symbol={handoff.suspected_symbol or 'unknown'}."
+            )
+        return (
+            "No workspace patch has been produced and the deterministic verification failure "
+            "is still unresolved. Use the scoped repository tools now: inspect the relevant "
+            "symbol/path, then produce a candidate patch with apply_patch or write_file. "
+            "Do not stop after analysis alone. If a concrete runtime/scope blocker makes a "
+            "patch impossible, return exactly 'BLOCKED: <reason>'."
+            + hint
         )
 
     async def _record_tool_cost_outcome(
