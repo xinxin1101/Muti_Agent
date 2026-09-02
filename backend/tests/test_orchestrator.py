@@ -558,16 +558,25 @@ def test_second_no_patch_repair_becomes_terminal_without_reverification(tmp_path
 
 
 @pytest.mark.parametrize(
-    ("failure_summaries", "expected_status"),
+    ("failure_summaries", "expected_status", "expected_attempts"),
     [
-        (["original assertion", "different assertion"], models.RepairProgressStatus.PROGRESS_MADE),
-        (["same assertion", "same assertion"], models.RepairProgressStatus.REPAIR_INEFFECTIVE),
+        (
+            ["original assertion", "different assertion"],
+            models.RepairProgressStatus.PROGRESS_MADE,
+            [1, 2],
+        ),
+        (
+            ["same assertion", "same assertion"],
+            models.RepairProgressStatus.REPAIR_INEFFECTIVE,
+            [1],
+        ),
     ],
 )
 def test_repair_patch_records_failure_signature_progress(
     tmp_path: Path,
     failure_summaries: list[str],
     expected_status: models.RepairProgressStatus,
+    expected_attempts: list[int],
 ) -> None:
     root = _repository(tmp_path)
     workspace = LocalGitWorkspace(root)
@@ -592,7 +601,7 @@ def test_repair_patch_records_failure_signature_progress(
     result = asyncio.run(orchestrator.run(_task(max_retries=1), workspace=workspace))
 
     assert result.status is TaskRunState.FAILED
-    assert repair.attempts == [1]
+    assert repair.attempts == expected_attempts
     assert verifier.calls == 2
     progress = result.repairs[0].progress
     assert progress is not None
@@ -658,11 +667,12 @@ def test_import_error_produces_targeted_repair_hint() -> None:
         ],
     )
 
-    kind, path, symbol = SingleTaskOrchestrator._repair_failure_hint([failure])
+    kind, path, symbol, member = SingleTaskOrchestrator._repair_failure_hint([failure])
 
     assert kind is models.RepairFailureKind.IMPORT_SYMBOL_MISSING
     assert path == "src/gomoku_engine.py"
     assert symbol == "GameLogic"
+    assert member is None
 
 
 def test_state_machine_rejects_invalid_transition() -> None:
