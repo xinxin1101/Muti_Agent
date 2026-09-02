@@ -61,6 +61,9 @@ class Settings(BaseSettings):
     # Tool result retention is a context-window control, not a financial budget.
     agent_max_single_tool_result_tokens: int = Field(default=1_200, ge=128, le=32_768)
     agent_max_tool_results_per_turn_tokens: int = Field(default=2_400, ge=128, le=65_536)
+    # Repair has a fresh issue-scoped view, so observations can be substantially smaller.
+    repair_max_single_tool_result_tokens: int = Field(default=600, ge=128, le=8_192)
+    repair_max_tool_results_per_turn_tokens: int = Field(default=1_200, ge=128, le=16_384)
     adaptive_package_budget_enabled: bool = True
     adaptive_work_package_routing_enabled: bool = True
     # Lifecycle/recovery mutations can be enabled progressively without hiding their
@@ -95,9 +98,10 @@ class Settings(BaseSettings):
     # change. Keep the Worker heartbeat independent, while allowing that bounded exploration.
     developer_max_duration_seconds: float = Field(default=600.0, ge=1.0, le=600.0)
     developer_max_model_turn_seconds: float = Field(default=180.0, ge=1.0, le=600.0)
-    repair_max_iterations: int = Field(default=10, ge=1, le=20)
+    repair_max_iterations: int = Field(default=4, ge=1, le=20)
     repair_max_duration_seconds: float = Field(default=300.0, ge=1.0, le=600.0)
     repair_max_model_turn_seconds: float = Field(default=90.0, ge=1.0, le=600.0)
+    repair_max_read_range_lines: int = Field(default=120, ge=20, le=400)
     minimum_repair_attempts: int = Field(default=2, ge=0, le=5)
 
     # Read and publication credentials are distinct capabilities. The legacy DEVFLOW_GITHUB_TOKEN
@@ -271,6 +275,13 @@ class Settings(BaseSettings):
         if self.agent_max_tool_results_per_turn_tokens < self.agent_max_single_tool_result_tokens:
             raise ValueError(
                 "per-turn tool-result context budget must cover one complete tool result"
+            )
+        if (
+            self.repair_max_tool_results_per_turn_tokens
+            < self.repair_max_single_tool_result_tokens
+        ):
+            raise ValueError(
+                "repair per-turn tool-result context budget must cover one repair tool result"
             )
         return self
 
