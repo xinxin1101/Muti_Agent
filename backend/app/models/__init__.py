@@ -102,6 +102,8 @@ from app.models.recovery import (
     TaskRecoveryAssessment,
 )
 from app.models.repair import (
+    RepairFailureDigest,
+    RepairHandoff,
     RepairProgressEvidence,
     RepairProgressStatus,
     RepairRunResult,
@@ -239,6 +241,8 @@ __all__ = [
     "ParallelWorkerWaveResult",
     "PersistedRuntimeEvent",
     "RecoveryDisposition",
+    "RepairFailureDigest",
+    "RepairHandoff",
     "RepairProgressEvidence",
     "RepairProgressStatus",
     "RepairRunResult",
