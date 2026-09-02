@@ -105,6 +105,10 @@ def build_single_task_runner(
         max_retained_tool_groups=settings.developer_max_retained_tool_groups,
         max_single_tool_result_tokens=settings.developer_max_single_tool_result_tokens,
         max_tool_results_per_turn_tokens=settings.developer_max_tool_results_per_turn_tokens,
+        runtime_v3_enabled=(
+            settings.agent_runtime_v3_enabled and settings.developer_runtime_v3_enabled
+        ),
+        runtime_mutation_gate_enabled=settings.runtime_mutation_gate_enabled,
     )
     reviewer = ReviewerAgent(
         driver=driver,
