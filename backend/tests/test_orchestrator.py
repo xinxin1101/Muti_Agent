@@ -166,10 +166,12 @@ class AlwaysNoPatchRepair:
 
     def __init__(self) -> None:
         self.attempts: list[int] = []
+        self.failure_evidence: list[list[str]] = []
 
     async def repair(self, task, failures, *, attempt, workspace, context_packet, trace=None):
-        del task, failures, context_packet, trace
+        del task, context_packet, trace
         self.attempts.append(attempt)
+        self.failure_evidence.append(list(failures[0].evidence))
         return models.RepairRunResult(
             attempt=attempt,
             failure_types=[models.FailureType.TEST_FAILURE],
