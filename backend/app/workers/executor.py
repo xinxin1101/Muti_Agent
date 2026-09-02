@@ -308,7 +308,12 @@ class LocalQueuedTaskExecutionBackend:
         if not changed_files:
             return None
         reason = CheckpointReason.VERIFICATION_FAILURE
-        if run_result.developer is not None:
+        if any(
+            failure.failure_type is FailureType.TOKEN_BUDGET_EXHAUSTED
+            for failure in run_result.failures
+        ):
+            reason = CheckpointReason.RUN_TOKEN_BUDGET_EXHAUSTED
+        elif run_result.developer is not None:
             reason = {
                 DeveloperStopReason.TIME_LIMIT: CheckpointReason.TIME_LIMIT,
                 DeveloperStopReason.ITERATION_LIMIT: CheckpointReason.ITERATION_LIMIT,
