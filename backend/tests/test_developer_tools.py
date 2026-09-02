@@ -791,3 +791,132 @@ def test_developer_agent_rejects_tool_call_fanout_before_execution(tmp_path: Pat
     assert result.tool_calls == 0
     assert not (root / "app" / "a.py").exists()
     assert not (root / "app" / "b.py").exists()
+
+def test_developer_runtime_v3_observation_does_not_count_as_budget_progress(
+    tmp_path: Path,
+) -> None:
+    root = _make_repository(tmp_path)
+    workspace = LocalGitWorkspace(root)
+    driver = FakeDriver(
+        [
+            _response(tool_calls=[_call("read-v3", "read_file", {"path": "app/main.py"})]),
+            _response(
+                tool_calls=[
+                    _call(
+                        "patch-v3",
+                        "apply_patch",
+                        {
+                            "path": "app/main.py",
+                            "old_text": "VALUE = 1",
+                            "new_text": "VALUE = 2",
+                        },
+                    )
+                ]
+            ),
+            _response(content="已修改文件: app/main.py\n已执行验证: 无\n遗留事项: 无"),
+        ]
+    )
+    developer = DeveloperAgent(
+        driver=driver,
+        model="test/developer",
+        runtime_v3_enabled=True,
+    )
+
+    result = asyncio.run(developer.run(_task(), workspace=workspace))
+
+    assert result.stop_reason is DeveloperStopReason.MODEL_STOP
+    assert result.changed_files == ["app/main.py"]
+    assert len(driver.requests) == 3
+    assert driver.requests[0].budget_progress is False
+    assert driver.requests[1].budget_progress is False
+    assert driver.requests[2].budget_progress is True
+    assert (root / "app" / "main.py").read_text(encoding="utf-8") == "VALUE = 2\n"
+
+
+def test_developer_runtime_v3_preserves_tool_recovery_liveness_credit(
+    tmp_path: Path,
+) -> None:
+    class RecordingBudgetStore:
+        def __init__(self) -> None:
+            self.credits: list[LivenessCredit] = []
+
+        async def reserve(self, **kwargs):  # type: ignore[no-untyped-def]
+            self.credits.append(kwargs["liveness_credit"])
+            return object()
+
+        async def settle(self, _reservation, _usage):  # type: ignore[no-untyped-def]
+            return None
+
+        async def cancel(self, _reservation):  # type: ignore[no-untyped-def]
+            return None
+
+    root = _make_repository(tmp_path)
+    workspace = LocalGitWorkspace(root)
+    invalid_call = ToolCall(id="bad-write-v3", name="write_file", arguments="{")
+    provider = FakeDriver(
+        [
+            _response(tool_calls=[invalid_call]),
+            _response(
+                tool_calls=[
+                    _call(
+                        "fixed-write-v3",
+                        "write_file",
+                        {"path": "app/game.py", "content": "def run():\n    return 'ok'\n"},
+                    )
+                ]
+            ),
+            _response(content="已修改文件: app/game.py\n已执行验证: 无\n遗留事项: 无"),
+        ]
+    )
+    budget_store = RecordingBudgetStore()
+    developer = DeveloperAgent(
+        driver=BudgetedAgentDriver(
+            driver=provider,
+            budget_store=budget_store,  # type: ignore[arg-type]
+            run_id=uuid4(),
+            task_id="DEV-001",
+        ),
+        model="test/developer",
+        max_iterations=6,
+        runtime_v3_enabled=True,
+    )
+
+    result = asyncio.run(developer.run(_task(), workspace=workspace))
+
+    assert result.stop_reason is DeveloperStopReason.MODEL_STOP
+    assert budget_store.credits == [
+        LivenessCredit.INITIAL_STARTUP,
+        LivenessCredit.TOOL_RECOVERY,
+        LivenessCredit.VERIFIED_PROGRESS,
+    ]
+    assert provider.requests[1].max_output_tokens == 3_200
+    assert "complete JSON object" in provider.requests[1].messages[-1].content
+
+
+def test_developer_runtime_v3_repeated_invalid_tool_call_is_terminal(
+    tmp_path: Path,
+) -> None:
+    root = _make_repository(tmp_path)
+    workspace = LocalGitWorkspace(root)
+    invalid_call = ToolCall(id="bad-v3-1", name="write_file", arguments="{")
+    driver = FakeDriver(
+        [
+            _response(tool_calls=[invalid_call]),
+            _response(tool_calls=[invalid_call.model_copy(update={"id": "bad-v3-2"})]),
+        ]
+    )
+
+    result = asyncio.run(
+        DeveloperAgent(
+            driver=driver,
+            model="test/developer",
+            max_iterations=6,
+            runtime_v3_enabled=True,
+        ).run(_task(), workspace=workspace)
+    )
+
+    assert result.stop_reason is DeveloperStopReason.REPEATED_TOOL_FAILURE
+    assert result.changed_files == []
+    assert result.tool_failure_evidence == (
+        "tool=write_file;error_code=INVALID_ARGUMENTS;arguments=invalid_json;fields=-",
+    )
