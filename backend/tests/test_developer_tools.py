@@ -642,12 +642,12 @@ def test_developer_compacts_old_complete_tool_groups_without_orphans(tmp_path: P
         for message in final_request.messages
         if message.role.value == "assistant" and message.tool_calls
     ]
-    assert [message.tool_call_id for message in tool_messages] == ["read-2", "read-3"]
-    assert [message.tool_calls[0].id for message in assistant_calls] == ["read-2", "read-3"]
+    assert [message.tool_call_id for message in tool_messages] == ["read-3"]
+    assert [message.tool_calls[0].id for message in assistant_calls] == ["read-3"]
     assert any("compact working state" in message.content for message in final_request.messages)
 
 
-def test_developer_retains_only_two_of_ten_tool_groups_with_bounded_digest(tmp_path: Path) -> None:
+def test_developer_retains_only_one_of_many_tool_groups_with_bounded_digest(tmp_path: Path) -> None:
     root = _make_repository(tmp_path)
     workspace = LocalGitWorkspace(root)
     responses = [
@@ -672,8 +672,8 @@ def test_developer_retains_only_two_of_ten_tool_groups_with_bounded_digest(tmp_p
         for message in final_request.messages
         if message.role is MessageRole.ASSISTANT and message.tool_calls
     ]
-    assert [item.tool_call_id for item in tool_messages] == ["read-10", "read-11"]
-    assert [item.tool_calls[0].id for item in assistant_messages] == ["read-10", "read-11"]
+    assert [item.tool_call_id for item in tool_messages] == ["read-11"]
+    assert [item.tool_calls[0].id for item in assistant_messages] == ["read-11"]
     digest_message = next(
         message for message in final_request.messages if "compact working state" in message.content
     )
