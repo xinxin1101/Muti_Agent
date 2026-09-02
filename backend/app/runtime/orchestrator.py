@@ -554,7 +554,8 @@ class SingleTaskOrchestrator:
             SingleTaskOrchestrator._repair_failure_hint(failures)
         )
         relevant_paths: list[str] = []
-        for path in (*changed_files, *((suspected_path,) if suspected_path else ()), *task.writable_files):
+        hinted_paths = (suspected_path,) if suspected_path else ()
+        for path in (*changed_files, *hinted_paths, *task.writable_files):
             if any(character in path for character in "*?["):
                 continue
             if path not in relevant_paths:
