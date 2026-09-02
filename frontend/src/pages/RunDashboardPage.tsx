@@ -856,6 +856,7 @@ function failureTypeLabel(failure: ProductRunFailure): string {
     RATE_LIMIT: "模型服务限流",
     INVALID_AGENT_OUTPUT: "智能体输出无效",
     INVALID_TOOL_ARGUMENTS: "工具参数无效",
+    PROVIDER_REQUEST_REJECTED: "模型请求被服务商拒绝",
     TOOL_FAILURE: "运行环境或工具故障",
     SCOPE_VIOLATION: "超出文件修改范围",
     TEST_FAILURE: "验证命令未通过",
@@ -878,6 +879,7 @@ function failurePriority(failure: ProductRunFailure): number {
     LINT_FAILURE: 2,
     TOKEN_BUDGET_EXHAUSTED: 3,
     WORK_PACKAGE_BUDGET_ALLOCATION_BLOCKED: 3,
+    PROVIDER_REQUEST_REJECTED: 5,
     PROVIDER_FAILURE: 5,
     TOOL_FAILURE: 5,
   } as Record<string, number>)[failure.failure_type] ?? 4;
