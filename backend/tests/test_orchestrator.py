@@ -159,6 +159,28 @@ class TimeoutThenRepair:
         )
 
 
+class AlwaysNoPatchRepair:
+    """Simulate a bounded Repair implementation that never mutates the workspace."""
+
+    def __init__(self) -> None:
+        self.attempts: list[int] = []
+
+    async def repair(self, task, failures, *, attempt, workspace, context_packet, trace=None):
+        del task, failures, context_packet, trace
+        self.attempts.append(attempt)
+        return models.RepairRunResult(
+            attempt=attempt,
+            failure_types=[models.FailureType.TEST_FAILURE],
+            stop_reason=models.RepairStopReason.NO_PROGRESS,
+            iterations=2,
+            tool_calls=0,
+            final_message="No candidate patch was produced.",
+            changed_files=workspace.changed_files(),
+            usage=models.TokenUsage(),
+            latency_ms=1,
+        )
+
+
 class WritesPatchRepair:
     """Simulate a Repair Agent that produces one controlled candidate patch."""
 
@@ -449,7 +471,9 @@ def test_bounded_developer_slice_with_changes_verifies_without_an_extra_model_tu
     assert len(result.verifications) == 1
 
 
-def test_repair_without_patch_stops_without_repeating_verification(tmp_path: Path) -> None:
+def test_first_no_patch_repair_uses_minimum_second_attempt_before_verification(
+    tmp_path: Path,
+) -> None:
     root = _repository(tmp_path)
     workspace = LocalGitWorkspace(root)
     developer_driver = FakeDriver(
@@ -459,8 +483,8 @@ def test_repair_without_patch_stops_without_repeating_verification(tmp_path: Pat
         ]
     )
     repair = TimeoutThenRepair()
-    reviewer_driver = FakeDriver([])
-    verifier = SequenceVerifier([False])
+    reviewer_driver = FakeDriver([_response(content=_review_pass())])
+    verifier = SequenceVerifier([False, True])
     orchestrator = SingleTaskOrchestrator(
         developer=agents.DeveloperAgent(driver=developer_driver, model="fake/developer"),
         verifier=verifier,  # type: ignore[arg-type]
@@ -474,18 +498,55 @@ def test_repair_without_patch_stops_without_repeating_verification(tmp_path: Pat
 
     result = asyncio.run(orchestrator.run(_task(max_retries=1), workspace=workspace))
 
-    assert result.status is TaskRunState.FAILED
-    assert repair.attempts == [1]
-    assert result.repair_attempts == 1
-    assert result.repairs[0].stop_reason is models.RepairStopReason.TIME_LIMIT
+    assert result.status is TaskRunState.SUCCEEDED
+    assert repair.attempts == [1, 2]
+    assert result.repair_attempts == 2
     assert result.repairs[0].progress is not None
     assert result.repairs[0].progress.status is models.RepairProgressStatus.NO_PATCH_PRODUCED
     assert result.repairs[0].progress.has_patch is False
     assert result.repairs[0].progress.validation_executed is False
+    assert result.repairs[1].progress is not None
+    assert result.repairs[1].progress.has_patch is True
+    assert verifier.calls == 2
+    assert len(result.verifications) == 2
+
+
+def test_second_no_patch_repair_becomes_terminal_without_reverification(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    workspace = LocalGitWorkspace(root)
+    developer_driver = FakeDriver(
+        [
+            _response(tool_calls=[_patch("dev-1", "VALUE = 1", "VALUE = 3")]),
+            _response(content="Initial implementation completed."),
+        ]
+    )
+    repair = AlwaysNoPatchRepair()
+    verifier = SequenceVerifier([False])
+    orchestrator = SingleTaskOrchestrator(
+        developer=agents.DeveloperAgent(driver=developer_driver, model="fake/developer"),
+        verifier=verifier,  # type: ignore[arg-type]
+        reviewer=agents.ReviewerAgent(driver=FakeDriver([]), model="fake/reviewer"),
+        repair=repair,  # type: ignore[arg-type]
+        developer_model="fake/developer",
+        reviewer_model="fake/reviewer",
+        repair_model="fake/repair",
+        minimum_repair_attempts=2,
+    )
+
+    result = asyncio.run(orchestrator.run(_task(max_retries=1), workspace=workspace))
+
+    assert result.status is TaskRunState.FAILED
+    assert repair.attempts == [1, 2]
+    assert result.repair_attempts == 2
     assert verifier.calls == 1
     assert len(result.verifications) == 1
+    assert result.repairs[-1].progress is not None
+    assert result.repairs[-1].progress.has_patch is False
     assert any("repair_progress=NO_PATCH_PRODUCED" in item for item in result.failures[0].evidence)
-    assert reviewer_driver.requests == []
+    assert any(
+        "previous_repair_stop_reason=NO_PROGRESS" in item
+        for item in result.repairs[-1].progress.model_dump_json() + ""
+    ) is False
 
 
 @pytest.mark.parametrize(
@@ -573,8 +634,43 @@ def test_verification_failure_resume_verifies_then_repairs_without_developer_rep
     assert result.developer is None
 
 
+def test_import_error_produces_targeted_repair_hint() -> None:
+    failure = models.FailureReport(
+        failure_type=models.FailureType.TEST_FAILURE,
+        source=models.FailureSource.VERIFICATION,
+        message="Deterministic custom verification failed.",
+        retryable=True,
+        evidence=[
+            "check=custom",
+            (
+                "stderr=Traceback (most recent call last):\n"
+                "ImportError: cannot import name 'GameLogic' "
+                "from 'src.gomoku_engine' (/workspace/src/gomoku_engine.py)"
+            ),
+        ],
+    )
+
+    kind, path, symbol = SingleTaskOrchestrator._repair_failure_hint([failure])
+
+    assert kind is models.RepairFailureKind.IMPORT_SYMBOL_MISSING
+    assert path == "src/gomoku_engine.py"
+    assert symbol == "GameLogic"
+
+
 def test_state_machine_rejects_invalid_transition() -> None:
     machine = TaskStateMachine()
 
     with pytest.raises(ValueError, match="invalid task-state transition"):
         machine.transition(TaskRunState.REVIEWING, detail="skip hard gate")
+
+
+
+def test_state_machine_allows_bounded_repair_retry_transition() -> None:
+    machine = TaskStateMachine()
+    machine.transition(TaskRunState.RUNNING, detail="start")
+    machine.transition(TaskRunState.VERIFYING, detail="verify")
+    machine.transition(TaskRunState.REPAIRING, detail="repair attempt 1")
+    machine.transition(TaskRunState.REPAIRING, detail="repair attempt 2")
+
+    assert machine.state is TaskRunState.REPAIRING
+    assert machine.events[-1].detail == "repair attempt 2"
