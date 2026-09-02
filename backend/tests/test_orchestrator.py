@@ -131,10 +131,12 @@ class TimeoutThenRepair:
 
     def __init__(self) -> None:
         self.attempts: list[int] = []
+        self.failure_evidence: list[list[str]] = []
 
     async def repair(self, task, failures, *, attempt, workspace, context_packet, trace=None):
-        del task, failures, context_packet, trace
+        del task, context_packet, trace
         self.attempts.append(attempt)
+        self.failure_evidence.append(list(failures[0].evidence))
         if attempt == 1:
             return models.RepairRunResult(
                 attempt=attempt,
@@ -545,8 +547,12 @@ def test_second_no_patch_repair_becomes_terminal_without_reverification(tmp_path
     assert any("repair_progress=NO_PATCH_PRODUCED" in item for item in result.failures[0].evidence)
     assert any(
         "previous_repair_stop_reason=NO_PROGRESS" in item
-        for item in result.repairs[-1].progress.model_dump_json() + ""
-    ) is False
+        for item in repair.failure_evidence[1]
+    )
+    assert any(
+        item.startswith("previous_repair_summary=")
+        for item in repair.failure_evidence[1]
+    )
 
 
 @pytest.mark.parametrize(
