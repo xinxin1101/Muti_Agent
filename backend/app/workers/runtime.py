@@ -109,6 +109,7 @@ def build_single_task_runner(
             settings.agent_runtime_v3_enabled and settings.developer_runtime_v3_enabled
         ),
         runtime_mutation_gate_enabled=settings.runtime_mutation_gate_enabled,
+        runtime_repo_map_enabled=settings.runtime_repo_map_enabled,
     )
     reviewer = ReviewerAgent(
         driver=driver,
