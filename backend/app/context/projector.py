@@ -36,8 +36,12 @@ class ReviewerContextView(_ContextView):
 class AgentContextProjector:
     """Project authoritative ContextPacket facts into role-minimal model prompts."""
 
-    _MAX_FILES = 6
-    _MAX_SNIPPET_CHARS = 3_500
+    # Bootstrap only enough code to orient Developer. Repository tools remain the source
+    # of detail, so larger files/symbols are pulled on demand rather than replayed each turn.
+    _MAX_FILES = 3
+    _MAX_SNIPPET_CHARS = 1_600
+    _MAX_REPOSITORY_SUMMARY_CHARS = 2_000
+    _MAX_REPOSITORY_MAP_ENTRIES = 40
 
     @classmethod
     def developer(cls, packet: ContextPacket) -> DeveloperContextView:
@@ -88,8 +92,12 @@ class AgentContextProjector:
             "readable_files": tuple(packet.readable_files),
             "writable_files": tuple(packet.writable_files),
             "readonly_files": tuple(packet.readonly_files),
-            "repository_summary": packet.repository_summary,
-            "repository_map": tuple(packet.repository_map[:80]),
+            "repository_summary": packet.repository_summary[
+                : AgentContextProjector._MAX_REPOSITORY_SUMMARY_CHARS
+            ],
+            "repository_map": tuple(
+                packet.repository_map[: AgentContextProjector._MAX_REPOSITORY_MAP_ENTRIES]
+            ),
             "changed_files": tuple(packet.changed_files),
         }
 
