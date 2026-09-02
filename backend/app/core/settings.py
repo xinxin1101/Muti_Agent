@@ -61,6 +61,7 @@ class Settings(BaseSettings):
     # Runtime V3 is intentionally enabled on the experimental xin_01 branch. Each layer
     # remains independently switchable so production/main can adopt it incrementally.
     agent_runtime_v3_enabled: bool = True
+    developer_runtime_v3_enabled: bool = True
     repair_runtime_v3_enabled: bool = True
     runtime_mutation_gate_enabled: bool = True
     runtime_import_prefetch_enabled: bool = True
