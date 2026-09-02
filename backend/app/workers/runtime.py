@@ -122,8 +122,9 @@ def build_single_task_runner(
         enable_thinking=settings.repair_enable_thinking,
         context_compaction_enabled=settings.context_compaction_enabled,
         role_context_projection_enabled=settings.role_context_projection_enabled,
-        max_single_tool_result_tokens=settings.agent_max_single_tool_result_tokens,
-        max_tool_results_per_turn_tokens=settings.agent_max_tool_results_per_turn_tokens,
+        max_single_tool_result_tokens=settings.repair_max_single_tool_result_tokens,
+        max_tool_results_per_turn_tokens=settings.repair_max_tool_results_per_turn_tokens,
+        max_read_range_lines=settings.repair_max_read_range_lines,
     )
     return SingleTaskOrchestrator(
         developer=developer,
