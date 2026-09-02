@@ -81,7 +81,7 @@ class AgentProviderError(RuntimeError):
 
 
 _SENSITIVE_ASSIGNMENT_RE = re.compile(
-    r"(?i)\\b(api[_-]?key|authorization|bearer|token|secret|password)\\b\\s*[:=]\\s*[^,;\\s]+"
+    r"(?i)\b(api[_-]?key|authorization|bearer|token|secret|password)\b\s*[:=]\s*[^,;\s]+"
 )
 _PROVIDER_ERROR_KEYS = ("code", "type", "param", "message")
 
@@ -89,9 +89,9 @@ _PROVIDER_ERROR_KEYS = ("code", "type", "param", "message")
 def _sanitize_provider_text(value: object, *, limit: int = 500) -> str:
     text = " ".join(str(value).split())
     text = _SENSITIVE_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}=<redacted>", text)
-    text = re.sub(r"(?i)\\bsk-[A-Za-z0-9_-]{8,}\\b", "sk-<redacted>", text)
+    text = re.sub(r"(?i)\bsk-[A-Za-z0-9_-]{8,}\b", "sk-<redacted>", text)
     text = re.sub(
-        r'(["\\\'])([^"\\\']{121,})\\1',
+        r'(["\'])([^"\']{121,})\1',
         lambda match: f"{match.group(1)}<redacted-long-value>{match.group(1)}",
         text,
     )
