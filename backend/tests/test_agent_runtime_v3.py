@@ -197,9 +197,6 @@ def test_runtime_v3_forces_mutation_after_two_observation_turns(tmp_path: Path) 
     original = "VALUE = 1\n"
     root = _repository(tmp_path, original)
     target = root / "src" / "gomoku_logic.py"
-    target.write_text(original, encoding="utf-8")
-    _git(root, "add", ".")
-    _git(root, "commit", "-m", "use value fixture")
     workspace = LocalGitWorkspace(root)
     task = _task().model_copy(
         update={
