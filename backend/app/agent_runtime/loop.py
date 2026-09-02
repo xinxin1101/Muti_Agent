@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from time import monotonic
-from typing import Any, Callable
+from typing import Any
 
 from app.agent_runtime.events import AgentRuntimeEvent, AgentRuntimeEventKind
 from app.agent_runtime.progress import ToolProgressClassifier
