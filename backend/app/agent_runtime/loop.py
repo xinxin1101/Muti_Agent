@@ -550,7 +550,10 @@ class AgentLoop:
         prefix = (
             "MUTATION REQUIRED. "
             if strict
-            else "The current task requires a repository mutation and no workspace mutation exists yet. "
+            else (
+                "The current task requires a repository mutation and no workspace "
+                "mutation exists yet. "
+            )
         )
         return (
             prefix
