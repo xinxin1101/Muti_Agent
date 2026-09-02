@@ -3,7 +3,35 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.agent import TokenUsage
-from app.models.failure import FailureType
+from app.models.failure import FailureSource, FailureType
+
+
+class RepairFailureDigest(BaseModel):
+    """Bounded failure facts handed to a fresh Repair session."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    failure_type: FailureType
+    source: FailureSource
+    message: str = Field(min_length=1, max_length=2_000)
+    evidence: tuple[str, ...] = Field(default_factory=tuple, max_length=8)
+
+
+class RepairHandoff(BaseModel):
+    """Issue-scoped repair input with no Developer conversation or source dump."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    task_id: str = Field(min_length=1, max_length=128)
+    objective: str = Field(min_length=1, max_length=4_000)
+    repository_head: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    acceptance_criteria: tuple[str, ...] = Field(min_length=1, max_length=32)
+    verification_commands: tuple[str, ...] = Field(default_factory=tuple, max_length=32)
+    writable_files: tuple[str, ...] = Field(default_factory=tuple, max_length=256)
+    readonly_files: tuple[str, ...] = Field(default_factory=tuple, max_length=256)
+    changed_files: tuple[str, ...] = Field(default_factory=tuple, max_length=256)
+    relevant_paths: tuple[str, ...] = Field(default_factory=tuple, max_length=16)
+    failures: tuple[RepairFailureDigest, ...] = Field(min_length=1, max_length=8)
 
 
 class RepairStopReason(StrEnum):
