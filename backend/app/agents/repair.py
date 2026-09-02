@@ -564,6 +564,7 @@ class RepairAgent:
             AgentRuntimeStopReason.TIME_LIMIT: RepairStopReason.TIME_LIMIT,
             AgentRuntimeStopReason.TOOL_CALL_LIMIT: RepairStopReason.TOOL_CALL_LIMIT,
             AgentRuntimeStopReason.ITERATION_LIMIT: RepairStopReason.ITERATION_LIMIT,
+            AgentRuntimeStopReason.REPEATED_TOOL_FAILURE: RepairStopReason.NO_PROGRESS,
         }[runtime_result.stop_reason]
         return self._result(
             task=task,
