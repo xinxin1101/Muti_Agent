@@ -35,6 +35,9 @@ from app.verification import DeterministicVerifier
 from app.workspace import LocalGitWorkspace
 
 
+_MAX_TOTAL_REPAIR_ATTEMPTS = 5
+
+
 class SingleTaskOrchestrator:
     """Execute the complete evidence-driven loop for one validated task."""
 
@@ -360,15 +363,43 @@ class SingleTaskOrchestrator:
         repairs,
         trace: TaskTraceCollector | None,
     ):
-        repair_budget = max(task.max_retries, self._minimum_repair_attempts)
+        stage_budget = max(task.max_retries, self._minimum_repair_attempts)
+        stage_attempts = self._repair_attempts_for_signature(
+            repairs,
+            failure_signature_before,
+        )
+        if (
+            stage_attempts >= stage_budget
+            or len(repairs) >= _MAX_TOTAL_REPAIR_ATTEMPTS
+        ):
+            return self._finish_repair_budget_exhausted(
+                task=task,
+                machine=machine,
+                workspace=workspace,
+                developer=developer,
+                verifications=verifications,
+                reviews=reviews,
+                repairs=repairs,
+                failures=failures,
+                stage_attempts=stage_attempts,
+                stage_budget=stage_budget,
+            )
+
         while True:
+            attempt = len(repairs) + 1
+            remaining_stage_attempts = stage_budget - stage_attempts
+            attempt_ceiling = min(
+                _MAX_TOTAL_REPAIR_ATTEMPTS,
+                attempt + remaining_stage_attempts - 1,
+            )
             repair_result = await self._repair_once(
                 task=task,
                 failures=self._repair_evidence_for_next_attempt(failures, repairs),
                 failure_signature_before=failure_signature_before,
                 workspace=workspace,
                 machine=machine,
-                attempt=len(repairs) + 1,
+                attempt=attempt,
+                attempt_ceiling=attempt_ceiling,
                 developer=developer,
                 verifications=verifications,
                 reviews=reviews,
@@ -383,6 +414,7 @@ class SingleTaskOrchestrator:
             if progress is None or progress.has_patch:
                 return repair_result
 
+            stage_attempts += 1
             if repair_result.stop_reason is RepairStopReason.EXPLICIT_BLOCKER:
                 return self._finish_no_progress(
                     task=task,
@@ -396,7 +428,10 @@ class SingleTaskOrchestrator:
                     repair_result=repair_result,
                 )
 
-            if len(repairs) >= repair_budget:
+            if (
+                stage_attempts >= stage_budget
+                or len(repairs) >= _MAX_TOTAL_REPAIR_ATTEMPTS
+            ):
                 return self._finish_no_progress(
                     task=task,
                     machine=machine,
@@ -418,18 +453,18 @@ class SingleTaskOrchestrator:
         workspace: LocalGitWorkspace,
         machine: TaskStateMachine,
         attempt: int,
+        attempt_ceiling: int,
         developer,
         verifications,
         reviews,
         repairs,
         trace: TaskTraceCollector | None,
     ):
-        repair_budget = max(task.max_retries, self._minimum_repair_attempts)
-        repair_task = task.model_copy(update={"max_retries": repair_budget})
-        if attempt > repair_budget:
+        repair_task = task.model_copy(update={"max_retries": attempt_ceiling})
+        if attempt > attempt_ceiling:
             terminal = FailureClassifier.terminalize(
                 failures,
-                max_retries=repair_budget,
+                max_retries=attempt_ceiling,
             )
             machine.transition(TaskRunState.FAILED, detail="Repair retry budget was exhausted.")
             return self._result(
@@ -737,6 +772,62 @@ class SingleTaskOrchestrator:
                     }
                 )
             }
+        )
+
+    @staticmethod
+    def _repair_attempts_for_signature(repairs, failure_signature: str) -> int:
+        return sum(
+            1
+            for repair in repairs
+            if repair.progress is not None
+            and repair.progress.failure_signature_before == failure_signature
+        )
+
+    def _finish_repair_budget_exhausted(
+        self,
+        *,
+        task,
+        machine,
+        workspace,
+        developer,
+        verifications,
+        reviews,
+        repairs,
+        failures,
+        stage_attempts: int,
+        stage_budget: int,
+    ) -> SingleTaskRunResult:
+        machine.transition(
+            TaskRunState.FAILED,
+            detail="Repair budget for the current failure signature was exhausted.",
+        )
+        terminal = FailureClassifier.terminalize(
+            failures,
+            max_retries=stage_budget,
+        )
+        terminal = [
+            failure.model_copy(
+                update={
+                    "evidence": [
+                        *failure.evidence,
+                        f"repair_stage_attempts={stage_attempts}",
+                        f"repair_stage_budget={stage_budget}",
+                        f"repair_total_attempts={len(repairs)}",
+                        f"repair_total_cap={_MAX_TOTAL_REPAIR_ATTEMPTS}",
+                    ]
+                }
+            )
+            for failure in terminal
+        ]
+        return self._result(
+            task=task,
+            machine=machine,
+            workspace=workspace,
+            developer=developer,
+            verifications=verifications,
+            reviews=reviews,
+            repairs=repairs,
+            failures=terminal,
         )
 
     @staticmethod
