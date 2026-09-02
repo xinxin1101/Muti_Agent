@@ -16,6 +16,7 @@ from app.models import (
     FailureSource,
     FailureType,
     RepairFailureDigest,
+    RepairFailureKind,
     RepairHandoff,
     RepairProgressEvidence,
     RepairProgressStatus,
@@ -205,13 +206,12 @@ class SingleTaskOrchestrator:
                         failures=failures or [self._empty_failure_evidence()],
                     )
 
-                repair_result = await self._repair_once(
+                repair_result = await self._repair_until_patch(
                     task=task,
-                    failures=self._repair_evidence_for_next_attempt(repairable, repairs),
+                    failures=repairable,
                     failure_signature_before=failure_signature,
                     workspace=workspace,
                     machine=machine,
-                    attempt=len(repairs) + 1,
                     developer=developer_result,
                     verifications=verifications,
                     reviews=reviews,
@@ -220,19 +220,6 @@ class SingleTaskOrchestrator:
                 )
                 if isinstance(repair_result, SingleTaskRunResult):
                     return repair_result
-                repairs.append(repair_result)
-                if repair_result.progress is not None and not repair_result.progress.has_patch:
-                    return self._finish_no_progress(
-                        task=task,
-                        machine=machine,
-                        workspace=workspace,
-                        developer=developer_result,
-                        verifications=verifications,
-                        reviews=reviews,
-                        repairs=repairs,
-                        failures=failures,
-                        repair_result=repair_result,
-                    )
                 machine.transition(
                     TaskRunState.VERIFYING,
                     detail=self._repair_verification_detail(repair_result),
@@ -340,13 +327,12 @@ class SingleTaskOrchestrator:
                 )
 
             failures = FailureClassifier.from_review(decision)
-            repair_result = await self._repair_once(
+            repair_result = await self._repair_until_patch(
                 task=task,
-                failures=self._repair_evidence_for_next_attempt(failures, repairs),
+                failures=failures,
                 failure_signature_before=self._failure_signature(failures),
                 workspace=workspace,
                 machine=machine,
-                attempt=len(repairs) + 1,
                 developer=developer_result,
                 verifications=verifications,
                 reviews=reviews,
@@ -355,23 +341,73 @@ class SingleTaskOrchestrator:
             )
             if isinstance(repair_result, SingleTaskRunResult):
                 return repair_result
+            machine.transition(
+                TaskRunState.VERIFYING,
+                detail=self._repair_verification_detail(repair_result),
+            )
+
+    async def _repair_until_patch(
+        self,
+        *,
+        task: TaskContract,
+        failures: Sequence[FailureReport],
+        failure_signature_before: str,
+        workspace: LocalGitWorkspace,
+        machine: TaskStateMachine,
+        developer,
+        verifications,
+        reviews,
+        repairs,
+        trace: TaskTraceCollector | None,
+    ):
+        repair_budget = max(task.max_retries, self._minimum_repair_attempts)
+        while True:
+            repair_result = await self._repair_once(
+                task=task,
+                failures=self._repair_evidence_for_next_attempt(failures, repairs),
+                failure_signature_before=failure_signature_before,
+                workspace=workspace,
+                machine=machine,
+                attempt=len(repairs) + 1,
+                developer=developer,
+                verifications=verifications,
+                reviews=reviews,
+                repairs=repairs,
+                trace=trace,
+            )
+            if isinstance(repair_result, SingleTaskRunResult):
+                return repair_result
+
             repairs.append(repair_result)
-            if repair_result.progress is not None and not repair_result.progress.has_patch:
+            progress = repair_result.progress
+            if progress is None or progress.has_patch:
+                return repair_result
+
+            if repair_result.stop_reason is RepairStopReason.EXPLICIT_BLOCKER:
                 return self._finish_no_progress(
                     task=task,
                     machine=machine,
                     workspace=workspace,
-                    developer=developer_result,
+                    developer=developer,
                     verifications=verifications,
                     reviews=reviews,
                     repairs=repairs,
                     failures=failures,
                     repair_result=repair_result,
                 )
-            machine.transition(
-                TaskRunState.VERIFYING,
-                detail=self._repair_verification_detail(repair_result),
-            )
+
+            if len(repairs) >= repair_budget:
+                return self._finish_no_progress(
+                    task=task,
+                    machine=machine,
+                    workspace=workspace,
+                    developer=developer,
+                    verifications=verifications,
+                    reviews=reviews,
+                    repairs=repairs,
+                    failures=failures,
+                    repair_result=repair_result,
+                )
 
     async def _repair_once(
         self,
@@ -514,8 +550,11 @@ class SingleTaskOrchestrator:
         workspace: LocalGitWorkspace,
     ) -> RepairHandoff:
         changed_files = tuple(workspace.changed_files())
+        failure_kind, suspected_path, suspected_symbol = (
+            SingleTaskOrchestrator._repair_failure_hint(failures)
+        )
         relevant_paths: list[str] = []
-        for path in (*changed_files, *task.writable_files):
+        for path in (*changed_files, *((suspected_path,) if suspected_path else ()), *task.writable_files):
             if any(character in path for character in "*?["):
                 continue
             if path not in relevant_paths:
@@ -530,6 +569,9 @@ class SingleTaskOrchestrator:
             readonly_files=tuple(task.readonly_files),
             changed_files=changed_files,
             relevant_paths=tuple(relevant_paths[:16]),
+            failure_kind=failure_kind,
+            suspected_path=suspected_path,
+            suspected_symbol=suspected_symbol,
             failures=tuple(
                 RepairFailureDigest(
                     failure_type=failure.failure_type,
@@ -540,6 +582,38 @@ class SingleTaskOrchestrator:
                 for failure in failures[:8]
             ),
         )
+
+    @staticmethod
+    def _repair_failure_hint(
+        failures: Sequence[FailureReport],
+    ) -> tuple[RepairFailureKind | None, str | None, str | None]:
+        text = "\n".join(
+            [
+                failure.message,
+                *failure.evidence,
+            ]
+            for failure in failures
+        )
+        flattened = "\n".join(
+            item
+            for group in (
+                [failure.message, *failure.evidence]
+                for failure in failures
+            )
+            for item in group
+        )
+        match = re.search(
+            r"ImportError:\s*cannot import name ['\"]"
+            r"(?P<symbol>[A-Za-z_][A-Za-z0-9_]*)['\"]\s+from\s+['\"]"
+            r"(?P<module>[A-Za-z_][A-Za-z0-9_.]*)['\"]",
+            flattened,
+        )
+        if match is None:
+            return None, None, None
+        symbol = match.group("symbol")
+        module = match.group("module")
+        suspected_path = module.replace(".", "/") + ".py"
+        return RepairFailureKind.IMPORT_SYMBOL_MISSING, suspected_path, symbol
 
     async def _build_context(
         self,
@@ -647,12 +721,19 @@ class SingleTaskOrchestrator:
         if not repairs or repairs[-1].progress is None:
             return failures
         progress = repairs[-1].progress
+        repair = repairs[-1]
         evidence = [
             f"previous_repair_progress={progress.status.value}",
+            f"previous_repair_stop_reason={repair.stop_reason.value}",
             f"previous_patch_hash={progress.patch_hash_after}",
             f"previous_failure_signature_before={progress.failure_signature_before}",
             f"previous_failure_signature_after={progress.failure_signature_after}",
         ]
+        if repair.final_message:
+            evidence.append(
+                "previous_repair_summary="
+                + SingleTaskOrchestrator._normalize_failure_text(repair.final_message)[:512]
+            )
         if progress.files_changed:
             evidence.append("previous_files_changed=" + ",".join(progress.files_changed))
         return [
