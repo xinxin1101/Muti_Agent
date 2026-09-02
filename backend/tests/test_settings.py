@@ -42,6 +42,7 @@ def test_default_settings() -> None:
     assert settings.reviewer_enable_thinking is False
     assert settings.repair_enable_thinking is False
     assert settings.failure_explanation_enable_thinking is False
+    assert settings.run_token_budget_tokens == 50_000
     assert settings.planner_token_budget_tokens == 7_200
     assert settings.planner_max_attempts == 2
     assert settings.siliconflow_api_key is None
@@ -82,6 +83,7 @@ def test_prefixed_environment_variables_override_defaults(monkeypatch) -> None:
     monkeypatch.setenv("DEVFLOW_REVIEWER_ENABLE_THINKING", "true")
     monkeypatch.setenv("DEVFLOW_REPAIR_ENABLE_THINKING", "true")
     monkeypatch.setenv("DEVFLOW_FAILURE_EXPLANATION_ENABLE_THINKING", "true")
+    monkeypatch.setenv("DEVFLOW_RUN_TOKEN_BUDGET_TOKENS", "64000")
     monkeypatch.setenv("DEVFLOW_PLANNER_TOKEN_BUDGET_TOKENS", "3000")
     monkeypatch.setenv("DEVFLOW_PLANNER_MAX_ATTEMPTS", "1")
     monkeypatch.setenv("DEVFLOW_VERIFICATION_SANDBOX_IMAGE", "project-verifier:test")
@@ -126,6 +128,7 @@ def test_prefixed_environment_variables_override_defaults(monkeypatch) -> None:
     assert settings.reviewer_enable_thinking is True
     assert settings.repair_enable_thinking is True
     assert settings.failure_explanation_enable_thinking is True
+    assert settings.run_token_budget_tokens == 64_000
     assert settings.planner_token_budget_tokens == 3_000
     assert settings.planner_max_attempts == 1
     assert settings.verification_sandbox_image == "project-verifier:test"

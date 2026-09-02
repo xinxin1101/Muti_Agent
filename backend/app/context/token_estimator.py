@@ -64,28 +64,31 @@ class TokenEstimator:
     def estimate_messages(self, contents: list[str] | tuple[str, ...]) -> int:
         return self.billable_token_estimate("\n".join(contents))
 
-    def estimate_agent_request(self, request: AgentRequest) -> int:
-        """Estimate the complete provider payload before a reservation is made.
+    def estimate_agent_request_breakdown(self, request: AgentRequest) -> dict[str, int]:
+        """Return a metadata-only estimate breakdown for budget diagnostics.
 
-        Tool definitions and assistant tool-call arguments are provider input too.  Omitting
-        them under-reserves the very turns that often contain large ``write_file`` or
-        ``apply_patch`` payloads.  This estimate remains advisory; provider ``usage`` is still
-        the sole settlement value.
+        The categories deliberately exclude raw prompt/tool text. The total uses the exact
+        same combined parts as estimate_agent_request so diagnostics cannot change admission.
         """
 
-        parts = [f"role={request.role.value}", f"model={request.model}"]
+        metadata_parts = [f"role={request.role.value}", f"model={request.model}"]
+        message_parts: list[str] = []
+        historical_tool_call_parts: list[str] = []
+        tool_definition_parts: list[str] = []
+
         for message in request.messages:
-            parts.extend((
+            message_parts.extend((
                 f"message_role={message.role.value}",
                 f"message_content={message.content}",
                 f"tool_call_id={message.tool_call_id or ''}",
             ))
             for call in message.tool_calls:
-                parts.extend((
+                historical_tool_call_parts.extend((
                     f"tool_call_id={call.id}",
                     f"tool_call_name={call.name}",
                     f"tool_call_arguments={call.arguments}",
                 ))
+
         for tool in request.tools:
             parameters = json.dumps(
                 tool.parameters,
@@ -93,9 +96,35 @@ class TokenEstimator:
                 sort_keys=True,
                 separators=(",", ":"),
             )
-            parts.extend((
+            tool_definition_parts.extend((
                 f"tool_name={tool.name}",
                 f"tool_description={tool.description}",
                 f"tool_parameters={parameters}",
             ))
-        return self.estimate_messages(parts)
+
+        combined = [
+            *metadata_parts,
+            *message_parts,
+            *historical_tool_call_parts,
+            *tool_definition_parts,
+        ]
+        return {
+            "request_total_tokens": self.estimate_messages(combined),
+            "metadata_tokens": self.estimate_messages(metadata_parts),
+            "message_tokens": self.estimate_messages(message_parts),
+            "historical_tool_call_tokens": self.estimate_messages(
+                historical_tool_call_parts
+            ),
+            "tool_definition_tokens": self.estimate_messages(tool_definition_parts),
+        }
+
+    def estimate_agent_request(self, request: AgentRequest) -> int:
+        """Estimate the complete provider payload before a reservation is made.
+
+        Tool definitions and assistant tool-call arguments are provider input too. Omitting
+        them under-reserves the very turns that often contain large write_file or
+        apply_patch payloads. This estimate remains advisory; provider usage is still
+        the sole settlement value.
+        """
+
+        return self.estimate_agent_request_breakdown(request)["request_total_tokens"]

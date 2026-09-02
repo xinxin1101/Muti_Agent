@@ -501,6 +501,11 @@ async def test_run_hard_budget_rejection_exposes_reservation_aware_runtime_facts
     assert "run_remaining_tokens=3800" in failure.evidence
     assert "next_required_tokens=4200" in failure.evidence
     assert "budget_shortfall_tokens=400" in failure.evidence
+    assert "prompt_context_floor_tokens=200" in failure.evidence
+    assert "prompt_estimate_source=context_floor" in failure.evidence
+    assert any(item.startswith("prompt_request_payload_tokens=") for item in failure.evidence)
+    assert any(item.startswith("prompt_message_tokens=") for item in failure.evidence)
+    assert any(item.startswith("prompt_tool_definition_tokens=") for item in failure.evidence)
 
 
 @pytest.mark.anyio

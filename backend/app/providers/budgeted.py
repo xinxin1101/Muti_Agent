@@ -37,9 +37,11 @@ class BudgetedAgentDriver:
         self._last_max_output_tokens: dict[str, int] = {}
 
     async def complete(self, request: AgentRequest) -> AgentResponse:
+        request_breakdown = self._token_estimator.estimate_agent_request_breakdown(request)
+        request_estimate = request_breakdown["request_total_tokens"]
         estimated_input = max(
             request.context_estimated_tokens,
-            self._estimate_request_tokens(request),
+            request_estimate,
         )
         # DeveloperAgent supplies the most specific value. This fallback keeps the
         # budget boundary safe for direct callers and older execution paths.
@@ -70,12 +72,35 @@ class BudgetedAgentDriver:
             ) from exc
         except TokenBudgetReservationError as exc:
             facts = exc.facts if isinstance(exc, RunBudgetExhaustedError) else None
+            evidence = facts.evidence() if facts is not None else ["provider_called=false"]
+            if facts is not None:
+                evidence.extend(
+                    [
+                        (
+                            "prompt_estimate_source=context_floor"
+                            if request.context_estimated_tokens >= request_estimate
+                            else "prompt_estimate_source=request_payload"
+                        ),
+                        f"prompt_context_floor_tokens={request.context_estimated_tokens}",
+                        f"prompt_request_payload_tokens={request_estimate}",
+                        f"prompt_metadata_tokens={request_breakdown['metadata_tokens']}",
+                        f"prompt_message_tokens={request_breakdown['message_tokens']}",
+                        (
+                            "prompt_historical_tool_call_tokens="
+                            f"{request_breakdown['historical_tool_call_tokens']}"
+                        ),
+                        (
+                            "prompt_tool_definition_tokens="
+                            f"{request_breakdown['tool_definition_tokens']}"
+                        ),
+                    ]
+                )
             raise AgentProviderError(
                 provider="runtime-budget",
                 code=ProviderErrorCode.TOKEN_BUDGET_EXHAUSTED,
                 message=str(exc),
                 retryable=False,
-                evidence=(facts.evidence() if facts is not None else ["provider_called=false"]),
+                evidence=evidence,
                 failure_source=FailureSource.RUNTIME,
             ) from exc
         try:

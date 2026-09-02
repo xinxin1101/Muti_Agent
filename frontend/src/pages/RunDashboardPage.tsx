@@ -757,7 +757,7 @@ function FailureSummary({
           <p className="font-medium text-emerald-900">继续开发预览</p>
           <p className="mt-1">已复用 {recovery.reusable_work_package_ids.length} 个工作包，剩余 {recovery.remaining_work_package_ids.length} 个工作包。继续后不会重复规划、开发或验证已复用工作包。</p>
           <p className="mt-2 text-xs text-emerald-700">新的开发切片不会重放历史消息、工具参数或源码；需要代码细节时由 Agent 显式读取。</p>
-          <p className="mt-2 text-xs text-emerald-700">预计节省 {recovery.budget.estimated_tokens_saved.toLocaleString()} Token · 后续开发预计 {recovery.budget.estimated_new_development_tokens.toLocaleString()} Token · 规划剩余 {tokenValue(recovery.budget.planning_remaining_tokens)} · 开发剩余 {tokenValue(recovery.budget.development_remaining_tokens)} · 修复剩余 {tokenValue(recovery.budget.repair_remaining_tokens)}</p>
+          <p className="mt-2 text-xs text-emerald-700">预计节省 {recovery.budget.estimated_tokens_saved.toLocaleString()} Token · 后续开发预计 {recovery.budget.estimated_new_development_tokens.toLocaleString()} Token · 调度参考：规划 {tokenValue(recovery.budget.planning_remaining_tokens)} · 开发 {tokenValue(recovery.budget.development_remaining_tokens)} · 修复 {tokenValue(recovery.budget.repair_remaining_tokens)}</p>
           {recovery.checkpointed_work_package_ids.length ? <p className="mt-2 text-xs text-emerald-700">可从检查点恢复：{recovery.checkpointed_work_package_ids.join("、")}</p> : null}
           {recovery.baseline_state === "CHANGED" ? (
             <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-amber-900">

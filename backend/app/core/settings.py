@@ -148,7 +148,7 @@ class Settings(BaseSettings):
     reviewer_max_output_tokens: int = Field(default=800, ge=64, le=32_768)
     repair_max_output_tokens: int = Field(default=1_000, ge=64, le=32_768)
     failure_explanation_max_output_tokens: int = Field(default=400, ge=64, le=32_768)
-    run_token_budget_tokens: int = Field(default=30_000, ge=1_000, le=10_000_000)
+    run_token_budget_tokens: int = Field(default=50_000, ge=1_000, le=10_000_000)
     planner_token_budget_tokens: int = Field(default=7_200, ge=256, le=1_000_000)
     planner_max_attempts: int = Field(default=2, ge=1, le=4)
     token_estimate_safety_factor: float = Field(default=1.15, ge=1.0, le=2.0)
