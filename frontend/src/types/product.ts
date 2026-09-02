@@ -204,7 +204,12 @@ export type ProductRunCheckpoint = Readonly<{
   task_id: string;
   commit_sha: string;
   changed_files: readonly string[];
-  reason: "TIME_LIMIT" | "ITERATION_LIMIT" | "TOOL_CALL_LIMIT" | "VERIFICATION_FAILURE";
+  reason:
+    | "TIME_LIMIT"
+    | "ITERATION_LIMIT"
+    | "TOOL_CALL_LIMIT"
+    | "RUN_TOKEN_BUDGET_EXHAUSTED"
+    | "VERIFICATION_FAILURE";
   summary: string;
   remaining_budget_tokens?: number | null;
 }>;
