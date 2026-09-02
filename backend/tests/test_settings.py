@@ -26,8 +26,12 @@ def test_default_settings() -> None:
     assert settings.dag_max_concurrent_tasks == 2
     assert settings.developer_max_duration_seconds == 600.0
     assert settings.developer_max_model_turn_seconds == 180.0
+    assert settings.repair_max_iterations == 4
     assert settings.repair_max_duration_seconds == 300.0
     assert settings.repair_max_model_turn_seconds == 90.0
+    assert settings.repair_max_read_range_lines == 120
+    assert settings.repair_max_single_tool_result_tokens == 600
+    assert settings.repair_max_tool_results_per_turn_tokens == 1_200
     assert settings.minimum_repair_attempts == 2
     assert settings.planner_initial_max_output_tokens == 1_000
     assert settings.planner_json_repair_max_output_tokens == 700
@@ -67,8 +71,12 @@ def test_prefixed_environment_variables_override_defaults(monkeypatch) -> None:
     monkeypatch.setenv("DEVFLOW_WORKER_LEASE_SECONDS", "30")
     monkeypatch.setenv("DEVFLOW_WORKER_HEARTBEAT_INTERVAL_SECONDS", "5")
     monkeypatch.setenv("DEVFLOW_WORKER_TASK_TIME_LIMIT_SECONDS", "7200")
+    monkeypatch.setenv("DEVFLOW_REPAIR_MAX_ITERATIONS", "5")
     monkeypatch.setenv("DEVFLOW_REPAIR_MAX_DURATION_SECONDS", "240")
     monkeypatch.setenv("DEVFLOW_REPAIR_MAX_MODEL_TURN_SECONDS", "80")
+    monkeypatch.setenv("DEVFLOW_REPAIR_MAX_READ_RANGE_LINES", "96")
+    monkeypatch.setenv("DEVFLOW_REPAIR_MAX_SINGLE_TOOL_RESULT_TOKENS", "500")
+    monkeypatch.setenv("DEVFLOW_REPAIR_MAX_TOOL_RESULTS_PER_TURN_TOKENS", "900")
     monkeypatch.setenv("DEVFLOW_MINIMUM_REPAIR_ATTEMPTS", "2")
     monkeypatch.setenv("DEVFLOW_PLANNER_INITIAL_MAX_OUTPUT_TOKENS", "700")
     monkeypatch.setenv("DEVFLOW_PLANNER_JSON_REPAIR_MAX_OUTPUT_TOKENS", "600")
@@ -112,8 +120,12 @@ def test_prefixed_environment_variables_override_defaults(monkeypatch) -> None:
     assert settings.worker_lease_seconds == 30.0
     assert settings.worker_heartbeat_interval_seconds == 5.0
     assert settings.worker_task_time_limit_seconds == 7_200.0
+    assert settings.repair_max_iterations == 5
     assert settings.repair_max_duration_seconds == 240.0
     assert settings.repair_max_model_turn_seconds == 80.0
+    assert settings.repair_max_read_range_lines == 96
+    assert settings.repair_max_single_tool_result_tokens == 500
+    assert settings.repair_max_tool_results_per_turn_tokens == 900
     assert settings.minimum_repair_attempts == 2
     assert settings.planner_initial_max_output_tokens == 700
     assert settings.planner_json_repair_max_output_tokens == 600
