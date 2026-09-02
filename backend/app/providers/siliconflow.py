@@ -1,5 +1,7 @@
+import json
 from time import perf_counter
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from openai import AsyncOpenAI
@@ -7,6 +9,7 @@ from pydantic import SecretStr
 
 from app.core.settings import Settings
 from app.models.agent import AgentMessage, AgentRequest, AgentResponse, MessageRole, TokenUsage
+from app.models.failure import FailureSource
 from app.models.tools import ToolCall, ToolDefinition
 from app.providers.errors import AgentProviderError, ProviderErrorCode, normalize_provider_error
 
@@ -91,7 +94,11 @@ class SiliconFlowDriver:
         try:
             response = await self._client.models.list()
         except Exception as exc:
-            raise normalize_provider_error(exc, provider=self.provider_name) from exc
+            raise normalize_provider_error(
+                exc,
+                provider=self.provider_name,
+                request_evidence=request_evidence,
+            ) from exc
 
         data = getattr(response, "data", None)
         if data is None:
@@ -107,6 +114,8 @@ class SiliconFlowDriver:
 
     async def complete(self, request: AgentRequest) -> AgentResponse:
         started_at = perf_counter()
+        request_evidence = self._safe_request_evidence(request)
+        self._validate_provider_request(request, request_evidence=request_evidence)
         payload: dict[str, Any] = {
             "model": request.model,
             "messages": [self._serialize_message(message) for message in request.messages],
@@ -155,6 +164,137 @@ class SiliconFlowDriver:
             usage=usage,
             latency_ms=latency_ms,
             finish_reason=getattr(choice, "finish_reason", None),
+        )
+
+    def _safe_request_evidence(self, request: AgentRequest) -> list[str]:
+        roles = ",".join(message.role.value for message in request.messages)
+        assistant_tool_calls = sum(
+            len(message.tool_calls)
+            for message in request.messages
+            if message.role is MessageRole.ASSISTANT
+        )
+        tool_messages = sum(
+            1 for message in request.messages if message.role is MessageRole.TOOL
+        )
+        host = urlparse(self.base_url).netloc or "unknown"
+        evidence = [
+            f"request_role={request.role.value}",
+            f"request_model={request.model}",
+            f"request_iteration={request.execution_iteration}",
+            f"request_message_count={len(request.messages)}",
+            f"request_message_roles={roles}",
+            f"request_tool_definition_count={len(request.tools)}",
+            f"request_assistant_tool_call_count={assistant_tool_calls}",
+            f"request_tool_message_count={tool_messages}",
+            f"request_enable_thinking={str(request.enable_thinking).lower()}",
+            f"provider_base_host={host}",
+        ]
+        if request.tools:
+            evidence.append(
+                "request_tool_names=" + ",".join(tool.name for tool in request.tools)
+            )
+        return evidence
+
+    def _validate_provider_request(
+        self,
+        request: AgentRequest,
+        *,
+        request_evidence: list[str],
+    ) -> None:
+        tool_names = {tool.name for tool in request.tools}
+        for tool in request.tools:
+            schema_type = tool.parameters.get("type")
+            if schema_type not in {None, "object"}:
+                raise self._invalid_request(
+                    "tool_schema_root_not_object",
+                    request_evidence=request_evidence,
+                    detail=f"tool={tool.name};schema_type={schema_type}",
+                )
+
+        pending_tool_call_ids: set[str] = set()
+        seen_tool_call_ids: set[str] = set()
+        for index, message in enumerate(request.messages):
+            if pending_tool_call_ids and message.role is not MessageRole.TOOL:
+                raise self._invalid_request(
+                    "tool_results_not_contiguous",
+                    request_evidence=request_evidence,
+                    detail=(
+                        f"message_index={index};pending_tool_results="
+                        f"{len(pending_tool_call_ids)}"
+                    ),
+                )
+
+            if message.role is MessageRole.ASSISTANT and message.tool_calls:
+                call_ids = [call.id for call in message.tool_calls]
+                if len(call_ids) != len(set(call_ids)):
+                    raise self._invalid_request(
+                        "duplicate_tool_call_id_in_message",
+                        request_evidence=request_evidence,
+                        detail=f"message_index={index}",
+                    )
+                duplicate_history_ids = set(call_ids) & seen_tool_call_ids
+                if duplicate_history_ids:
+                    raise self._invalid_request(
+                        "duplicate_tool_call_id_in_history",
+                        request_evidence=request_evidence,
+                        detail=f"message_index={index}",
+                    )
+                unknown_tools = sorted(
+                    {call.name for call in message.tool_calls if call.name not in tool_names}
+                )
+                if unknown_tools:
+                    raise self._invalid_request(
+                        "assistant_references_unadvertised_tool",
+                        request_evidence=request_evidence,
+                        detail="tool_count=" + str(len(unknown_tools)),
+                    )
+                pending_tool_call_ids = set(call_ids)
+                seen_tool_call_ids.update(call_ids)
+                continue
+
+            if message.role is MessageRole.TOOL:
+                tool_call_id = message.tool_call_id
+                if not pending_tool_call_ids:
+                    raise self._invalid_request(
+                        "orphan_tool_message",
+                        request_evidence=request_evidence,
+                        detail=f"message_index={index}",
+                    )
+                if tool_call_id not in pending_tool_call_ids:
+                    raise self._invalid_request(
+                        "tool_call_id_mismatch",
+                        request_evidence=request_evidence,
+                        detail=f"message_index={index}",
+                    )
+                pending_tool_call_ids.remove(tool_call_id)
+
+        if pending_tool_call_ids:
+            raise self._invalid_request(
+                "missing_tool_results",
+                request_evidence=request_evidence,
+                detail=f"pending_tool_results={len(pending_tool_call_ids)}",
+            )
+
+    @staticmethod
+    def _invalid_request(
+        validation_code: str,
+        *,
+        request_evidence: list[str],
+        detail: str,
+    ) -> AgentProviderError:
+        return AgentProviderError(
+            provider=SiliconFlowDriver.provider_name,
+            code=ProviderErrorCode.INVALID_REQUEST,
+            message="Provider request blocked by local structural validation.",
+            retryable=False,
+            evidence=[
+                *request_evidence,
+                "validation_stage=local_preflight",
+                f"validation_code={validation_code}",
+                detail,
+                "provider_called=false",
+            ],
+            failure_source=FailureSource.RUNTIME,
         )
 
     @staticmethod
