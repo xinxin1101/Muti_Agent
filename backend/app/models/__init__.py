@@ -103,6 +103,7 @@ from app.models.recovery import (
 )
 from app.models.repair import (
     RepairFailureDigest,
+    RepairFailureKind,
     RepairHandoff,
     RepairProgressEvidence,
     RepairProgressStatus,
@@ -242,6 +243,7 @@ __all__ = [
     "PersistedRuntimeEvent",
     "RecoveryDisposition",
     "RepairFailureDigest",
+    "RepairFailureKind",
     "RepairHandoff",
     "RepairProgressEvidence",
     "RepairProgressStatus",
