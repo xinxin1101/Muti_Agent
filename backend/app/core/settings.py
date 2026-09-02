@@ -58,9 +58,13 @@ class Settings(BaseSettings):
     # independently for a safe rollback without changing execution authority.
     context_compaction_enabled: bool = True
     role_context_projection_enabled: bool = True
-    # Tool result retention is a context-window control, not a financial budget.
+    # Legacy/general tool-result bounds remain for compatibility. Developer now has a
+    # narrower role-specific budget because its compact working state can recover older facts.
     agent_max_single_tool_result_tokens: int = Field(default=1_200, ge=128, le=32_768)
     agent_max_tool_results_per_turn_tokens: int = Field(default=2_400, ge=128, le=65_536)
+    developer_max_retained_tool_groups: int = Field(default=1, ge=1, le=4)
+    developer_max_single_tool_result_tokens: int = Field(default=800, ge=128, le=8_192)
+    developer_max_tool_results_per_turn_tokens: int = Field(default=1_600, ge=128, le=16_384)
     # Repair has a fresh issue-scoped view, so observations can be substantially smaller.
     repair_max_single_tool_result_tokens: int = Field(default=600, ge=128, le=8_192)
     repair_max_tool_results_per_turn_tokens: int = Field(default=1_200, ge=128, le=16_384)
@@ -275,6 +279,13 @@ class Settings(BaseSettings):
         if self.agent_max_tool_results_per_turn_tokens < self.agent_max_single_tool_result_tokens:
             raise ValueError(
                 "per-turn tool-result context budget must cover one complete tool result"
+            )
+        if (
+            self.developer_max_tool_results_per_turn_tokens
+            < self.developer_max_single_tool_result_tokens
+        ):
+            raise ValueError(
+                "developer per-turn tool-result context budget must cover one tool result"
             )
         if (
             self.repair_max_tool_results_per_turn_tokens
