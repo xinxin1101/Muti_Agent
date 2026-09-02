@@ -172,6 +172,7 @@ def test_orchestrator_rebuilds_context_from_current_worktree_for_each_agent_stag
     repair_prompt = repair_driver.requests[0].messages[-1].content
     reviewer_prompt = reviewer_driver.requests[0].messages[-1].content
     assert "DeveloperContextView" in developer_prompt
+    assert developer_driver.requests[0].context_estimated_tokens == 0
     assert "VALUE = 1" in developer_prompt
     assert "Fresh targeted RepairHandoff" in repair_prompt
     assert "module.py" in repair_prompt
