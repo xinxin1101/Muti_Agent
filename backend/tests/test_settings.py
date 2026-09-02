@@ -31,6 +31,7 @@ def test_default_settings() -> None:
     assert settings.repair_max_model_turn_seconds == 90.0
     assert settings.repair_max_read_range_lines == 120
     assert settings.agent_runtime_v3_enabled is True
+    assert settings.developer_runtime_v3_enabled is True
     assert settings.repair_runtime_v3_enabled is True
     assert settings.runtime_mutation_gate_enabled is True
     assert settings.runtime_import_prefetch_enabled is True
@@ -79,6 +80,7 @@ def test_prefixed_environment_variables_override_defaults(monkeypatch) -> None:
     monkeypatch.setenv("DEVFLOW_WORKER_HEARTBEAT_INTERVAL_SECONDS", "5")
     monkeypatch.setenv("DEVFLOW_WORKER_TASK_TIME_LIMIT_SECONDS", "7200")
     monkeypatch.setenv("DEVFLOW_AGENT_RUNTIME_V3_ENABLED", "false")
+    monkeypatch.setenv("DEVFLOW_DEVELOPER_RUNTIME_V3_ENABLED", "false")
     monkeypatch.setenv("DEVFLOW_REPAIR_RUNTIME_V3_ENABLED", "false")
     monkeypatch.setenv("DEVFLOW_RUNTIME_MUTATION_GATE_ENABLED", "false")
     monkeypatch.setenv("DEVFLOW_RUNTIME_IMPORT_PREFETCH_ENABLED", "false")
@@ -135,6 +137,7 @@ def test_prefixed_environment_variables_override_defaults(monkeypatch) -> None:
     assert settings.worker_heartbeat_interval_seconds == 5.0
     assert settings.worker_task_time_limit_seconds == 7_200.0
     assert settings.agent_runtime_v3_enabled is False
+    assert settings.developer_runtime_v3_enabled is False
     assert settings.repair_runtime_v3_enabled is False
     assert settings.runtime_mutation_gate_enabled is False
     assert settings.runtime_import_prefetch_enabled is False
