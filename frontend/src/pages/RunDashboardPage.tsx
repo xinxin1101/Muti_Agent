@@ -655,7 +655,9 @@ function FailureSummary({
         <div>
           <h2 className="text-xl font-semibold text-rose-900">失败原因</h2>
           <p className="mt-1 text-sm text-rose-800">
-            原运行已结束。重新发起会使用服务端保存的任务图创建新的运行记录，不会修改旧记录。
+            {checkpoint
+              ? "原运行已结束，但存在服务端检查点。请优先从检查点继续；系统会创建新的运行记录并复用已保存代码，不会重跑完整任务图。"
+              : "原运行已结束。重新发起会使用服务端保存的任务图创建新的运行记录，不会修改旧记录。"}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -677,7 +679,7 @@ function FailureSummary({
               {resuming ? "正在继续…" : "从检查点继续"}
             </button>
           ) : null}
-          {recovery?.baseline_state === "UNCHANGED" ? (
+          {!checkpoint && recovery?.baseline_state === "UNCHANGED" ? (
             <button
               type="button"
               onClick={onContinue}
@@ -687,22 +689,26 @@ function FailureSummary({
               {continuing ? "正在继续开发…" : "继续开发"}
             </button>
           ) : null}
-          <button
-            type="button"
-            onClick={onRetry}
-            disabled={retrying}
-            className="df-button df-button-danger"
-          >
-            {retrying ? "正在重新发起…" : "重新发起运行"}
-          </button>
-          <button
-            type="button"
-            onClick={onCachedRetry}
-            disabled={!cacheReady || cachedRetrying}
-            className="df-button border border-emerald-200 bg-white text-emerald-800 hover:bg-emerald-50"
-          >
-            {cachedRetrying ? "正在使用缓存环境…" : "使用缓存环境重新发起"}
-          </button>
+          {!checkpoint ? (
+            <button
+              type="button"
+              onClick={onRetry}
+              disabled={retrying}
+              className="df-button df-button-danger"
+            >
+              {retrying ? "正在重新发起…" : "完整重新执行"}
+            </button>
+          ) : null}
+          {!checkpoint ? (
+            <button
+              type="button"
+              onClick={onCachedRetry}
+              disabled={!cacheReady || cachedRetrying}
+              className="df-button border border-emerald-200 bg-white text-emerald-800 hover:bg-emerald-50"
+            >
+              {cachedRetrying ? "正在使用缓存环境…" : "使用缓存环境完整重跑"}
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -725,13 +731,13 @@ function FailureSummary({
         </p>
       ) : null}
 
-      {retryError ? (
+      {!checkpoint && retryError ? (
         <p className="mt-4 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">
-          重新发起失败：{retryError}
+          完整重新执行失败：{retryError}
         </p>
       ) : null}
 
-      {cachedRetryError ? (
+      {!checkpoint && cachedRetryError ? (
         <p className="mt-4 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">
           缓存环境重试失败：{cachedRetryError}
         </p>
@@ -741,9 +747,12 @@ function FailureSummary({
         <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
           <p className="font-medium text-emerald-900">可恢复检查点：任务 {checkpoint.task_id}</p>
           <p className="mt-1">{checkpoint.summary}</p>
-          <p className="mt-2 text-xs text-emerald-700">从检查点继续 · 已压缩上下文：仅携带工作包契约、文件哈希、验证摘要、失败摘要与未完成事项。</p>
+          <p className="mt-2 text-xs text-emerald-700">
+            推荐恢复路径：从检查点继续。不会调用完整 DAG 的 /retry；新 Run 会以该提交为执行基线，并按检查点原因选择继续开发或先验证再修复。
+          </p>
+          <p className="mt-2 text-xs text-emerald-700">已压缩上下文：仅携带工作包契约、文件哈希、验证摘要、失败摘要与未完成事项。</p>
           <p className="mt-2 font-mono text-xs text-emerald-700">
-            提交 {checkpoint.commit_sha.slice(0, 12)} · 已保存 {checkpoint.changed_files.length} 个文件 · 原因 {checkpoint.reason}
+            提交 {checkpoint.commit_sha.slice(0, 12)} · 已保存 {checkpoint.changed_files.length} 个文件 · 原因 {checkpointReasonLabel(checkpoint.reason)}
           </p>
         </div>
       ) : null}
@@ -814,6 +823,16 @@ function plainAiText(value: string): string {
     .replace(/^#{1,6}\s*/gm, "")
     .replace(/\*\*([^*]+)\*\*/g, "$1")
     .replace(/`([^`]+)`/g, "$1");
+}
+
+function checkpointReasonLabel(reason: ProductRunCheckpoint["reason"]): string {
+  return {
+    TIME_LIMIT: "开发时间切片结束",
+    ITERATION_LIMIT: "开发轮次上限",
+    TOOL_CALL_LIMIT: "工具调用上限",
+    RUN_TOKEN_BUDGET_EXHAUSTED: "Run 模型 Token 预算用尽",
+    VERIFICATION_FAILURE: "确定性验证失败",
+  }[reason];
 }
 
 function tokenValue(value: number | null): string {
