@@ -6,6 +6,7 @@ from collections.abc import Callable
 from time import monotonic
 from typing import Any
 
+from app.agent_runtime.condenser import AgentCondenser
 from app.agent_runtime.events import AgentRuntimeEvent, AgentRuntimeEventKind
 from app.agent_runtime.progress import ToolProgressClassifier
 from app.agent_runtime.types import (
@@ -15,7 +16,6 @@ from app.agent_runtime.types import (
     ToolProgressKind,
 )
 from app.agent_runtime.view import AgentViewBuilder
-from app.context.retention import AgentContextRetention
 from app.context.token_estimator import TokenEstimator
 from app.models.agent import (
     AgentMessage,
@@ -64,7 +64,7 @@ class AgentLoop:
         context_usage: ContextUsage | None = None,
         trace: TaskTraceCollector | None = None,
     ) -> AgentRuntimeResult:
-        retention = AgentContextRetention(
+        condenser = AgentCondenser(
             task_id=task_id,
             base_messages=base_messages,
             max_retained_tool_groups=policy.max_retained_tool_groups,
@@ -110,7 +110,7 @@ class AgentLoop:
                 )
 
             view = AgentViewBuilder.build(
-                retention,
+                condenser,
                 runtime_instruction=runtime_instruction,
             )
             runtime_instruction = None
@@ -401,7 +401,7 @@ class AgentLoop:
                         result=result,
                     )
 
-            compacted_code_mutation = retention.add_group(
+            compacted_code_mutation = condenser.add_group(
                 assistant=assistant_message,
                 calls=response.tool_calls,
                 results=results,
