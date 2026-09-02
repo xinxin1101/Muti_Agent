@@ -5,13 +5,14 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models.agent import AgentRole, TokenUsage
+from app.models.agent import AgentRole, LivenessCredit, TokenUsage
 from app.models.tools import ToolDefinition
 
 
 class AgentRuntimeStopReason(StrEnum):
     MODEL_STOP = "MODEL_STOP"
     NO_PROGRESS = "NO_PROGRESS"
+    REPEATED_TOOL_FAILURE = "REPEATED_TOOL_FAILURE"
     EXPLICIT_BLOCKER = "EXPLICIT_BLOCKER"
     TIME_LIMIT = "TIME_LIMIT"
     TOOL_CALL_LIMIT = "TOOL_CALL_LIMIT"
@@ -44,6 +45,10 @@ class AgentRuntimePolicy:
     mutation_gate_enabled: bool = False
     max_observation_turns_without_mutation: int = 2
     max_mutation_gate_violations: int = 1
+    tool_recovery_enabled: bool = False
+    tool_recovery_max_output_tokens: int | None = None
+    repeated_tool_failure_limit: int = 2
+    initial_liveness_credit: LivenessCredit = LivenessCredit.INITIAL_STARTUP
 
 
 class AgentRuntimeResult(BaseModel):
@@ -59,3 +64,4 @@ class AgentRuntimeResult(BaseModel):
     mutation_count: int = Field(default=0, ge=0)
     mutation_gate_triggered: bool = False
     event_count: int = Field(default=0, ge=0)
+    tool_failure_evidence: tuple[str, ...] = Field(default_factory=tuple, max_length=8)
