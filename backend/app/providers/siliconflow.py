@@ -1,4 +1,3 @@
-import json
 from time import perf_counter
 from typing import Any
 from urllib.parse import urlparse
@@ -94,11 +93,7 @@ class SiliconFlowDriver:
         try:
             response = await self._client.models.list()
         except Exception as exc:
-            raise normalize_provider_error(
-                exc,
-                provider=self.provider_name,
-                request_evidence=request_evidence,
-            ) from exc
+            raise normalize_provider_error(exc, provider=self.provider_name) from exc
 
         data = getattr(response, "data", None)
         if data is None:
@@ -133,7 +128,11 @@ class SiliconFlowDriver:
         try:
             completion = await self._client.chat.completions.create(**payload)
         except Exception as exc:
-            raise normalize_provider_error(exc, provider=self.provider_name) from exc
+            raise normalize_provider_error(
+                exc,
+                provider=self.provider_name,
+                request_evidence=request_evidence,
+            ) from exc
 
         latency_ms = max(0, int((perf_counter() - started_at) * 1000))
         choices = getattr(completion, "choices", None)
