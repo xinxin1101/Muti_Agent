@@ -1023,7 +1023,7 @@ def test_developer_runtime_v3_condenser_keeps_only_recent_complete_tool_group(
         for message in patch_request.messages
     )
     assert any(
-        "MUTATION REQUIRED" in message.content
+        "no workspace mutation exists yet" in message.content
         for message in patch_request.messages
     )
 
