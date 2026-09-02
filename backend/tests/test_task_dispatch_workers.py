@@ -77,6 +77,31 @@ async def _noop_handler(_envelope: TaskDispatchEnvelope):
     raise AssertionError("dispatcher unit test must not execute the worker handler")
 
 
+def test_checkpoint_reason_prefers_run_token_budget_exhaustion() -> None:
+    result = SingleTaskRunResult(
+        task_id="gomoku-core",
+        status=TaskRunState.FAILED,
+        events=[
+            RunEvent(sequence=0, state=TaskRunState.PENDING, detail="Created."),
+            RunEvent(sequence=1, state=TaskRunState.FAILED, detail="Budget exhausted."),
+        ],
+        failures=[
+            FailureReport(
+                failure_type=FailureType.TOKEN_BUDGET_EXHAUSTED,
+                source=FailureSource.RUNTIME,
+                message="Run total model budget exhausted.",
+                retryable=False,
+            )
+        ],
+        changed_files=["src/gomoku_engine.py"],
+    )
+
+    assert (
+        LocalQueuedTaskExecutionBackend._checkpoint_reason(result)
+        is CheckpointReason.RUN_TOKEN_BUDGET_EXHAUSTED
+    )
+
+
 def test_dispatch_envelope_is_minimal_and_forbids_extra_fields() -> None:
     envelope = TaskDispatchEnvelope(
         dispatch_id=uuid4(),
