@@ -383,8 +383,65 @@ describe("RunDashboardPage live timeline", () => {
     fireEvent.click(screen.getByRole("button", { name: "AI 解读失败原因" }));
     expect(await screen.findByText(/验证容器将工作目录设为只读/)).toBeInTheDocument();
     expect(productApi.explainRunFailure).toHaveBeenCalledWith(runId);
-    fireEvent.click(screen.getByRole("button", { name: "重新发起运行" }));
+    fireEvent.click(screen.getByRole("button", { name: "完整重新执行" }));
     await waitFor(() => expect(productApi.retryRun).toHaveBeenCalledWith(runId));
+  });
+
+  it("uses checkpoint resume instead of retry when a failed run has a checkpoint", async () => {
+    vi.mocked(productApi.getRun).mockResolvedValue({
+      run_id: runId,
+      project_id: "11111111-1111-1111-1111-111111111111",
+      repository_url: "https://github.com/example/repo",
+      default_branch: "main",
+      status: "FAILED",
+      base_commit: "a".repeat(40),
+      task_count: 1,
+      started_at: "2026-09-02T00:00:00Z",
+      finished_at: "2026-09-02T00:01:00Z",
+      tasks: [],
+      failures: [{
+        task_id: "gomoku-core",
+        failure_type: "TOKEN_BUDGET_EXHAUSTED",
+        source: "runtime",
+        message: "Run 总模型预算不足，未向模型服务发起请求。",
+        retryable: false,
+        evidence: ["provider_called=false"],
+      }],
+      checkpoint: {
+        task_id: "gomoku-core",
+        commit_sha: "b".repeat(40),
+        changed_files: ["src/gomoku_engine.py"],
+        reason: "RUN_TOKEN_BUDGET_EXHAUSTED",
+        summary: "已保存当前受控代码改动。",
+      },
+    });
+    vi.mocked(productApi.resumeRun).mockResolvedValue({
+      run_id: "99999999-9999-9999-9999-999999999999",
+      project_id: "11111111-1111-1111-1111-111111111111",
+      base_commit: "b".repeat(40),
+      dag_sha256: "d".repeat(64),
+      task_ids: ["gomoku-core"],
+      initial_ready_task_ids: ["gomoku-core"],
+      launch_state: "QUEUED",
+      dispatches: [{
+        task_id: "gomoku-core",
+        state: "QUEUED",
+        dispatch_id: null,
+        broker_message_id: null,
+        queue_name: null,
+        detail: null,
+      }],
+      resumed_from_run_id: runId,
+    });
+
+    renderDashboard();
+
+    expect(await screen.findByText(/Run 模型 Token 预算用尽/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "完整重新执行" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "使用缓存环境完整重跑" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "从检查点继续" }));
+    await waitFor(() => expect(productApi.resumeRun).toHaveBeenCalledWith(runId));
+    expect(productApi.retryRun).not.toHaveBeenCalled();
   });
 
   it("previews reusable work before continuing development", async () => {
