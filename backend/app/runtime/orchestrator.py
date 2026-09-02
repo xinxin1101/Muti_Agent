@@ -186,10 +186,12 @@ class SingleTaskOrchestrator:
             if not verification.passed:
                 failures = FailureClassifier.from_verification(verification)
                 failure_signature = self._failure_signature(failures)
+                failure_stage = self._repair_stage_key(failures)
                 self._record_repair_verification(
                     repairs,
                     verification=verification,
                     failure_signature=failure_signature,
+                    failure_stage=failure_stage,
                 )
                 repairable = FailureClassifier.repairable(failures)
                 if not repairable:
@@ -212,6 +214,7 @@ class SingleTaskOrchestrator:
                     task=task,
                     failures=repairable,
                     failure_signature_before=failure_signature,
+                    failure_stage_before=failure_stage,
                     workspace=workspace,
                     machine=machine,
                     developer=developer_result,
@@ -232,6 +235,7 @@ class SingleTaskOrchestrator:
                 repairs,
                 verification=verification,
                 failure_signature=None,
+                failure_stage=None,
             )
             machine.transition(
                 TaskRunState.REVIEWING,
@@ -333,6 +337,7 @@ class SingleTaskOrchestrator:
                 task=task,
                 failures=failures,
                 failure_signature_before=self._failure_signature(failures),
+                failure_stage_before=self._repair_stage_key(failures),
                 workspace=workspace,
                 machine=machine,
                 developer=developer_result,
@@ -354,6 +359,7 @@ class SingleTaskOrchestrator:
         task: TaskContract,
         failures: Sequence[FailureReport],
         failure_signature_before: str,
+        failure_stage_before: str,
         workspace: LocalGitWorkspace,
         machine: TaskStateMachine,
         developer,
@@ -363,9 +369,9 @@ class SingleTaskOrchestrator:
         trace: TaskTraceCollector | None,
     ):
         stage_budget = max(task.max_retries, self._minimum_repair_attempts)
-        stage_attempts = self._repair_attempts_for_signature(
+        stage_attempts = self._repair_attempts_for_stage(
             repairs,
-            failure_signature_before,
+            failure_stage_before,
         )
         if (
             stage_attempts >= stage_budget
@@ -395,6 +401,7 @@ class SingleTaskOrchestrator:
                 task=task,
                 failures=self._repair_evidence_for_next_attempt(failures, repairs),
                 failure_signature_before=failure_signature_before,
+                failure_stage_before=failure_stage_before,
                 workspace=workspace,
                 machine=machine,
                 attempt=attempt,
@@ -449,6 +456,7 @@ class SingleTaskOrchestrator:
         task: TaskContract,
         failures: Sequence[FailureReport],
         failure_signature_before: str,
+        failure_stage_before: str,
         workspace: LocalGitWorkspace,
         machine: TaskStateMachine,
         attempt: int,
@@ -568,6 +576,7 @@ class SingleTaskOrchestrator:
             patch_hash_before=before_state.patch_hash,
             patch_hash_after=after_state.patch_hash,
             failure_signature_before=failure_signature_before,
+            failure_stage_before=failure_stage_before,
         )
         return repair_result.model_copy(
             update={
@@ -711,6 +720,28 @@ class SingleTaskOrchestrator:
         return f"Repair attempt {repair_result.attempt} completed; hard gate reruns."
 
     @staticmethod
+    def _repair_stage_key(failures: Sequence[FailureReport]) -> str:
+        """Stable retry stage; unlike raw traceback signatures it ignores incidental values."""
+
+        kind, path, symbol, member = SingleTaskOrchestrator._repair_failure_hint(failures)
+        if kind is not None:
+            return "|".join(
+                (
+                    kind.value,
+                    path or "unknown",
+                    symbol or "unknown",
+                    member or "none",
+                )
+            )
+        categories = sorted(
+            {
+                f"{failure.failure_type.value}:{failure.source.value}"
+                for failure in failures
+            }
+        )
+        return "GENERIC|" + ",".join(categories)
+
+    @staticmethod
     def _failure_signature(failures: Sequence[FailureReport]) -> str:
         """Hash stable failure content without volatile traceback addresses or whitespace."""
 
@@ -746,6 +777,7 @@ class SingleTaskOrchestrator:
         *,
         verification,
         failure_signature: str | None,
+        failure_stage: str | None,
     ) -> None:
         if not repairs:
             return
@@ -766,6 +798,7 @@ class SingleTaskOrchestrator:
                     update={
                         "status": status,
                         "failure_signature_after": failure_signature,
+                        "failure_stage_after": failure_stage,
                         "validation_executed": True,
                         "validation_commands": self._validation_commands(verification),
                     }
@@ -774,12 +807,12 @@ class SingleTaskOrchestrator:
         )
 
     @staticmethod
-    def _repair_attempts_for_signature(repairs, failure_signature: str) -> int:
+    def _repair_attempts_for_stage(repairs, failure_stage: str) -> int:
         return sum(
             1
             for repair in repairs
             if repair.progress is not None
-            and repair.progress.failure_signature_before == failure_signature
+            and repair.progress.failure_stage_before == failure_stage
         )
 
     def _finish_repair_budget_exhausted(
@@ -841,6 +874,8 @@ class SingleTaskOrchestrator:
             f"previous_patch_hash={progress.patch_hash_after}",
             f"previous_failure_signature_before={progress.failure_signature_before}",
             f"previous_failure_signature_after={progress.failure_signature_after}",
+            f"previous_failure_stage_before={progress.failure_stage_before}",
+            f"previous_failure_stage_after={progress.failure_stage_after}",
         ]
         if repair.final_message:
             evidence.append(
@@ -889,6 +924,7 @@ class SingleTaskOrchestrator:
                         f"patch_hash_before={progress.patch_hash_before}",
                         f"patch_hash_after={progress.patch_hash_after}",
                         f"failure_signature_before={progress.failure_signature_before}",
+                        f"failure_stage_before={progress.failure_stage_before}",
                         "validation_executed=false",
                     ],
                 }
