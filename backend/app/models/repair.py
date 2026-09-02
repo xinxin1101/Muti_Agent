@@ -6,6 +6,10 @@ from app.models.agent import TokenUsage
 from app.models.failure import FailureSource, FailureType
 
 
+class RepairFailureKind(StrEnum):
+    IMPORT_SYMBOL_MISSING = "IMPORT_SYMBOL_MISSING"
+
+
 class RepairFailureDigest(BaseModel):
     """Bounded failure facts handed to a fresh Repair session."""
 
@@ -31,11 +35,20 @@ class RepairHandoff(BaseModel):
     readonly_files: tuple[str, ...] = Field(default_factory=tuple, max_length=256)
     changed_files: tuple[str, ...] = Field(default_factory=tuple, max_length=256)
     relevant_paths: tuple[str, ...] = Field(default_factory=tuple, max_length=16)
+    failure_kind: RepairFailureKind | None = None
+    suspected_path: str | None = Field(default=None, max_length=500)
+    suspected_symbol: str | None = Field(
+        default=None,
+        pattern=r"^[A-Za-z_][A-Za-z0-9_]*$",
+        max_length=256,
+    )
     failures: tuple[RepairFailureDigest, ...] = Field(min_length=1, max_length=8)
 
 
 class RepairStopReason(StrEnum):
     MODEL_STOP = "MODEL_STOP"
+    NO_PROGRESS = "NO_PROGRESS"
+    EXPLICIT_BLOCKER = "EXPLICIT_BLOCKER"
     ITERATION_LIMIT = "ITERATION_LIMIT"
     TIME_LIMIT = "TIME_LIMIT"
     TOOL_CALL_LIMIT = "TOOL_CALL_LIMIT"
