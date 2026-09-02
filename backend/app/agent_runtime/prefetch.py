@@ -20,6 +20,7 @@ class RepairPrefetchEvidence(BaseModel):
     failure_kind: RepairFailureKind | None = None
     path: str | None = Field(default=None, max_length=500)
     symbol: str | None = Field(default=None, max_length=300)
+    member: str | None = Field(default=None, max_length=300)
     symbol_found: bool | None = None
     source_preview: str = Field(default="", max_length=_MAX_PREFETCH_SOURCE_CHARS)
     errors: tuple[str, ...] = Field(default_factory=tuple, max_length=4)
@@ -32,6 +33,7 @@ class RepairPrefetchEvidence(BaseModel):
             f"failure_kind={self.failure_kind.value if self.failure_kind else 'unknown'}",
             f"path={self.path or 'unknown'}",
             f"symbol={self.symbol or 'unknown'}",
+            f"member={self.member or 'none'}",
             f"symbol_found={self.symbol_found}",
         ]
         if self.errors:
@@ -42,6 +44,11 @@ class RepairPrefetchEvidence(BaseModel):
                     "bounded_source_preview:",
                     self.source_preview,
                 ]
+            )
+        if self.failure_kind is RepairFailureKind.PYTHON_ATTRIBUTE_MISSING and self.member:
+            facts.append(
+                f"Required interface repair: ensure {self.symbol}.{self.member} exists and "
+                "matches the deterministic verification contract."
             )
         facts.append(
             "Use this evidence to produce a candidate mutation. Do not repeat the same "
@@ -58,7 +65,11 @@ def build_repair_prefetch(
 ) -> RepairPrefetchEvidence:
     if (
         handoff is None
-        or handoff.failure_kind is not RepairFailureKind.IMPORT_SYMBOL_MISSING
+        or handoff.failure_kind
+        not in {
+            RepairFailureKind.IMPORT_SYMBOL_MISSING,
+            RepairFailureKind.PYTHON_ATTRIBUTE_MISSING,
+        }
         or handoff.suspected_path is None
         or handoff.suspected_symbol is None
     ):
@@ -66,6 +77,7 @@ def build_repair_prefetch(
 
     path = handoff.suspected_path
     symbol = handoff.suspected_symbol
+    member = handoff.suspected_member
     errors: list[str] = []
 
     symbol_result = toolbox.execute(
@@ -85,6 +97,7 @@ def build_repair_prefetch(
             failure_kind=handoff.failure_kind,
             path=path,
             symbol=symbol,
+            member=member,
             symbol_found=True,
             source_preview=_extract_content(symbol_result.content),
         )
@@ -115,6 +128,7 @@ def build_repair_prefetch(
         failure_kind=handoff.failure_kind,
         path=path,
         symbol=symbol,
+        member=member,
         symbol_found=False if symbol_result.error_code is ToolErrorCode.NOT_FOUND else None,
         source_preview=_extract_content(range_result.content) if range_result.ok else "",
         errors=tuple(errors[:4]),
