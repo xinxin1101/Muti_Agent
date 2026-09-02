@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Callable
 from time import monotonic
 from typing import Any
@@ -16,7 +17,13 @@ from app.agent_runtime.types import (
 from app.agent_runtime.view import AgentViewBuilder
 from app.context.retention import AgentContextRetention
 from app.context.token_estimator import TokenEstimator
-from app.models.agent import AgentMessage, AgentRequest, MessageRole, TokenUsage
+from app.models.agent import (
+    AgentMessage,
+    AgentRequest,
+    LivenessCredit,
+    MessageRole,
+    TokenUsage,
+)
 from app.models.context import ContextUsage
 from app.models.tools import ToolErrorCode, ToolExecutionResult
 from app.providers.base import AgentDriver
@@ -78,6 +85,11 @@ class AgentLoop:
         mutation_gate_violations = 0
         no_patch_model_stops = 0
         runtime_instruction: str | None = None
+        last_tool_failure: tuple[str, ToolErrorCode, str] | None = None
+        repeated_tool_failure_count = 0
+        tool_recovery_instruction: str | None = None
+        tool_recovery_pending = False
+        tool_recovery_used = False
         events: list[AgentRuntimeEvent] = []
 
         for iteration in range(1, policy.max_iterations + 1):
@@ -103,16 +115,32 @@ class AgentLoop:
             )
             runtime_instruction = None
             patch_changed = workspace.change_snapshot().patch_hash != start_patch_hash
+            effective_max_output_tokens = policy.max_output_tokens
+            liveness_credit = (
+                policy.initial_liveness_credit
+                if iteration == 1
+                else LivenessCredit.VERIFIED_PROGRESS
+                if patch_changed
+                else LivenessCredit.NORMAL
+            )
+            if tool_recovery_pending:
+                effective_max_output_tokens = (
+                    policy.tool_recovery_max_output_tokens or policy.max_output_tokens
+                )
+                liveness_credit = LivenessCredit.TOOL_RECOVERY
+                tool_recovery_pending = False
+                tool_recovery_used = True
             request = AgentRequest(
                 role=policy.role,
                 model=policy.model,
                 messages=list(view.messages),
                 temperature=policy.temperature,
-                max_output_tokens=policy.max_output_tokens,
+                max_output_tokens=effective_max_output_tokens,
                 enable_thinking=policy.enable_thinking,
                 budget_progress=patch_changed,
                 context_estimated_tokens=context_estimated_tokens,
                 execution_iteration=iteration,
+                liveness_credit=liveness_credit,
                 tools=list(policy.tool_definitions),
             )
             try:
@@ -314,6 +342,64 @@ class AgentLoop:
                     )
                 )
                 results.append(result)
+                if not policy.tool_recovery_enabled:
+                    continue
+                if result.ok:
+                    last_tool_failure = None
+                    repeated_tool_failure_count = 0
+                    continue
+                error_code = result.error_code
+                if error_code is None:
+                    last_tool_failure = None
+                    repeated_tool_failure_count = 0
+                    continue
+                signature = (
+                    result.name,
+                    error_code,
+                    self._tool_failure_signature(call, result),
+                )
+                repeated_tool_failure_count = (
+                    repeated_tool_failure_count + 1
+                    if signature == last_tool_failure
+                    else 1
+                )
+                last_tool_failure = signature
+                if repeated_tool_failure_count >= policy.repeated_tool_failure_limit:
+                    await self._record_tool_cost_outcome(
+                        policy=policy,
+                        calls=response.tool_calls,
+                        results=results,
+                        has_real_progress=False,
+                        compacted_code_mutation=False,
+                    )
+                    return self._result(
+                        stop_reason=AgentRuntimeStopReason.REPEATED_TOOL_FAILURE,
+                        iterations=iteration,
+                        tool_calls=tool_call_count,
+                        final_message=(
+                            "Agent stopped after repeated invalid repository-tool calls; "
+                            "no additional model request was made."
+                        ),
+                        prompt_tokens=total_prompt_tokens,
+                        completion_tokens=total_completion_tokens,
+                        total_tokens=total_tokens,
+                        latency_ms=total_latency_ms,
+                        observation_count=observation_count,
+                        mutation_count=mutation_count,
+                        mutation_gate_triggered=mutation_gate_triggered,
+                        events=events,
+                        tool_failure_evidence=(
+                            self._safe_tool_failure_evidence(call, result),
+                        ),
+                    )
+                if (
+                    not tool_recovery_used
+                    and self._is_recoverable_tool_error(result)
+                ):
+                    tool_recovery_instruction = self._tool_recovery_instruction(
+                        call=call,
+                        result=result,
+                    )
 
             compacted_code_mutation = retention.add_group(
                 assistant=assistant_message,
@@ -392,6 +478,12 @@ class AgentLoop:
                             ),
                         )
 
+            if tool_recovery_instruction is not None:
+                if not patch_changed_now:
+                    runtime_instruction = tool_recovery_instruction
+                    tool_recovery_pending = True
+                tool_recovery_instruction = None
+
             await self._record_tool_cost_outcome(
                 policy=policy,
                 calls=response.tool_calls,
@@ -458,7 +550,7 @@ class AgentLoop:
         prefix = (
             "MUTATION REQUIRED. "
             if strict
-            else "The current task is a code-repair task and no workspace mutation exists yet. "
+            else "The current task requires a repository mutation and no workspace mutation exists yet. "
         )
         return (
             prefix
@@ -467,6 +559,61 @@ class AgentLoop:
             "Do not repeat exploratory reads/searches unless a concrete missing fact prevents "
             "a safe edit. If a runtime or scope blocker makes mutation impossible, return "
             "exactly 'BLOCKED: <reason>'."
+        )
+
+    @staticmethod
+    def _safe_tool_failure_evidence(call: Any, result: ToolExecutionResult) -> str:
+        """Return bounded argument-shape evidence without retaining source payloads."""
+
+        argument_state = "invalid_json"
+        fields = ""
+        try:
+            payload = json.loads(call.arguments or "{}")
+            if isinstance(payload, dict):
+                argument_state = "json_object"
+                fields = ",".join(
+                    sorted(
+                        key[:64]
+                        for key in payload
+                        if isinstance(key, str) and key.replace("_", "").isalnum()
+                    )[:8]
+                )
+            else:
+                argument_state = "json_non_object"
+        except json.JSONDecodeError:
+            pass
+        error_code = result.error_code.value if result.error_code else "UNKNOWN"
+        return (
+            f"tool={result.name};error_code={error_code};"
+            f"arguments={argument_state};fields={fields or '-'}"
+        )
+
+    @classmethod
+    def _tool_failure_signature(cls, call: Any, result: ToolExecutionResult) -> str:
+        evidence = cls._safe_tool_failure_evidence(call, result)
+        return evidence.partition(";arguments=")[2] or evidence
+
+    @staticmethod
+    def _is_recoverable_tool_error(result: ToolExecutionResult) -> bool:
+        return result.error_code in {
+            ToolErrorCode.INVALID_ARGUMENTS,
+            ToolErrorCode.AMBIGUOUS_PATCH,
+            ToolErrorCode.IO_ERROR,
+        }
+
+    @staticmethod
+    def _tool_recovery_instruction(*, call: Any, result: ToolExecutionResult) -> str:
+        if call.name == "write_file" and result.error_code is ToolErrorCode.INVALID_ARGUMENTS:
+            return (
+                "The previous write_file call was rejected because its function arguments were "
+                "not a complete JSON object. Retry write_file exactly once using only valid JSON "
+                "with the required keys path and content; do not wrap JSON in Markdown and do not "
+                "add commentary. If the intended file is long, write only a small runnable "
+                "skeleton now and add the rest later with bounded apply_patch calls."
+            )
+        return (
+            "The previous repository-tool call was rejected. Correct its JSON arguments exactly "
+            "once according to the tool schema. Return a tool call, not Markdown or prose."
         )
 
     @staticmethod
@@ -484,6 +631,7 @@ class AgentLoop:
         mutation_gate_triggered: bool,
         events: list[AgentRuntimeEvent],
         final_message: str = "",
+        tool_failure_evidence: tuple[str, ...] = (),
     ) -> AgentRuntimeResult:
         return AgentRuntimeResult(
             stop_reason=stop_reason,
@@ -500,4 +648,5 @@ class AgentLoop:
             mutation_count=mutation_count,
             mutation_gate_triggered=mutation_gate_triggered,
             event_count=len(events),
+            tool_failure_evidence=tool_failure_evidence,
         )
