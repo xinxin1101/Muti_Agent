@@ -14,6 +14,8 @@ from app.models import (
     FailureReport,
     FailureSource,
     FailureType,
+    RepairFailureDigest,
+    RepairHandoff,
     RepairProgressEvidence,
     RepairProgressStatus,
     RepairStopReason,
@@ -406,25 +408,13 @@ class SingleTaskOrchestrator:
 
         machine.transition(
             TaskRunState.REPAIRING,
-            detail=f"Targeted repair attempt {attempt} started.",
+            detail=f"Fresh targeted repair attempt {attempt} started.",
         )
-        try:
-            repair_context = await self._build_context(repair_task, workspace=workspace)
-        except ContextBuildError as exc:
-            machine.transition(
-                TaskRunState.FAILED,
-                detail="Repair ContextPacket construction failed.",
-            )
-            return self._result(
-                task=task,
-                machine=machine,
-                workspace=workspace,
-                developer=developer,
-                verifications=verifications,
-                reviews=reviews,
-                repairs=repairs,
-                failures=[self._context_failure(exc, stage="repair")],
-            )
+        repair_handoff = self._repair_handoff(
+            repair_task,
+            failures=failures,
+            workspace=workspace,
+        )
 
         try:
             before_state = workspace.change_snapshot()
@@ -434,7 +424,7 @@ class SingleTaskOrchestrator:
                     failures,
                     attempt=attempt,
                     workspace=workspace,
-                    context_packet=repair_context,
+                    handoff=repair_handoff,
                 )
             else:
                 repair_result = await self._repair.repair(
@@ -442,7 +432,7 @@ class SingleTaskOrchestrator:
                     failures,
                     attempt=attempt,
                     workspace=workspace,
-                    context_packet=repair_context,
+                    handoff=repair_handoff,
                     trace=trace,
                 )
         except RepairBudgetExhaustedError as exc:
@@ -512,6 +502,41 @@ class SingleTaskOrchestrator:
                 "changed_files": list(after_state.changed_files),
                 "progress": progress,
             }
+        )
+
+    @staticmethod
+    def _repair_handoff(
+        task: TaskContract,
+        *,
+        failures: Sequence[FailureReport],
+        workspace: LocalGitWorkspace,
+    ) -> RepairHandoff:
+        changed_files = tuple(workspace.changed_files())
+        relevant_paths: list[str] = []
+        for path in (*changed_files, *task.writable_files):
+            if any(character in path for character in "*?["):
+                continue
+            if path not in relevant_paths:
+                relevant_paths.append(path)
+        return RepairHandoff(
+            task_id=task.task_id,
+            objective=task.objective,
+            repository_head=workspace.head_commit(),
+            acceptance_criteria=tuple(task.acceptance_criteria),
+            verification_commands=tuple(task.verification_commands),
+            writable_files=tuple(task.writable_files),
+            readonly_files=tuple(task.readonly_files),
+            changed_files=changed_files,
+            relevant_paths=tuple(relevant_paths[:16]),
+            failures=tuple(
+                RepairFailureDigest(
+                    failure_type=failure.failure_type,
+                    source=failure.source,
+                    message=failure.message[:2_000],
+                    evidence=tuple(item[:1_200] for item in failure.evidence[:8]),
+                )
+                for failure in failures[:8]
+            ),
         )
 
     async def _build_context(
