@@ -160,21 +160,23 @@ def test_orchestrator_rebuilds_context_from_current_worktree_for_each_agent_stag
     result = asyncio.run(orchestrator.run(_task(), workspace=workspace))
 
     assert result.status is models.TaskRunState.SUCCEEDED
-    assert len(builder.packets) == 3
+    # Developer and Reviewer rebuild ContextPackets. Repair gets a fresh source-free handoff.
+    assert len(builder.packets) == 2
     assert [_selected_module_content(packet) for packet in builder.packets] == [
         "VALUE = 1\n",
-        "VALUE = 3\n",
         "VALUE = 2\n",
     ]
-    assert len({packet.fingerprint for packet in builder.packets}) == 3
+    assert len({packet.fingerprint for packet in builder.packets}) == 2
 
     developer_prompt = developer_driver.requests[0].messages[-1].content
     repair_prompt = repair_driver.requests[0].messages[-1].content
     reviewer_prompt = reviewer_driver.requests[0].messages[-1].content
     assert "DeveloperContextView" in developer_prompt
     assert "VALUE = 1" in developer_prompt
-    assert "RepairContextView" in repair_prompt
-    assert "VALUE = 3" in repair_prompt
+    assert "Fresh targeted RepairHandoff" in repair_prompt
+    assert "module.py" in repair_prompt
+    assert "VALUE = 3" not in repair_prompt
+    assert repair_driver.requests[0].context_estimated_tokens == 0
     assert "ReviewerContextView" in reviewer_prompt
     assert "VALUE = 2" in reviewer_prompt
     assert reviewer_driver.requests[0].tools == []
