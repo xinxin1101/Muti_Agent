@@ -6,6 +6,7 @@ from collections.abc import Callable
 from time import monotonic
 
 from app.agent_runtime import AgentLoop, AgentRuntimePolicy, AgentRuntimeStopReason
+from app.agent_runtime.repomap import build_repository_map
 from app.context.projector import AgentContextProjector
 from app.context.retention import AgentContextRetention
 from app.context.token_estimator import TokenEstimator
@@ -56,6 +57,7 @@ class DeveloperAgent:
         max_tool_results_per_turn_tokens: int = 1_600,
         runtime_v3_enabled: bool = False,
         runtime_mutation_gate_enabled: bool = True,
+        runtime_repo_map_enabled: bool = False,
         clock: Callable[[], float] = monotonic,
     ) -> None:
         normalized_model = model.strip()
@@ -96,6 +98,7 @@ class DeveloperAgent:
         self._max_tool_results_per_turn_tokens = max_tool_results_per_turn_tokens
         self._runtime_v3_enabled = runtime_v3_enabled
         self._runtime_mutation_gate_enabled = runtime_mutation_gate_enabled
+        self._runtime_repo_map_enabled = runtime_repo_map_enabled
         self._clock = clock
 
     async def run(
@@ -519,6 +522,17 @@ class DeveloperAgent:
             if context_packet is not None and context_packet.resume is not None
             else LivenessCredit.INITIAL_STARTUP
         )
+        base_messages = self._initial_messages(task, context_packet=context_packet)
+        if self._runtime_repo_map_enabled:
+            repo_map_section = build_repository_map(toolbox).prompt_section()
+            if repo_map_section:
+                base_messages.append(
+                    AgentMessage(
+                        role=MessageRole.USER,
+                        content=repo_map_section,
+                    )
+                )
+
         runtime_result = await AgentLoop(
             driver=self._driver,
             clock=self._clock,
@@ -547,7 +561,7 @@ class DeveloperAgent:
                 initial_liveness_credit=initial_liveness_credit,
             ),
             task_id=task.task_id,
-            base_messages=self._initial_messages(task, context_packet=context_packet),
+            base_messages=base_messages,
             toolbox=toolbox,
             workspace=workspace,
             context_estimated_tokens=(
