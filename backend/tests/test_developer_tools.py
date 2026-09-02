@@ -920,3 +920,110 @@ def test_developer_runtime_v3_repeated_invalid_tool_call_is_terminal(
     assert result.tool_failure_evidence == (
         "tool=write_file;error_code=INVALID_ARGUMENTS;arguments=invalid_json;fields=-",
     )
+
+def test_developer_runtime_v3_repo_map_is_navigation_only(tmp_path: Path) -> None:
+    root = _make_repository(tmp_path)
+    (root / "app" / "game.py").write_text(
+        (
+            "import json\n\n"
+            "class GameEngine:\n"
+            "    def play(self):\n"
+            "        hidden_value = 42\n"
+            "        return hidden_value\n"
+        ),
+        encoding="utf-8",
+    )
+    _git(root, "add", ".")
+    _git(root, "commit", "-m", "add game module")
+    workspace = LocalGitWorkspace(root)
+    driver = FakeDriver(
+        [
+            _response(
+                tool_calls=[
+                    _call(
+                        "patch-map",
+                        "apply_patch",
+                        {
+                            "path": "app/main.py",
+                            "old_text": "VALUE = 1",
+                            "new_text": "VALUE = 2",
+                        },
+                    )
+                ]
+            ),
+            _response(content="已修改文件: app/main.py\n已执行验证: 无\n遗留事项: 无"),
+        ]
+    )
+    developer = DeveloperAgent(
+        driver=driver,
+        model="test/developer",
+        runtime_v3_enabled=True,
+        runtime_repo_map_enabled=True,
+    )
+
+    result = asyncio.run(developer.run(_task(), workspace=workspace))
+
+    assert result.stop_reason is DeveloperStopReason.MODEL_STOP
+    first_prompt = "\n".join(message.content for message in driver.requests[0].messages)
+    assert "Deterministic Repository Map" in first_prompt
+    assert "app/game.py" in first_prompt
+    assert "GameEngine" in first_prompt
+    assert "GameEngine.play" in first_prompt
+    assert "imports=json" in first_prompt
+    # RepoMap is a structural navigation index, not a hidden source dump.
+    assert "hidden_value = 42" not in first_prompt
+
+
+def test_developer_runtime_v3_condenser_keeps_only_recent_complete_tool_group(
+    tmp_path: Path,
+) -> None:
+    root = _make_repository(tmp_path)
+    workspace = LocalGitWorkspace(root)
+    reads = [
+        _call(f"read-v3-{index}", "read_file", {"path": "app/main.py"})
+        for index in range(1, 4)
+    ]
+    patch = _call(
+        "patch-v3-final",
+        "apply_patch",
+        {
+            "path": "app/main.py",
+            "old_text": "VALUE = 1",
+            "new_text": "VALUE = 2",
+        },
+    )
+    driver = FakeDriver(
+        [
+            _response(tool_calls=[reads[0]]),
+            _response(tool_calls=[reads[1]]),
+            _response(tool_calls=[reads[2]]),
+            _response(tool_calls=[patch]),
+            _response(content="已修改文件: app/main.py\n已执行验证: 无\n遗留事项: 无"),
+        ]
+    )
+    developer = DeveloperAgent(
+        driver=driver,
+        model="test/developer",
+        max_iterations=5,
+        runtime_v3_enabled=True,
+        runtime_mutation_gate_enabled=True,
+        max_retained_tool_groups=1,
+    )
+
+    result = asyncio.run(developer.run(_task(), workspace=workspace))
+
+    assert result.stop_reason is DeveloperStopReason.MODEL_STOP
+    patch_request = driver.requests[3]
+    retained_tool_messages = [
+        message for message in patch_request.messages if message.role is MessageRole.TOOL
+    ]
+    assert [message.tool_call_id for message in retained_tool_messages] == ["read-v3-3"]
+    assert any(
+        "compact working state" in message.content
+        for message in patch_request.messages
+    )
+    assert any(
+        "MUTATION REQUIRED" in message.content
+        for message in patch_request.messages
+    )
+
