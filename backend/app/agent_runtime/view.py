@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.context.retention import AgentContextRetention
-from app.models.agent import AgentMessage, MessageRole
+from app.agent_runtime.condenser import AgentCondenser
+from app.models.agent import AgentMessage
 
 
 class AgentView(BaseModel):
@@ -18,19 +18,12 @@ class AgentView(BaseModel):
 class AgentViewBuilder:
     @staticmethod
     def build(
-        retention: AgentContextRetention,
+        condenser: AgentCondenser,
         *,
         runtime_instruction: str | None = None,
     ) -> AgentView:
-        messages = retention.messages()
-        if runtime_instruction:
-            messages.append(
-                AgentMessage(
-                    role=MessageRole.USER,
-                    content=runtime_instruction,
-                )
-            )
+        state = condenser.state(runtime_instruction=runtime_instruction)
         return AgentView(
-            messages=tuple(messages),
-            compacted_tool_groups=retention.compacted_group_count,
+            messages=state.messages,
+            compacted_tool_groups=state.compacted_tool_groups,
         )
