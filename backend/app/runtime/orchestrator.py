@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import re
 from collections.abc import Sequence
 from hashlib import sha256
@@ -418,23 +419,21 @@ class SingleTaskOrchestrator:
 
         try:
             before_state = workspace.change_snapshot()
-            if trace is None:
-                repair_result = await self._repair.repair(
-                    repair_task,
-                    failures,
-                    attempt=attempt,
-                    workspace=workspace,
-                    handoff=repair_handoff,
-                )
-            else:
-                repair_result = await self._repair.repair(
-                    repair_task,
-                    failures,
-                    attempt=attempt,
-                    workspace=workspace,
-                    handoff=repair_handoff,
-                    trace=trace,
-                )
+            repair_kwargs = {
+                "attempt": attempt,
+                "workspace": workspace,
+            }
+            # Production RepairAgent accepts the fresh handoff. Keep duck-typed test/custom
+            # repair implementations compatible while the interface rolls out.
+            if "handoff" in inspect.signature(self._repair.repair).parameters:
+                repair_kwargs["handoff"] = repair_handoff
+            if trace is not None and "trace" in inspect.signature(self._repair.repair).parameters:
+                repair_kwargs["trace"] = trace
+            repair_result = await self._repair.repair(
+                repair_task,
+                failures,
+                **repair_kwargs,
+            )
         except RepairBudgetExhaustedError as exc:
             machine.transition(
                 TaskRunState.FAILED,
