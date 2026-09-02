@@ -159,7 +159,12 @@ def test_repair_agent_uses_repair_role_targeted_evidence_and_same_tools(
     root = _repository(tmp_path, value=2)
     (root / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
     failure = _test_failure()
-    driver = FakeDriver([_response(content="Applied the targeted value repair.")])
+    driver = FakeDriver(
+        [
+            _response(content="I need to inspect the repository first."),
+            _response(content="I still did not produce a patch."),
+        ]
+    )
     agent = agents.RepairAgent(driver=driver, model="test/repair")
 
     result = asyncio.run(
@@ -173,7 +178,9 @@ def test_repair_agent_uses_repair_role_targeted_evidence_and_same_tools(
 
     assert result.attempt == 1
     assert result.failure_types == [models.FailureType.TEST_FAILURE]
-    assert result.stop_reason is models.RepairStopReason.MODEL_STOP
+    assert result.stop_reason is models.RepairStopReason.NO_PROGRESS
+    assert len(driver.requests) == 2
+    assert "No workspace patch has been produced" in driver.requests[1].messages[-1].content
     request = driver.requests[0]
     assert request.role is models.AgentRole.REPAIR
     assert {tool.name for tool in request.tools} == {
@@ -217,7 +224,12 @@ def test_fresh_repair_handoff_has_no_developer_history_or_context_floor(tmp_path
             ),
         ),
     )
-    driver = FakeDriver([_response(content="No patch needed for this prompt-shape test.")])
+    driver = FakeDriver(
+        [
+            _response(content="No patch produced yet."),
+            _response(content="Still no patch produced."),
+        ]
+    )
     agent = agents.RepairAgent(driver=driver, model="test/repair")
 
     asyncio.run(
@@ -238,6 +250,48 @@ def test_fresh_repair_handoff_has_no_developer_history_or_context_floor(tmp_path
     assert "Original validated TaskContract" not in request.messages[1].content
     assert "ContextPacket" not in request.messages[1].content
     assert all(message.role is not models.MessageRole.TOOL for message in request.messages)
+
+
+def test_model_stop_without_patch_gets_one_recovery_turn_then_can_patch(
+    tmp_path: Path,
+) -> None:
+    root = _repository(tmp_path)
+    workspace = LocalGitWorkspace(root)
+    patch_call = models.ToolCall(
+        id="repair-after-nudge",
+        name="apply_patch",
+        arguments=json.dumps(
+            {
+                "path": "module.py",
+                "old_text": "VALUE = 1",
+                "new_text": "VALUE = 2",
+            }
+        ),
+    )
+    driver = FakeDriver(
+        [
+            _response(content="The failure is clear; I should inspect it."),
+            _response(tool_calls=[patch_call]),
+            _response(content="Patch produced; deterministic verification should rerun."),
+        ]
+    )
+    repair = agents.RepairAgent(driver=driver, model="test/repair")
+
+    result = asyncio.run(
+        repair.repair(
+            _task(),
+            [_test_failure()],
+            attempt=1,
+            workspace=workspace,
+        )
+    )
+
+    assert result.stop_reason is models.RepairStopReason.MODEL_STOP
+    assert result.tool_calls == 1
+    assert result.changed_files == ["module.py"]
+    assert len(driver.requests) == 3
+    assert "No workspace patch has been produced" in driver.requests[1].messages[-1].content
+    assert (root / "module.py").read_text(encoding="utf-8") == "VALUE = 2\n"
 
 
 def test_first_verification_failure_is_targeted_repaired_then_passes(tmp_path: Path) -> None:
