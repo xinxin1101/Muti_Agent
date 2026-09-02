@@ -501,6 +501,7 @@ class RepairAgent:
             handoff=handoff,
             context_packet=context_packet,
         )
+        prefetch_performed = False
         if self._runtime_import_prefetch_enabled:
             prefetch = build_repair_prefetch(
                 handoff,
@@ -508,6 +509,7 @@ class RepairAgent:
                 max_read_range_lines=self._max_read_range_lines,
             )
             if prefetch.performed:
+                prefetch_performed = True
                 base_messages.append(
                     AgentMessage(
                         role=MessageRole.USER,
@@ -531,7 +533,9 @@ class RepairAgent:
             max_single_tool_result_tokens=self._max_single_tool_result_tokens,
             max_tool_results_per_turn_tokens=self._max_tool_results_per_turn_tokens,
             mutation_gate_enabled=self._runtime_mutation_gate_enabled,
-            max_observation_turns_without_mutation=2,
+            # Deterministic prefetch already provided the target class/source. Allow one
+            # additional observation turn, then require a mutation instead of re-exploration.
+            max_observation_turns_without_mutation=1 if prefetch_performed else 2,
             max_mutation_gate_violations=1,
         )
         runtime_result = await AgentLoop(
@@ -585,7 +589,8 @@ class RepairAgent:
             hint = (
                 f" Failure hint: kind={handoff.failure_kind.value};"
                 f" path={handoff.suspected_path or 'unknown'};"
-                f" symbol={handoff.suspected_symbol or 'unknown'}."
+                f" symbol={handoff.suspected_symbol or 'unknown'};"
+                f" member={handoff.suspected_member or 'none'}."
             )
         return (
             "No workspace patch has been produced and the deterministic verification failure "
