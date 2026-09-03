@@ -12,6 +12,7 @@ class AgentRuntimeEventKind(StrEnum):
     TOOL_RESULT = "TOOL_RESULT"
     MUTATION_GATE = "MUTATION_GATE"
     PREFETCH = "PREFETCH"
+    STUCK_DETECTION = "STUCK_DETECTION"
 
 
 class AgentRuntimeEvent(BaseModel):

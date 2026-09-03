@@ -17,6 +17,7 @@ from app.agent_runtime.types import (
 )
 from app.agent_runtime.view import AgentViewBuilder
 from app.context.token_estimator import TokenEstimator
+from app.integrations.openhands import OpenHandsStuckAdapter
 from app.models.agent import (
     AgentMessage,
     AgentRequest,
@@ -91,6 +92,13 @@ class AgentLoop:
         tool_recovery_pending = False
         tool_recovery_used = False
         events: list[AgentRuntimeEvent] = []
+        stuck_detector = OpenHandsStuckAdapter(
+            enabled=policy.stuck_detector_enabled,
+            action_observation_threshold=policy.stuck_action_observation_threshold,
+            action_error_threshold=policy.stuck_action_error_threshold,
+            monologue_threshold=policy.stuck_monologue_threshold,
+            alternating_pattern_threshold=policy.stuck_alternating_pattern_threshold,
+        )
 
         for iteration in range(1, policy.max_iterations + 1):
             remaining = policy.max_duration_seconds - (self._clock() - started_at)
@@ -191,6 +199,11 @@ class AgentLoop:
                         f"finish_reason={response.finish_reason or 'unknown'}"
                     ),
                 )
+            )
+
+            stuck_detector.record_model_response(
+                content=response.content,
+                has_tool_calls=bool(response.tool_calls),
             )
 
             assistant_message = AgentMessage(
@@ -326,6 +339,7 @@ class AgentLoop:
                         result=result,
                         duration_ms=trace.duration_ms(tool_started),
                     )
+                stuck_detector.record_tool_result(call, result)
                 events.append(
                     AgentRuntimeEvent(
                         sequence=len(events),
@@ -483,6 +497,61 @@ class AgentLoop:
                     runtime_instruction = tool_recovery_instruction
                     tool_recovery_pending = True
                 tool_recovery_instruction = None
+
+            stuck_decision = stuck_detector.inspect()
+            if not patch_changed_now and stuck_decision.should_stop:
+                reason = stuck_decision.reason
+                assert reason is not None
+                events.append(
+                    AgentRuntimeEvent(
+                        sequence=len(events),
+                        kind=AgentRuntimeEventKind.STUCK_DETECTION,
+                        iteration=iteration,
+                        progress_kind=ToolProgressKind.NONE,
+                        detail=f"stop:{reason.value}",
+                    )
+                )
+                await self._record_tool_cost_outcome(
+                    policy=policy,
+                    calls=response.tool_calls,
+                    results=results,
+                    has_real_progress=False,
+                    compacted_code_mutation=compacted_code_mutation,
+                )
+                return self._result(
+                    stop_reason=AgentRuntimeStopReason.NO_PROGRESS,
+                    iterations=iteration,
+                    tool_calls=tool_call_count,
+                    final_message=(
+                        "OpenHands-derived stuck detector stopped repeated runtime pattern: "
+                        f"{reason.value}."
+                    ),
+                    prompt_tokens=total_prompt_tokens,
+                    completion_tokens=total_completion_tokens,
+                    total_tokens=total_tokens,
+                    latency_ms=total_latency_ms,
+                    observation_count=observation_count,
+                    mutation_count=mutation_count,
+                    mutation_gate_triggered=mutation_gate_triggered,
+                    events=events,
+                )
+            if (
+                not patch_changed_now
+                and stuck_decision.nudge is not None
+                and runtime_instruction is None
+            ):
+                reason = stuck_decision.reason
+                assert reason is not None
+                runtime_instruction = stuck_decision.nudge
+                events.append(
+                    AgentRuntimeEvent(
+                        sequence=len(events),
+                        kind=AgentRuntimeEventKind.STUCK_DETECTION,
+                        iteration=iteration,
+                        progress_kind=ToolProgressKind.NONE,
+                        detail=f"nudge:{reason.value}",
+                    )
+                )
 
             await self._record_tool_cost_outcome(
                 policy=policy,

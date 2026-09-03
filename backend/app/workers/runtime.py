@@ -110,6 +110,7 @@ def build_single_task_runner(
         ),
         runtime_mutation_gate_enabled=settings.runtime_mutation_gate_enabled,
         runtime_repo_map_enabled=settings.runtime_repo_map_enabled,
+        runtime_stuck_detector_enabled=settings.runtime_stuck_detector_enabled,
         openhands_patch_enabled=settings.openhands_patch_enabled,
     )
     reviewer = ReviewerAgent(
@@ -137,6 +138,7 @@ def build_single_task_runner(
         ),
         runtime_mutation_gate_enabled=settings.runtime_mutation_gate_enabled,
         runtime_import_prefetch_enabled=settings.runtime_import_prefetch_enabled,
+        runtime_stuck_detector_enabled=settings.runtime_stuck_detector_enabled,
         openhands_patch_enabled=settings.openhands_patch_enabled,
     )
     return SingleTaskOrchestrator(

@@ -48,6 +48,11 @@ class AgentRuntimePolicy:
     tool_recovery_enabled: bool = False
     tool_recovery_max_output_tokens: int | None = None
     repeated_tool_failure_limit: int = 2
+    stuck_detector_enabled: bool = False
+    stuck_action_observation_threshold: int = 4
+    stuck_action_error_threshold: int = 3
+    stuck_monologue_threshold: int = 3
+    stuck_alternating_pattern_threshold: int = 6
     initial_liveness_credit: LivenessCredit = LivenessCredit.INITIAL_STARTUP
 
 

@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     runtime_mutation_gate_enabled: bool = True
     runtime_import_prefetch_enabled: bool = True
     runtime_repo_map_enabled: bool = True
+    # OpenHands-derived stuck detection supplements, but does not replace, DevFlow's bounded
+    # Mutation Gate / repeated-tool-failure / token-budget authority.
+    runtime_stuck_detector_enabled: bool = True
     # OpenHands-derived patch engine can be rolled back independently while the legacy exact
     # replacement contract remains available for compatibility.
     openhands_patch_enabled: bool = True

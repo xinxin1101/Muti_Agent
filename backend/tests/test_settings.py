@@ -36,6 +36,7 @@ def test_default_settings() -> None:
     assert settings.runtime_mutation_gate_enabled is True
     assert settings.runtime_import_prefetch_enabled is True
     assert settings.runtime_repo_map_enabled is True
+    assert settings.runtime_stuck_detector_enabled is True
     assert settings.openhands_patch_enabled is True
     assert settings.developer_max_retained_tool_groups == 1
     assert settings.developer_max_single_tool_result_tokens == 800
@@ -87,6 +88,7 @@ def test_prefixed_environment_variables_override_defaults(monkeypatch) -> None:
     monkeypatch.setenv("DEVFLOW_RUNTIME_MUTATION_GATE_ENABLED", "false")
     monkeypatch.setenv("DEVFLOW_RUNTIME_IMPORT_PREFETCH_ENABLED", "false")
     monkeypatch.setenv("DEVFLOW_RUNTIME_REPO_MAP_ENABLED", "false")
+    monkeypatch.setenv("DEVFLOW_RUNTIME_STUCK_DETECTOR_ENABLED", "false")
     monkeypatch.setenv("DEVFLOW_OPENHANDS_PATCH_ENABLED", "false")
     monkeypatch.setenv("DEVFLOW_DEVELOPER_MAX_RETAINED_TOOL_GROUPS", "2")
     monkeypatch.setenv("DEVFLOW_DEVELOPER_MAX_SINGLE_TOOL_RESULT_TOKENS", "700")
@@ -146,6 +148,7 @@ def test_prefixed_environment_variables_override_defaults(monkeypatch) -> None:
     assert settings.runtime_mutation_gate_enabled is False
     assert settings.runtime_import_prefetch_enabled is False
     assert settings.runtime_repo_map_enabled is False
+    assert settings.runtime_stuck_detector_enabled is False
     assert settings.openhands_patch_enabled is False
     assert settings.developer_max_retained_tool_groups == 2
     assert settings.developer_max_single_tool_result_tokens == 700
