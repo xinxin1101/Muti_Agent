@@ -100,6 +100,46 @@ def _run_diagnostics(result, budget) -> dict[str, Any]:  # type: ignore[no-untyp
     }
 
 
+def _budget_audit(budget) -> dict[str, Any]:  # type: ignore[no-untyped-def]
+    return {
+        "total_budget_tokens": budget.total_budget_tokens,
+        "used_prompt_tokens": budget.used_prompt_tokens,
+        "used_completion_tokens": budget.used_completion_tokens,
+        "used_total_tokens": budget.used_total_tokens,
+        "reserved_tokens": budget.reserved_tokens,
+        "roles": [
+            {
+                "role": item.role.value,
+                "prompt_tokens": item.prompt_tokens,
+                "completion_tokens": item.completion_tokens,
+                "total_tokens": item.total_tokens,
+                "call_count": item.call_count,
+            }
+            for item in budget.roles
+        ],
+        "turns": [
+            {
+                "observation_id": item.observation_id,
+                "task_id": item.task_id,
+                "role": item.role.value,
+                "iteration": item.iteration,
+                "request_estimated_tokens": item.request_estimated_tokens,
+                "actual_prompt_tokens": item.actual_prompt_tokens,
+                "actual_completion_tokens": item.actual_completion_tokens,
+                "actual_total_tokens": item.actual_total_tokens,
+                "estimate_delta_tokens": item.estimate_delta_tokens,
+                "context_growth_tokens": item.context_growth_tokens,
+                "tool_argument_tokens": item.tool_argument_tokens,
+                "write_patch_argument_tokens": item.write_patch_argument_tokens,
+                "tool_result_tokens": item.tool_result_tokens,
+                "compacted_tool_argument_tokens": item.compacted_tool_argument_tokens,
+                "has_real_progress": item.has_real_progress,
+            }
+            for item in budget.cost_observations
+        ],
+    }
+
+
 TARGET = "src/gomoku_engine.py"
 VERIFY = (
     'python3 -c "from src.gomoku_engine import GameLogic; '
@@ -473,6 +513,7 @@ async def _requirement_e2e(
         "run_budget_total": budget.total_budget_tokens,
         "run_budget_used": budget.used_total_tokens,
         "changed_files": result.changed_files,
+        "token_audit": _budget_audit(budget),
     }
 
 
@@ -542,6 +583,7 @@ async def _real_import_repair(
         "verification_attempts": len(result.verifications),
         "run_budget_total": budget.total_budget_tokens,
         "run_budget_used": budget.used_total_tokens,
+        "token_audit": _budget_audit(budget),
     }
 
 
@@ -716,6 +758,7 @@ async def _checkpoint_resume(
             "repair_attempts": second.run_result.repair_attempts,
             "verification_attempts": len(second.run_result.verifications),
             "base_commit": checkpoint.commit_sha,
+            "token_audit": _budget_audit(second_budget),
         },
     }
 
