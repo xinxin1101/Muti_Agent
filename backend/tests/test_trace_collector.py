@@ -47,6 +47,15 @@ def test_trace_collector_excludes_sensitive_model_and_tool_payloads() -> None:
         ),
         duration_ms=5,
     )
+    collector.record_runtime_progress(
+        agent_turn_span_id=turn_id,
+        has_workspace_patch=True,
+        turn_made_progress=True,
+        changed_files_this_turn=("src/feature.py",),
+        consecutive_mutation_turns=1,
+        same_file_mutation_streak=1,
+        convergence_nudge_triggered=True,
+    )
     collector.record_verification(
         attempt=1,
         result=VerificationResult(
@@ -77,6 +86,12 @@ def test_trace_collector_excludes_sensitive_model_and_tool_payloads() -> None:
     ]
     assert batch.spans[1].parent_span_id == turn_id
     assert batch.spans[0].total_tokens == 18
+    assert batch.spans[0].has_workspace_patch is True
+    assert batch.spans[0].turn_made_progress is True
+    assert batch.spans[0].changed_files_this_turn == ("src/feature.py",)
+    assert batch.spans[0].consecutive_mutation_turns == 1
+    assert batch.spans[0].same_file_mutation_streak == 1
+    assert batch.spans[0].convergence_nudge_triggered is True
     assert "model-v1" in payload
     assert "read_file" in payload
     assert "COMPLETION_SECRET_123" not in payload

@@ -1,0 +1,400 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import subprocess
+from pathlib import Path
+
+from app import agents, models
+from app.providers.base import AgentDriver
+from app.workspace import LocalGitWorkspace
+
+
+class _RecordingDriver(AgentDriver):
+    def __init__(self, responses: list[models.AgentResponse]) -> None:
+        self._responses = iter(responses)
+        self.requests: list[models.AgentRequest] = []
+        self.progress_outcomes: list[bool] = []
+
+    async def complete(self, request: models.AgentRequest) -> models.AgentResponse:
+        self.requests.append(request)
+        return next(self._responses)
+
+    async def record_tool_outcome(
+        self,
+        *,
+        role,
+        calls,
+        results,
+        has_real_progress: bool,
+        compacted_code_mutation: bool,
+    ) -> None:
+        del role, calls, results, compacted_code_mutation
+        self.progress_outcomes.append(has_real_progress)
+
+
+def _response(
+    *,
+    content: str = "",
+    tool_calls: list[models.ToolCall] | None = None,
+) -> models.AgentResponse:
+    return models.AgentResponse(
+        model="test/developer",
+        content=content,
+        tool_calls=tool_calls or [],
+        usage=models.TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+        latency_ms=1,
+        finish_reason="tool_calls" if tool_calls else "stop",
+    )
+
+
+def _call(call_id: str, name: str, arguments: dict) -> models.ToolCall:
+    return models.ToolCall(
+        id=call_id,
+        name=name,
+        arguments=json.dumps(arguments),
+    )
+
+
+def _git(root: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", *args],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _repository(tmp_path: Path) -> Path:
+    root = tmp_path / "repo"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "gomoku_logic.py").write_text("VALUE = 1\n", encoding="utf-8")
+    _git(root, "init")
+    _git(root, "config", "user.email", "devflow@example.com")
+    _git(root, "config", "user.name", "DevFlow Tests")
+    _git(root, "add", ".")
+    _git(root, "commit", "-m", "baseline")
+    return root
+
+
+def _task(*, writable_files: list[str] | None = None) -> models.TaskContract:
+    return models.TaskContract(
+        task_id="developer-convergence",
+        objective="Implement the requested repository change.",
+        readable_files=["**"],
+        writable_files=writable_files or ["src/gomoku_logic.py"],
+        readonly_files=[],
+        acceptance_criteria=["The requested repository change exists."],
+        verification_commands=["python3 -c \"print('ok')\""],
+        max_retries=1,
+    )
+
+
+def _developer(
+    driver: _RecordingDriver,
+    *,
+    stuck_detector_enabled: bool = False,
+) -> agents.DeveloperAgent:
+    return agents.DeveloperAgent(
+        driver=driver,
+        model="test/developer",
+        max_iterations=10,
+        runtime_v3_enabled=True,
+        runtime_mutation_gate_enabled=False,
+        runtime_stuck_detector_enabled=stuck_detector_enabled,
+    )
+
+
+def _prompt(request: models.AgentRequest) -> str:
+    return "\n".join(message.content for message in request.messages)
+
+
+def test_progress_credit_is_scoped_to_the_previous_real_mutation_turn(
+    tmp_path: Path,
+) -> None:
+    root = _repository(tmp_path)
+    driver = _RecordingDriver(
+        [
+            _response(tool_calls=[_call("list", "list_files", {"directory": "src"})]),
+            _response(
+                tool_calls=[
+                    _call(
+                        "write",
+                        "write_file",
+                        {"path": "src/gomoku_logic.py", "content": "VALUE = 2\n"},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "read",
+                        "read_range",
+                        {
+                            "path": "src/gomoku_logic.py",
+                            "start_line": 1,
+                            "end_line": 5,
+                        },
+                    )
+                ]
+            ),
+            _response(
+                content=(
+                    "已修改文件: src/gomoku_logic.py\n"
+                    "已执行验证: 无\n"
+                    "遗留事项: 无"
+                )
+            ),
+        ]
+    )
+
+    result = asyncio.run(
+        _developer(driver).run(
+            _task(),
+            workspace=LocalGitWorkspace(root),
+        )
+    )
+
+    assert result.stop_reason is models.DeveloperStopReason.MODEL_STOP
+    assert driver.progress_outcomes == [False, True, False]
+    assert [request.budget_progress for request in driver.requests] == [
+        False,
+        False,
+        True,
+        False,
+    ]
+    assert [request.liveness_credit for request in driver.requests] == [
+        models.LivenessCredit.INITIAL_STARTUP,
+        models.LivenessCredit.NORMAL,
+        models.LivenessCredit.VERIFIED_PROGRESS,
+        models.LivenessCredit.NORMAL,
+    ]
+
+
+def test_identical_write_file_is_successful_tool_but_not_real_progress(
+    tmp_path: Path,
+) -> None:
+    root = _repository(tmp_path)
+    write = _call(
+        "write-1",
+        "write_file",
+        {"path": "src/gomoku_logic.py", "content": "VALUE = 2\n"},
+    )
+    same_write = _call(
+        "write-2",
+        "write_file",
+        {"path": "src/gomoku_logic.py", "content": "VALUE = 2\n"},
+    )
+    driver = _RecordingDriver(
+        [
+            _response(tool_calls=[write]),
+            _response(tool_calls=[same_write]),
+            _response(
+                content=(
+                    "已修改文件: src/gomoku_logic.py\n"
+                    "已执行验证: 无\n"
+                    "遗留事项: 无"
+                )
+            ),
+        ]
+    )
+
+    result = asyncio.run(
+        _developer(driver).run(
+            _task(),
+            workspace=LocalGitWorkspace(root),
+        )
+    )
+
+    assert result.stop_reason is models.DeveloperStopReason.MODEL_STOP
+    assert driver.progress_outcomes == [True, False]
+    assert driver.requests[1].budget_progress is True
+    assert driver.requests[2].budget_progress is False
+    assert driver.requests[2].liveness_credit is models.LivenessCredit.NORMAL
+
+
+def test_three_same_file_mutation_turns_emit_repeated_convergence_nudge(
+    tmp_path: Path,
+) -> None:
+    root = _repository(tmp_path)
+    driver = _RecordingDriver(
+        [
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-2",
+                        "write_file",
+                        {"path": "src/gomoku_logic.py", "content": "VALUE = 2\n"},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-3",
+                        "write_file",
+                        {"path": "src/gomoku_logic.py", "content": "VALUE = 3\n"},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-4",
+                        "write_file",
+                        {"path": "src/gomoku_logic.py", "content": "VALUE = 4\n"},
+                    )
+                ]
+            ),
+            _response(
+                content=(
+                    "已修改文件: src/gomoku_logic.py\n"
+                    "已执行验证: 无\n"
+                    "遗留事项: 无"
+                )
+            ),
+        ]
+    )
+
+    result = asyncio.run(
+        _developer(driver).run(
+            _task(),
+            workspace=LocalGitWorkspace(root),
+        )
+    )
+
+    assert result.stop_reason is models.DeveloperStopReason.MODEL_STOP
+    assert "Re-evaluate the TaskContract" in _prompt(driver.requests[1])
+    assert "several consecutive turns" in _prompt(driver.requests[3])
+    assert driver.progress_outcomes == [True, True, True]
+
+
+def test_mutation_then_model_stop_hands_candidate_to_verification(
+    tmp_path: Path,
+) -> None:
+    root = _repository(tmp_path)
+    driver = _RecordingDriver(
+        [
+            _response(
+                tool_calls=[
+                    _call(
+                        "write",
+                        "write_file",
+                        {"path": "src/gomoku_logic.py", "content": "VALUE = 2\n"},
+                    )
+                ]
+            ),
+            _response(
+                content=(
+                    "已修改文件: src/gomoku_logic.py\n"
+                    "已执行验证: 无\n"
+                    "遗留事项: 无"
+                )
+            ),
+        ]
+    )
+
+    result = asyncio.run(
+        _developer(driver).run(
+            _task(),
+            workspace=LocalGitWorkspace(root),
+        )
+    )
+
+    assert result.stop_reason is models.DeveloperStopReason.MODEL_STOP
+    assert result.changed_files == ["src/gomoku_logic.py"]
+    assert len(driver.requests) == 2
+    assert "Re-evaluate the TaskContract" in _prompt(driver.requests[1])
+
+
+def test_complex_task_can_continue_across_multiple_real_mutation_turns(
+    tmp_path: Path,
+) -> None:
+    root = _repository(tmp_path)
+    driver = _RecordingDriver(
+        [
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-a",
+                        "write_file",
+                        {"path": "src/a.py", "content": "A = 1\n"},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-b",
+                        "write_file",
+                        {"path": "src/b.py", "content": "B = 1\n"},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-c",
+                        "write_file",
+                        {"path": "src/c.py", "content": "C = 1\n"},
+                    )
+                ]
+            ),
+            _response(
+                content=(
+                    "已修改文件: src/a.py, src/b.py, src/c.py\n"
+                    "已执行验证: 无\n"
+                    "遗留事项: 无"
+                )
+            ),
+        ]
+    )
+
+    result = asyncio.run(
+        _developer(driver).run(
+            _task(writable_files=["src/**"]),
+            workspace=LocalGitWorkspace(root),
+        )
+    )
+
+    assert result.stop_reason is models.DeveloperStopReason.MODEL_STOP
+    assert result.changed_files == ["src/a.py", "src/b.py", "src/c.py"]
+    assert len(driver.requests) == 4
+    assert driver.progress_outcomes == [True, True, True]
+    assert "several consecutive turns" in _prompt(driver.requests[3])
+
+
+def test_stuck_detector_remains_effective_after_workspace_has_patch(
+    tmp_path: Path,
+) -> None:
+    root = _repository(tmp_path)
+    write = _call(
+        "write",
+        "write_file",
+        {"path": "src/gomoku_logic.py", "content": "VALUE = 2\n"},
+    )
+    searches = [
+        _call(
+            f"search-{index}",
+            "search_code",
+            {"query": "VALUE", "directory": "src", "max_results": 5},
+        )
+        for index in range(4)
+    ]
+    driver = _RecordingDriver(
+        [_response(tool_calls=[write])]
+        + [_response(tool_calls=[search]) for search in searches]
+    )
+
+    result = asyncio.run(
+        _developer(driver, stuck_detector_enabled=True).run(
+            _task(),
+            workspace=LocalGitWorkspace(root),
+        )
+    )
+
+    assert result.stop_reason is models.DeveloperStopReason.NO_PROGRESS
+    assert result.changed_files == ["src/gomoku_logic.py"]
+    assert len(driver.requests) == 5
+    assert driver.progress_outcomes == [True, False, False, False, False]

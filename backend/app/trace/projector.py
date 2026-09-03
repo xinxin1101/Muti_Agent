@@ -386,6 +386,12 @@ class CausalTraceProjector:
                     context_reused_files=item.context_reused_files,
                     context_trimmed_files=item.context_trimmed_files,
                     context_compacted_tool_groups=item.context_compacted_tool_groups,
+                    has_workspace_patch=item.has_workspace_patch,
+                    turn_made_progress=item.turn_made_progress,
+                    changed_files_this_turn=item.changed_files_this_turn,
+                    consecutive_mutation_turns=item.consecutive_mutation_turns,
+                    same_file_mutation_streak=item.same_file_mutation_streak,
+                    convergence_nudge_triggered=item.convergence_nudge_triggered,
                 )
                 existing_ids.add(item.span_id)
 
@@ -723,6 +729,12 @@ class CausalTraceProjector:
         context_trimmed_files: int = 0,
         context_compacted_tool_groups: int = 0,
         enable_thinking: bool = False,
+        has_workspace_patch: bool | None = None,
+        turn_made_progress: bool | None = None,
+        changed_files_this_turn: tuple[str, ...] = (),
+        consecutive_mutation_turns: int = 0,
+        same_file_mutation_streak: int = 0,
+        convergence_nudge_triggered: bool = False,
     ) -> None:
         spans.append(
             CausalTraceSpan(
@@ -759,5 +771,11 @@ class CausalTraceProjector:
                 context_trimmed_files=context_trimmed_files,
                 context_compacted_tool_groups=context_compacted_tool_groups,
                 enable_thinking=enable_thinking,
+                has_workspace_patch=has_workspace_patch,
+                turn_made_progress=turn_made_progress,
+                changed_files_this_turn=changed_files_this_turn,
+                consecutive_mutation_turns=consecutive_mutation_turns,
+                same_file_mutation_streak=same_file_mutation_streak,
+                convergence_nudge_triggered=convergence_nudge_triggered,
             )
         )

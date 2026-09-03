@@ -74,7 +74,11 @@ class AgentLoop:
             event_native_enabled=policy.event_condenser_enabled,
         )
         started_at = self._clock()
-        start_patch_hash = workspace.change_snapshot().patch_hash
+        start_snapshot = workspace.change_snapshot()
+        previous_turn_made_progress = False
+        consecutive_mutation_turns = 0
+        last_mutated_files: tuple[str, ...] = ()
+        same_file_mutation_streak = 0
         total_prompt_tokens = 0
         total_completion_tokens = 0
         total_tokens = 0
@@ -123,13 +127,12 @@ class AgentLoop:
                 runtime_instruction=runtime_instruction,
             )
             runtime_instruction = None
-            patch_changed = workspace.change_snapshot().patch_hash != start_patch_hash
             effective_max_output_tokens = policy.max_output_tokens
             liveness_credit = (
                 policy.initial_liveness_credit
                 if iteration == 1
                 else LivenessCredit.VERIFIED_PROGRESS
-                if patch_changed
+                if previous_turn_made_progress
                 else LivenessCredit.NORMAL
             )
             if tool_recovery_pending:
@@ -146,7 +149,7 @@ class AgentLoop:
                 temperature=policy.temperature,
                 max_output_tokens=effective_max_output_tokens,
                 enable_thinking=policy.enable_thinking,
-                budget_progress=patch_changed,
+                budget_progress=previous_turn_made_progress,
                 context_estimated_tokens=context_estimated_tokens,
                 execution_iteration=iteration,
                 liveness_credit=liveness_credit,
@@ -214,7 +217,22 @@ class AgentLoop:
             )
 
             if not response.tool_calls:
-                if workspace.change_snapshot().patch_hash != start_patch_hash:
+                has_workspace_patch = (
+                    workspace.change_snapshot().patch_hash != start_snapshot.patch_hash
+                )
+                if trace is not None:
+                    assert turn_span_id is not None
+                    trace.record_runtime_progress(
+                        agent_turn_span_id=turn_span_id,
+                        has_workspace_patch=has_workspace_patch,
+                        turn_made_progress=False,
+                        changed_files_this_turn=(),
+                        consecutive_mutation_turns=0,
+                        same_file_mutation_streak=0,
+                        convergence_nudge_triggered=False,
+                    )
+                previous_turn_made_progress = False
+                if has_workspace_patch:
                     return self._result(
                         stop_reason=AgentRuntimeStopReason.MODEL_STOP,
                         iterations=iteration,
@@ -293,6 +311,7 @@ class AgentLoop:
                     events=events,
                 )
 
+            before_turn_snapshot = workspace.change_snapshot()
             results: list[ToolExecutionResult] = []
             for call in response.tool_calls:
                 tool_started = trace.clock() if trace is not None else 0.0
@@ -435,19 +454,54 @@ class AgentLoop:
                         ),
                     )
                 )
-            patch_changed_now = (
-                workspace.change_snapshot().patch_hash != start_patch_hash
+            after_turn_snapshot = workspace.change_snapshot()
+            has_workspace_patch = (
+                after_turn_snapshot.patch_hash != start_snapshot.patch_hash
+            )
+            turn_made_progress = (
+                after_turn_snapshot.patch_hash != before_turn_snapshot.patch_hash
+            )
+            changed_files_this_turn = tuple(
+                after_turn_snapshot.files_changed_since(before_turn_snapshot)
             )
             progress = ToolProgressClassifier.summarize(
                 response.tool_calls,
                 results,
             )
-            if patch_changed_now:
-                mutation_count = max(1, mutation_count + progress.successful_mutation_tool_count)
+            convergence_nudge_triggered = False
+            if turn_made_progress:
+                mutation_count += max(1, progress.successful_mutation_tool_count)
                 observation_turns_without_mutation = 0
                 mutation_gate_violations = 0
                 mutation_gate_triggered = False
-            elif progress.observation_count > 0 and progress.mutation_attempt_count == 0:
+                consecutive_mutation_turns += 1
+                if changed_files_this_turn and changed_files_this_turn == last_mutated_files:
+                    same_file_mutation_streak += 1
+                else:
+                    same_file_mutation_streak = 1 if changed_files_this_turn else 0
+                last_mutated_files = changed_files_this_turn
+                repeated_mutation = (
+                    consecutive_mutation_turns
+                    >= policy.consecutive_mutation_nudge_threshold
+                    or same_file_mutation_streak
+                    >= policy.same_file_mutation_nudge_threshold
+                )
+                if policy.mutation_convergence_enabled and has_workspace_patch:
+                    runtime_instruction = (
+                        self._repeated_mutation_convergence_prompt()
+                        if repeated_mutation
+                        else self._post_mutation_convergence_prompt()
+                    )
+                    convergence_nudge_triggered = True
+            else:
+                consecutive_mutation_turns = 0
+                last_mutated_files = ()
+                same_file_mutation_streak = 0
+            if (
+                not turn_made_progress
+                and progress.observation_count > 0
+                and progress.mutation_attempt_count == 0
+            ):
                 observation_turns_without_mutation += 1
                 if (
                     policy.mutation_gate_enabled
@@ -456,12 +510,16 @@ class AgentLoop:
                 ):
                     if not mutation_gate_triggered:
                         mutation_gate_triggered = True
-                        runtime_instruction = self._mutation_required_prompt(
-                            strict=False,
-                            reason=(
-                                "The Agent has accumulated observation evidence but the "
-                                "workspace patch hash is still unchanged."
-                            ),
+                        runtime_instruction = (
+                            self._post_mutation_convergence_prompt()
+                            if has_workspace_patch
+                            else self._mutation_required_prompt(
+                                strict=False,
+                                reason=(
+                                    "The Agent has accumulated observation evidence but "
+                                    "no candidate workspace mutation exists yet."
+                                ),
+                            )
                         )
                         events.append(
                             AgentRuntimeEvent(
@@ -469,7 +527,11 @@ class AgentLoop:
                                 kind=AgentRuntimeEventKind.MUTATION_GATE,
                                 iteration=iteration,
                                 progress_kind=ToolProgressKind.OBSERVATION,
-                                detail="observation_limit_reached",
+                                detail=(
+                                    "observation_limit_after_patch"
+                                    if has_workspace_patch
+                                    else "observation_limit_reached"
+                                ),
                             )
                         )
                     else:
@@ -499,22 +561,38 @@ class AgentLoop:
                                 mutation_gate_triggered=True,
                                 events=events,
                             )
-                        runtime_instruction = self._mutation_required_prompt(
-                            strict=True,
-                            reason=(
-                                "A mutation gate is already active and another "
-                                "observation-only turn produced no patch."
-                            ),
+                        runtime_instruction = (
+                            self._repeated_mutation_convergence_prompt()
+                            if has_workspace_patch
+                            else self._mutation_required_prompt(
+                                strict=True,
+                                reason=(
+                                    "A mutation gate is already active and another "
+                                    "observation-only turn produced no candidate patch."
+                                ),
+                            )
                         )
 
             if tool_recovery_instruction is not None:
-                if not patch_changed_now:
+                if not turn_made_progress:
                     runtime_instruction = tool_recovery_instruction
                     tool_recovery_pending = True
                 tool_recovery_instruction = None
 
+            if trace is not None:
+                assert turn_span_id is not None
+                trace.record_runtime_progress(
+                    agent_turn_span_id=turn_span_id,
+                    has_workspace_patch=has_workspace_patch,
+                    turn_made_progress=turn_made_progress,
+                    changed_files_this_turn=changed_files_this_turn,
+                    consecutive_mutation_turns=consecutive_mutation_turns,
+                    same_file_mutation_streak=same_file_mutation_streak,
+                    convergence_nudge_triggered=convergence_nudge_triggered,
+                )
+
             stuck_decision = stuck_detector.inspect()
-            if not patch_changed_now and stuck_decision.should_stop:
+            if not turn_made_progress and stuck_decision.should_stop:
                 reason = stuck_decision.reason
                 assert reason is not None
                 events.append(
@@ -551,7 +629,7 @@ class AgentLoop:
                     events=events,
                 )
             if (
-                not patch_changed_now
+                not turn_made_progress
                 and stuck_decision.nudge is not None
                 and runtime_instruction is None
             ):
@@ -572,9 +650,11 @@ class AgentLoop:
                 policy=policy,
                 calls=response.tool_calls,
                 results=results,
-                has_real_progress=patch_changed_now,
+                has_real_progress=turn_made_progress,
                 compacted_code_mutation=compacted_code_mutation,
             )
+
+            previous_turn_made_progress = turn_made_progress
 
             if self._clock() - started_at >= policy.max_duration_seconds:
                 return self._result(
@@ -646,6 +726,26 @@ class AgentLoop:
             "Do not repeat exploratory reads/searches unless a concrete missing fact prevents "
             "a safe edit. If a runtime or scope blocker makes mutation impossible, return "
             "exactly 'BLOCKED: <reason>'."
+        )
+
+    @staticmethod
+    def _post_mutation_convergence_prompt() -> str:
+        return (
+            "A candidate repository mutation now exists. Re-evaluate the TaskContract and "
+            "acceptance criteria before making another mutation. If the current implementation "
+            "already satisfies the work package, stop using tools and return the final completion "
+            "message so deterministic verification can begin. Only make another mutation when "
+            "you can identify a concrete remaining requirement. Prefer targeted reads or "
+            "apply_patch over rewriting an entire file."
+        )
+
+    @staticmethod
+    def _repeated_mutation_convergence_prompt() -> str:
+        return (
+            "You have modified the candidate implementation across several consecutive turns. "
+            "Do not continue rewriting without a concrete unmet acceptance criterion. Inspect "
+            "only the specific remaining uncertainty if needed. If no concrete requirement "
+            "remains, stop tool use and hand the candidate to deterministic verification."
         )
 
     @staticmethod

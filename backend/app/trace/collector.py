@@ -94,6 +94,38 @@ class TaskTraceCollector:
         )
         return span_id
 
+    def record_runtime_progress(
+        self,
+        *,
+        agent_turn_span_id: UUID,
+        has_workspace_patch: bool,
+        turn_made_progress: bool,
+        changed_files_this_turn: tuple[str, ...],
+        consecutive_mutation_turns: int,
+        same_file_mutation_streak: int,
+        convergence_nudge_triggered: bool,
+    ) -> None:
+        safe_changed_files = tuple(
+            path[:512] for path in changed_files_this_turn[:8] if path
+        )
+        for index, span in enumerate(self._spans):
+            if span.span_id != agent_turn_span_id:
+                continue
+            if span.kind is not TraceSpanKind.AGENT_TURN:
+                raise ValueError("runtime progress can only annotate an agent-turn span")
+            self._spans[index] = span.model_copy(
+                update={
+                    "has_workspace_patch": has_workspace_patch,
+                    "turn_made_progress": turn_made_progress,
+                    "changed_files_this_turn": safe_changed_files,
+                    "consecutive_mutation_turns": max(0, consecutive_mutation_turns),
+                    "same_file_mutation_streak": max(0, same_file_mutation_streak),
+                    "convergence_nudge_triggered": convergence_nudge_triggered,
+                }
+            )
+            return
+        raise ValueError("agent-turn trace span was not found")
+
     def record_tool_call(
         self,
         *,

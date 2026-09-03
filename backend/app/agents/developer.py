@@ -565,6 +565,7 @@ class DeveloperAgent:
                 mutation_gate_enabled=self._runtime_mutation_gate_enabled,
                 max_observation_turns_without_mutation=3,
                 max_mutation_gate_violations=1,
+                mutation_convergence_enabled=True,
                 tool_recovery_enabled=True,
                 tool_recovery_max_output_tokens=self._invalid_tool_retry_max_output_tokens,
                 repeated_tool_failure_limit=2,
