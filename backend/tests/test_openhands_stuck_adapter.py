@@ -90,6 +90,21 @@ def test_action_error_nudges_at_three_then_stops_after_fourth_repeat() -> None:
     assert stopped.should_stop is True
 
 
+def test_agent_monologue_matches_openhands_threshold() -> None:
+    detector = OpenHandsStuckAdapter(enabled=True)
+
+    for index in range(3):
+        detector.record_model_response(
+            content=f"still thinking {index}",
+            has_tool_calls=False,
+        )
+
+    decision = detector.inspect()
+
+    assert decision.reason is StuckPattern.MONOLOGUE
+    assert decision.should_stop is True
+
+
 def test_alternating_action_observation_pattern_is_detected() -> None:
     detector = OpenHandsStuckAdapter(enabled=True)
 
