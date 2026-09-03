@@ -49,10 +49,11 @@ def _check(state: ReadinessState) -> ReadinessCheck:
 def test_current_agent_models_are_configuration_defaults() -> None:
     settings = Settings(_env_file=None)
 
-    assert settings.planner_model == "zai-org/GLM-5.2"
-    assert settings.developer_model == "Pro/deepseek-ai/DeepSeek-V3.2"
-    assert settings.reviewer_model == "zai-org/GLM-5.2"
-    assert settings.repair_model == "Pro/deepseek-ai/DeepSeek-V3.2"
+    assert settings.planner_model == "qwen3.7-flash"
+    assert settings.developer_model == "qwen3.7-flash"
+    assert settings.reviewer_model == "qwen3.7-flash"
+    assert settings.repair_model == "qwen3.7-flash"
+    assert settings.failure_explanation_model == "qwen3.7-flash"
 
 
 def test_publication_and_read_credentials_are_distinct() -> None:
