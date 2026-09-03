@@ -15,6 +15,9 @@ from pydantic import ValidationError
 from app.dispatch import DramatiqTaskDispatcher, TaskDispatchRejectedError
 from app.models import (
     CheckpointReason,
+    CheckpointResumeStrategy,
+    CheckResult,
+    CheckType,
     ContextContinuationState,
     DeveloperRunResult,
     DeveloperStopReason,
@@ -26,6 +29,7 @@ from app.models import (
     TaskContract,
     TaskDispatchEnvelope,
     TaskRunState,
+    VerificationResult,
     WorkerExecutionEvidence,
     WorkerExecutionStatus,
 )
@@ -99,6 +103,57 @@ def test_checkpoint_reason_prefers_run_token_budget_exhaustion() -> None:
     assert (
         LocalQueuedTaskExecutionBackend._checkpoint_reason(result)
         is CheckpointReason.RUN_TOKEN_BUDGET_EXHAUSTED
+    )
+
+
+def test_checkpoint_budget_exhaustion_after_verification_resumes_verifier_first() -> None:
+    result = SingleTaskRunResult(
+        task_id="gomoku-core",
+        status=TaskRunState.FAILED,
+        events=[
+            RunEvent(sequence=0, state=TaskRunState.PENDING, detail="Created."),
+            RunEvent(sequence=1, state=TaskRunState.FAILED, detail="Repair budget exhausted."),
+        ],
+        verifications=[
+            VerificationResult(
+                passed=False,
+                checks=[
+                    CheckResult(
+                        check_type=CheckType.CUSTOM,
+                        name="gomoku-contract",
+                        command=(
+                            'python3 -c "from src.gomoku_engine import GameLogic; '
+                            'g = GameLogic(); assert g.is_valid_move(7, 7)"'
+                        ),
+                        passed=False,
+                        exit_code=1,
+                        stderr=(
+                            "ImportError: cannot import name 'GameLogic' "
+                            "from 'src.gomoku_engine'"
+                        ),
+                        failure_type=FailureType.TEST_FAILURE,
+                    )
+                ],
+            )
+        ],
+        failures=[
+            FailureReport(
+                failure_type=FailureType.TOKEN_BUDGET_EXHAUSTED,
+                source=FailureSource.RUNTIME,
+                message="Run total model budget exhausted during Repair.",
+                retryable=False,
+            )
+        ],
+        changed_files=["src/gomoku_engine.py"],
+    )
+
+    assert (
+        LocalQueuedTaskExecutionBackend._checkpoint_reason(result)
+        is CheckpointReason.RUN_TOKEN_BUDGET_EXHAUSTED
+    )
+    assert (
+        LocalQueuedTaskExecutionBackend._checkpoint_resume_strategy(result)
+        is CheckpointResumeStrategy.VERIFY_THEN_REPAIR
     )
 
 
