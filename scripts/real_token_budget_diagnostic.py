@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
@@ -11,6 +12,16 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
+from uuid import UUID
+
+from app.core.settings import Settings
+from app.dispatch import DurableDramatiqTaskDispatcher
+from app.models.dag import TaskDAG, TaskNode
+from app.models.task import TaskContract
+from app.models.work_package import PlanningComplexity, TaskBudgetAllocation
+from app.persistence import PostgresDAGStore, PostgresDispatchAttemptStore, PostgresRunTokenBudgetStore
+from app.persistence.project import ProjectAwarePostgresEvidenceStore
+from app.workers.executor import ManagedProjectWorkspaceResolver
 
 from sqlalchemy import create_engine, text
 
@@ -35,6 +46,190 @@ The delivery should naturally separate into multiple work packages for:
 Use concrete writable-file ownership and deterministic verification commands for every
 work package. Keep unrelated repository code unchanged.
 """.strip()
+
+
+def _diagnostic_dag() -> TaskDAG:
+    core = TaskContract(
+        task_id="gomoku-core-logic",
+        objective=(
+            "Create examples/gomoku/gomoku_core.js as a dependency-free UMD/CommonJS-compatible "
+            "15x15 Gomoku engine. Export BOARD_SIZE and GameLogic. GameLogic must expose board, "
+            "currentPlayer, winner, isValidMove(row,col), placeMove(row,col), and reset(). "
+            "Black moves first; successful moves alternate players; occupied/out-of-range moves "
+            "are rejected; winner is detected for horizontal, vertical, and both diagonal five-in-a-row."
+        ),
+        readable_files=["examples/gomoku/**"],
+        writable_files=["examples/gomoku/gomoku_core.js"],
+        acceptance_criteria=[
+            "Node require() returns GameLogic and BOARD_SIZE=15.",
+            "GameLogic rejects out-of-range and occupied cells.",
+            "Successful moves alternate black/white turns.",
+            "Horizontal, vertical, and both diagonal five-in-a-row set winner.",
+            "reset() clears board, winner, and restores black as currentPlayer.",
+        ],
+        verification_commands=[
+            (
+                "node -e \"const {GameLogic,BOARD_SIZE}=require('./examples/gomoku/gomoku_core.js');"
+                "const g=new GameLogic();if(BOARD_SIZE!==15||!g.isValidMove(7,7)||g.isValidMove(-1,7))process.exit(1);"
+                "if(!g.placeMove(7,7)||g.placeMove(7,7)||g.currentPlayer!=='white')process.exit(1);"
+                "g.reset();const b=[[0,0],[1,0],[0,1],[1,1],[0,2],[1,2],[0,3],[1,3],[0,4]];"
+                "for(const [r,c] of b){if(!g.placeMove(r,c))process.exit(1);}if(g.winner!=='black')process.exit(1);\""
+            )
+        ],
+        max_retries=2,
+    )
+    ui = TaskContract(
+        task_id="gomoku-ui-renderer",
+        objective=(
+            "Create a dependency-free browser UI under examples/gomoku/index.html and "
+            "examples/gomoku/gomoku_ui.js. Render a 15x15 clickable board, alternate visible "
+            "black/white stones, show current turn or winner, prevent interaction after a win, "
+            "and provide a restart button. The UI must be self-contained and clearly structured "
+            "so the integration task can validate its board/status/restart hooks."
+        ),
+        readable_files=["examples/gomoku/**"],
+        writable_files=["examples/gomoku/index.html", "examples/gomoku/gomoku_ui.js"],
+        acceptance_criteria=[
+            "index.html loads gomoku_ui.js and contains board, status, and restart elements.",
+            "gomoku_ui.js creates 225 cells and handles click-driven two-player turns.",
+            "A restart action clears rendered stones and restores the initial status.",
+        ],
+        verification_commands=[
+            (
+                "node -e \"const fs=require('fs');const h=fs.readFileSync('examples/gomoku/index.html','utf8');"
+                "const j=fs.readFileSync('examples/gomoku/gomoku_ui.js','utf8');"
+                "for(const x of ['board','status','restart'])if(!h.toLowerCase().includes(x))process.exit(1);"
+                "if(!j.includes('225')&&!j.includes('15'))process.exit(1);"
+                "if(!/addEventListener/.test(j))process.exit(1);\""
+            )
+        ],
+        max_retries=2,
+    )
+    integration = TaskContract(
+        task_id="gomoku-integration-tests",
+        objective=(
+            "Create examples/gomoku/gomoku_integration.test.cjs using Node built-in assert only. "
+            "Test the delivered core engine for invalid/occupied moves, turn switching, reset, and "
+            "all four five-in-a-row directions. Also verify the delivered index.html/gomoku_ui.js "
+            "contain the expected board/status/restart wiring. Do not modify core or UI files."
+        ),
+        readable_files=["examples/gomoku/**"],
+        writable_files=["examples/gomoku/gomoku_integration.test.cjs"],
+        readonly_files=[
+            "examples/gomoku/gomoku_core.js",
+            "examples/gomoku/index.html",
+            "examples/gomoku/gomoku_ui.js",
+        ],
+        acceptance_criteria=[
+            "The integration test uses only Node built-ins.",
+            "All four win directions are tested.",
+            "Reset and illegal/occupied move behavior are tested.",
+            "Static UI wiring is checked without modifying producer files.",
+        ],
+        verification_commands=["node examples/gomoku/gomoku_integration.test.cjs"],
+        max_retries=2,
+    )
+    return TaskDAG(
+        tasks=(
+            TaskNode(
+                task=core,
+                complexity=PlanningComplexity.MEDIUM,
+                budget_allocation=TaskBudgetAllocation(
+                    package_id=core.task_id,
+                    recommended_token_budget=12_000,
+                ),
+            ),
+            TaskNode(
+                task=ui,
+                complexity=PlanningComplexity.MEDIUM,
+                budget_allocation=TaskBudgetAllocation(
+                    package_id=ui.task_id,
+                    recommended_token_budget=12_000,
+                ),
+            ),
+            TaskNode(
+                task=integration,
+                depends_on=(core.task_id, ui.task_id),
+                complexity=PlanningComplexity.MEDIUM,
+                budget_allocation=TaskBudgetAllocation(
+                    package_id=integration.task_id,
+                    recommended_token_budget=12_000,
+                ),
+            ),
+        )
+    )
+
+
+async def _launch_fixed_dag(project_id: str) -> dict[str, Any]:
+    settings = Settings()
+    if settings.database_url is None:
+        raise DiagnosticFailure("DEVFLOW_DATABASE_URL is required")
+    project_uuid = UUID(project_id)
+    resolver = ManagedProjectWorkspaceResolver(settings.workspace_root / "repos")
+    workspace = resolver.resolve(project_uuid)
+    base_commit = workspace.head_commit()
+    dag = _diagnostic_dag()
+
+    evidence_store = ProjectAwarePostgresEvidenceStore.from_url(settings.database_url)
+    dag_store = PostgresDAGStore.from_url(settings.database_url)
+    ledger = PostgresDispatchAttemptStore.from_url(settings.database_url)
+    budget_store = PostgresRunTokenBudgetStore.from_url(
+        settings.database_url,
+        default_total_budget_tokens=settings.run_token_budget_tokens,
+        adaptive_package_budget_enabled=settings.adaptive_package_budget_enabled,
+        token_estimate_safety_factor=settings.token_estimate_safety_factor,
+    )
+    from app.workers.tasks import execute_devflow_task
+
+    dispatcher = DurableDramatiqTaskDispatcher(
+        run_store=evidence_store,
+        ledger=ledger,
+        actor=execute_devflow_task,
+    )
+    try:
+        run_id = await dag_store.start_run(
+            project_id=project_uuid,
+            dag=dag,
+            base_commit=base_commit,
+        )
+        await budget_store.initialize(
+            run_id,
+            total_budget_tokens=settings.run_token_budget_tokens,
+        )
+        await budget_store.initialize_hierarchy(
+            run_id=run_id,
+            dag=dag,
+            developer_max_output_tokens=settings.developer_max_output_tokens,
+        )
+        root_ids = tuple(
+            task_id for task_id in dag.topological_order() if not dag.node(task_id).depends_on
+        )
+        receipts = []
+        for task_id in root_ids:
+            receipt = await dispatcher.dispatch(run_id=run_id, task_id=task_id)
+            receipts.append(
+                {
+                    "task_id": task_id,
+                    "dispatch_id": str(receipt.dispatch_id),
+                    "broker_message_id": receipt.broker_message_id,
+                    "queue_name": receipt.queue_name,
+                }
+            )
+        return {
+            "run_id": str(run_id),
+            "project_id": project_id,
+            "base_commit": base_commit,
+            "task_ids": dag.topological_order(),
+            "initial_ready_task_ids": list(root_ids),
+            "launch_state": "QUEUED",
+            "dispatches": receipts,
+            "planner_bypassed_for_budget_isolation": True,
+        }
+    finally:
+        await dispatcher.dispose()
+        await budget_store.dispose()
+        await dag_store.dispose()
+        await evidence_store.dispose()
 
 
 class DiagnosticFailure(RuntimeError):
@@ -275,6 +470,12 @@ def main() -> int:
         api_log_path = root / "api.log"
         worker_log_path = root / "worker.log"
         workspace_root = root / "workspaces"
+        namespace = f"budget-diagnostic-{os.getpid()}"
+        os.environ["DEVFLOW_DRAMATIQ_NAMESPACE"] = namespace
+        os.environ["DEVFLOW_DRAMATIQ_QUEUE_NAME"] = "budget_diagnostic_tasks"
+        os.environ["DEVFLOW_WORKER_ID"] = "budget-diagnostic-worker"
+        os.environ["DEVFLOW_WORKER_LEASE_SECONDS"] = "45"
+        os.environ["DEVFLOW_WORKER_HEARTBEAT_INTERVAL_SECONDS"] = "8"
         child_env = os.environ.copy()
         child_env.update(
             {
@@ -327,15 +528,7 @@ def main() -> int:
                     timeout=180.0,
                 )
                 report["project"] = project
-                launch = _request_json(
-                    "POST",
-                    f"{API_BASE_URL}/api/v1/runs/from-requirement",
-                    payload={
-                        "project_id": str(project["project_id"]),
-                        "requirement": REQUIREMENT,
-                    },
-                    timeout=180.0,
-                )
+                launch = asyncio.run(_launch_fixed_dag(str(project["project_id"])))
                 report["launch"] = launch
                 run_id = str(launch["run_id"])
                 terminal, snapshots = _wait_terminal(run_id)
