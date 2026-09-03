@@ -47,7 +47,7 @@ class SiliconFlowDriver:
 
         normalized_key = self._secret_value(api_key)
         if not normalized_key:
-            raise ValueError("SiliconFlow API key is required when no client is injected")
+            raise ValueError("OpenAI-compatible provider API key is required when no client is injected")
 
         client_options: dict[str, Any] = {
             "api_key": normalized_key,
@@ -61,6 +61,16 @@ class SiliconFlowDriver:
             # disconnected verification containers.
             client_options["http_client"] = httpx.AsyncClient(proxy=self.proxy_url)
         self._client = AsyncOpenAI(**client_options)
+
+    @property
+    def is_dashscope_compatible(self) -> bool:
+        host = (urlparse(self.base_url).netloc or "").lower()
+        return "dashscope" in host or host.endswith(".maas.aliyuncs.com")
+
+    @property
+    def supports_model_catalog(self) -> bool:
+        # Qwen/DashScope OpenAI-compatible endpoints intentionally do not provide GET /models.
+        return not self.is_dashscope_compatible
 
     @classmethod
     def from_settings(cls, settings: Settings, *, client: Any | None = None) -> "SiliconFlowDriver":
@@ -125,7 +135,7 @@ class SiliconFlowDriver:
             payload["tools"] = [self._serialize_tool(tool) for tool in request.tools]
         # DashScope Qwen mixed-thinking models default to reasoning on. Keep the control
         # provider-specific so other OpenAI-compatible services do not receive an unknown field.
-        if "dashscope.aliyuncs.com" in self.base_url:
+        if self.is_dashscope_compatible:
             payload["extra_body"] = {"enable_thinking": request.enable_thinking}
 
         completion = await self._create_completion_with_retry(
