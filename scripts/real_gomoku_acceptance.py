@@ -608,7 +608,7 @@ async def _main(report_path: Path) -> int:
                     )
                 ],
                 temperature=0.0,
-                max_output_tokens=16,
+                max_output_tokens=64,
                 enable_thinking=False,
             )
         )
