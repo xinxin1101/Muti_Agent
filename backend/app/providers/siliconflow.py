@@ -47,7 +47,9 @@ class SiliconFlowDriver:
 
         normalized_key = self._secret_value(api_key)
         if not normalized_key:
-            raise ValueError("OpenAI-compatible provider API key is required when no client is injected")
+            raise ValueError(
+                "OpenAI-compatible provider API key is required when no client is injected"
+            )
 
         client_options: dict[str, Any] = {
             "api_key": normalized_key,
