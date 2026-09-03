@@ -263,8 +263,9 @@ class RepositoryToolbox:
                 name="apply_patch",
                 description=(
                     "Prefer the OpenHands-style patch argument for bounded multi-file edits using "
-                    "'*** Begin Patch' ... '*** End Patch'. The engine supports add, update, delete, "
-                    "and move operations with context matching. Legacy path/old_text/new_text exact "
+                    "'*** Begin Patch' ... '*** End Patch'. The engine supports add, update, "
+                    "delete, and move operations with context matching. Legacy "
+                    "path/old_text/new_text exact "
                     "replacement remains accepted for compatibility. Every mutation is checked "
                     "against DevFlow writable/read-only scopes before disk changes occur."
                 ),
@@ -551,7 +552,8 @@ class RepositoryToolbox:
             if not self._openhands_patch_enabled:
                 raise RepositoryToolError(
                     ToolErrorCode.INVALID_ARGUMENTS,
-                    "OpenHands patch format is disabled; use path/old_text/new_text compatibility mode",
+                    "OpenHands patch format is disabled; use "
+                    "path/old_text/new_text compatibility mode",
                 )
             try:
                 result = OpenHandsPatchAdapter.apply(
