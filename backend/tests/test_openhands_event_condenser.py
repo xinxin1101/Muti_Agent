@@ -52,7 +52,7 @@ def test_event_condenser_uses_append_only_events_and_bounded_view() -> None:
     assert state.condensation_count == 10
     assert state.event_count == 22
     assert len(state.messages) == 6
-    assert "DevFlow condensed working state" in state.messages[1].content
+    assert "DevFlow compact working state" in state.messages[1].content
     assert [message.role for message in state.messages[-4:]] == [
         MessageRole.ASSISTANT,
         MessageRole.TOOL,
