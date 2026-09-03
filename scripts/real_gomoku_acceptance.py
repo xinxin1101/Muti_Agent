@@ -27,6 +27,7 @@ from app.models.dispatch import WorkerExecutionStatus
 from app.models.run import TaskRunState
 from app.models.task import TaskContract
 from app.models.tools import ToolCall
+from app.persistence import PostgresEvidenceStore
 from app.persistence.token_budget import PostgresRunTokenBudgetStore
 from app.providers.budgeted import BudgetedAgentDriver
 from app.providers.siliconflow import SiliconFlowDriver
@@ -270,6 +271,38 @@ def _budgeted(
     )
 
 
+async def _persist_acceptance_run(
+    settings: Settings,
+    *,
+    run_id: UUID,
+    project_id: UUID,
+    task: TaskContract,
+    base_commit: str,
+    repository_url: str,
+) -> None:
+    if settings.database_url is None:
+        raise RuntimeError("DEVFLOW_DATABASE_URL is required for acceptance")
+    evidence = PostgresEvidenceStore.from_url(settings.database_url)
+    try:
+        persisted_project = await evidence.ensure_project(
+            repository_url=repository_url,
+            default_branch="main",
+            project_id=project_id,
+        )
+        if persisted_project != project_id:
+            raise AssertionError(
+                f"acceptance project identity drifted: {persisted_project} != {project_id}"
+            )
+        await evidence.start_run(
+            project_id=project_id,
+            tasks=[task],
+            base_commit=base_commit,
+            run_id=run_id,
+        )
+    finally:
+        await evidence.dispose()
+
+
 async def _store(
     settings: Settings,
     *,
@@ -325,6 +358,15 @@ async def _requirement_e2e(
         raise AssertionError(f"Planner did not own {TARGET}: {task.writable_files}")
 
     run_id = uuid4()
+    project_id = uuid4()
+    await _persist_acceptance_run(
+        settings,
+        run_id=run_id,
+        project_id=project_id,
+        task=task,
+        base_commit=workspace.head_commit(),
+        repository_url=f"file://{workspace.root}",
+    )
     store = await _store(settings, run_id=run_id, total_tokens=50_000)
     budgeted = _budgeted(
         raw_driver=raw_driver,
@@ -379,6 +421,15 @@ async def _real_import_repair(
     workspace = _repository(root)
     task = _manual_task()
     run_id = uuid4()
+    project_id = uuid4()
+    await _persist_acceptance_run(
+        settings,
+        run_id=run_id,
+        project_id=project_id,
+        task=task,
+        base_commit=workspace.head_commit(),
+        repository_url=f"file://{workspace.root}",
+    )
     store = await _store(settings, run_id=run_id, total_tokens=50_000)
     budgeted = _budgeted(
         raw_driver=raw_driver,
@@ -444,6 +495,14 @@ async def _checkpoint_resume(
     base_commit = workspace.head_commit()
 
     first_run_id = uuid4()
+    await _persist_acceptance_run(
+        settings,
+        run_id=first_run_id,
+        project_id=project_id,
+        task=task,
+        base_commit=base_commit,
+        repository_url=f"file://{workspace.root}",
+    )
     first_store = await _store(settings, run_id=first_run_id, total_tokens=1_000)
     first_budgeted = _budgeted(
         raw_driver=raw_driver,
@@ -502,6 +561,14 @@ async def _checkpoint_resume(
         pass
 
     second_run_id = uuid4()
+    await _persist_acceptance_run(
+        settings,
+        run_id=second_run_id,
+        project_id=project_id,
+        task=task,
+        base_commit=checkpoint.commit_sha,
+        repository_url=f"file://{workspace.root}",
+    )
     second_store = await _store(settings, run_id=second_run_id, total_tokens=50_000)
     second_budgeted = _budgeted(
         raw_driver=raw_driver,
