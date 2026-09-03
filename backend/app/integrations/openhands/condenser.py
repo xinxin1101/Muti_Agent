@@ -265,7 +265,7 @@ class OpenHandsEventCondenserAdapter:
             self._condensed_state.apply(groups[event_id].delta)
         self._forgotten_group_ids.update(forgotten_ids)
         summary = (
-            "DevFlow condensed working state (runtime metadata, not evidence):\n"
+            "DevFlow compact working state (runtime metadata, not evidence):\n"
             + self._condensed_state.snapshot().model_dump_json(exclude_none=True)
         )
         self._events.append(
