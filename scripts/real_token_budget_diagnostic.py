@@ -471,6 +471,7 @@ def main() -> int:
         worker_log_path = root / "worker.log"
         workspace_root = root / "workspaces"
         namespace = f"budget-diagnostic-{os.getpid()}"
+        os.environ["DEVFLOW_WORKSPACE_ROOT"] = str(workspace_root)
         os.environ["DEVFLOW_DRAMATIQ_NAMESPACE"] = namespace
         os.environ["DEVFLOW_DRAMATIQ_QUEUE_NAME"] = "budget_diagnostic_tasks"
         os.environ["DEVFLOW_WORKER_ID"] = "budget-diagnostic-worker"
