@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from app.core import settings as settings_module
 from app.api.readiness import OperationalReadinessChecker, ReadinessState
+from app.core import settings as settings_module
 from app.core.settings import Settings
 from app.persistence.schema import (
     EXPECTED_ALEMBIC_REVISION,
