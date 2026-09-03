@@ -35,11 +35,11 @@ jobs:
       DEVFLOW_RUNTIME_STUCK_DETECTOR_ENABLED: "true"
       DEVFLOW_OPENHANDS_PATCH_ENABLED: "true"
       DEVFLOW_SILICONFLOW_BASE_URL: https://dashscope.aliyuncs.com/compatible-mode/v1
-      DEVFLOW_PLANNER_MODEL: qwen3.7-flash
-      DEVFLOW_DEVELOPER_MODEL: qwen3.7-flash
-      DEVFLOW_REPAIR_MODEL: qwen3.7-flash
-      DEVFLOW_REVIEWER_MODEL: qwen3.7-flash
-      DEVFLOW_FAILURE_EXPLANATION_MODEL: qwen3.7-flash
+      DEVFLOW_PLANNER_MODEL: qwen3.5-flash
+      DEVFLOW_DEVELOPER_MODEL: qwen3.5-flash
+      DEVFLOW_REPAIR_MODEL: qwen3.5-flash
+      DEVFLOW_REVIEWER_MODEL: qwen3.5-flash
+      DEVFLOW_FAILURE_EXPLANATION_MODEL: qwen3.5-flash
       DEVFLOW_SILICONFLOW_MAX_RETRIES: "2"
 
     services:
