@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
@@ -18,6 +19,8 @@ from app.dispatch.errors import TaskDispatchBrokerError
 from app.models.checkpoint import CheckpointReason, CheckpointResumeStrategy, TaskCheckpoint
 from app.models.context import ContextContinuationState
 from app.models.dag import TaskDAG, TaskNode
+from app.models.development_session import DevelopmentWorkPackageProgress, DevelopmentWorkPackageState
+from app.models.work_package import TaskBudgetAllocation
 from app.models.dispatch import TaskDispatchReceipt
 from app.models.task import TaskContract
 from app.models.workflow import WorkflowActivationMode, WorkflowExecutionMode
@@ -412,4 +415,94 @@ def test_budget_checkpoint_without_verification_still_continues_developer() -> N
         AutonomousProductRuntimeService._checkpoint_resume_strategy(checkpoint)
         is CheckpointResumeStrategy.CONTINUE_DEVELOPMENT
     )
+
+def test_recovery_preview_credits_verified_checkpoint_development_reuse() -> None:
+    service, _project_id, _planner, _dag_store, _dispatcher, _evidence_store = _service()
+    core = TaskNode(
+        task=_task("gomoku-core", "app/core.py"),
+        budget_allocation=TaskBudgetAllocation(
+            package_id="gomoku-core",
+            recommended_token_budget=8_000,
+        ),
+    )
+    ui = TaskNode(
+        task=_task("gomoku-ui", "app/ui.py"),
+        depends_on=("gomoku-core",),
+        budget_allocation=TaskBudgetAllocation(
+            package_id="gomoku-ui",
+            recommended_token_budget=8_000,
+        ),
+    )
+    session = SimpleNamespace(
+        session_id=uuid4(),
+        latest_run_id=None,
+        planning_launch_id=None,
+        base_commit="a" * 40,
+        dag=TaskDAG(tasks=(core, ui)),
+        work_packages=(
+            DevelopmentWorkPackageProgress(
+                task_id="gomoku-core",
+                state=DevelopmentWorkPackageState.CHECKPOINTED,
+                commit_sha="b" * 40,
+                verification_summary="本切片已执行 1 次确定性验证。",
+                context_state={
+                    "verification_summary": "已执行 1 次验证；最近结果=失败。"
+                },
+            ),
+            DevelopmentWorkPackageProgress(
+                task_id="gomoku-ui",
+                state=DevelopmentWorkPackageState.PENDING,
+            ),
+        ),
+    )
+
+    preview = asyncio.run(
+        service._development_session_recovery_preview(
+            session=session,
+            current_commit="a" * 40,
+        )
+    )
+
+    assert preview.checkpointed_work_package_ids == ("gomoku-core",)
+    assert preview.remaining_work_package_ids == ("gomoku-core", "gomoku-ui")
+    assert preview.budget.estimated_new_development_tokens == 8_000
+    assert preview.budget.estimated_tokens_saved == 8_000
+    assert preview.next_action == "从检查点继续；优先验证已保存代码"
+
+
+def test_recovery_preview_does_not_credit_unverified_developer_checkpoint() -> None:
+    service, _project_id, _planner, _dag_store, _dispatcher, _evidence_store = _service()
+    node = TaskNode(
+        task=_task("gomoku-core", "app/core.py"),
+        budget_allocation=TaskBudgetAllocation(
+            package_id="gomoku-core",
+            recommended_token_budget=8_000,
+        ),
+    )
+    session = SimpleNamespace(
+        session_id=uuid4(),
+        latest_run_id=None,
+        planning_launch_id=None,
+        base_commit="a" * 40,
+        dag=TaskDAG(tasks=(node,)),
+        work_packages=(
+            DevelopmentWorkPackageProgress(
+                task_id="gomoku-core",
+                state=DevelopmentWorkPackageState.CHECKPOINTED,
+                commit_sha="b" * 40,
+                verification_summary="本切片尚未执行确定性验证。",
+            ),
+        ),
+    )
+
+    preview = asyncio.run(
+        service._development_session_recovery_preview(
+            session=session,
+            current_commit="a" * 40,
+        )
+    )
+
+    assert preview.budget.estimated_new_development_tokens == 8_000
+    assert preview.budget.estimated_tokens_saved == 0
+    assert preview.next_action == "继续未完成工作包"
 
