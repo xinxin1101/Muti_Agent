@@ -70,6 +70,7 @@ class RepairAgent:
         runtime_v3_enabled: bool = False,
         runtime_mutation_gate_enabled: bool = True,
         runtime_import_prefetch_enabled: bool = True,
+        openhands_patch_enabled: bool = True,
         clock: Callable[[], float] = monotonic,
     ) -> None:
         normalized_model = model.strip()
@@ -110,6 +111,7 @@ class RepairAgent:
         self._runtime_v3_enabled = runtime_v3_enabled
         self._runtime_mutation_gate_enabled = runtime_mutation_gate_enabled
         self._runtime_import_prefetch_enabled = runtime_import_prefetch_enabled
+        self._openhands_patch_enabled = openhands_patch_enabled
         self._clock = clock
 
     async def repair(
@@ -150,6 +152,7 @@ class RepairAgent:
             workspace=workspace,
             task=task,
             max_read_range_lines=self._max_read_range_lines,
+            openhands_patch_enabled=self._openhands_patch_enabled,
         )
         tool_definitions = [
             definition

@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     runtime_mutation_gate_enabled: bool = True
     runtime_import_prefetch_enabled: bool = True
     runtime_repo_map_enabled: bool = True
+    # OpenHands-derived patch engine can be rolled back independently while the legacy exact
+    # replacement contract remains available for compatibility.
+    openhands_patch_enabled: bool = True
     # Legacy/general tool-result bounds remain for compatibility. Developer now has a
     # narrower role-specific budget because its compact working state can recover older facts.
     agent_max_single_tool_result_tokens: int = Field(default=1_200, ge=128, le=32_768)

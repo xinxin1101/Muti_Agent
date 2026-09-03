@@ -299,6 +299,102 @@ def test_apply_patch_requires_unique_exact_context(tmp_path: Path) -> None:
     assert missing.error_code is ToolErrorCode.NOT_FOUND
 
 
+def test_openhands_apply_patch_supports_atomic_multi_file_update_and_add(tmp_path: Path) -> None:
+    root = _make_repository(tmp_path)
+    toolbox = RepositoryToolbox(workspace=LocalGitWorkspace(root), task=_task())
+    patch = """*** Begin Patch
+*** Update File: app/main.py
+@@
+-VALUE = 1
++VALUE = 2
+*** Add File: app/game.py
++def play():
++    return True
++
+*** End Patch"""
+
+    result = toolbox.execute(_call("oh-patch", "apply_patch", {"patch": patch}))
+
+    assert result.ok is True
+    payload = json.loads(result.content)
+    assert payload["engine"] == "openhands"
+    assert payload["fuzz"] == 0
+    assert payload["operations"] == ["update:app/main.py", "add:app/game.py"]
+    assert payload["paths"] == ["app/main.py", "app/game.py"]
+    assert (root / "app" / "main.py").read_text(encoding="utf-8") == "VALUE = 2\n"
+    assert (root / "app" / "game.py").read_text(encoding="utf-8") == (
+        "def play():\n    return True\n"
+    )
+
+
+def test_openhands_patch_preflights_all_scopes_before_any_mutation(tmp_path: Path) -> None:
+    root = _make_repository(tmp_path)
+    toolbox = RepositoryToolbox(workspace=LocalGitWorkspace(root), task=_task())
+    patch = """*** Begin Patch
+*** Update File: app/main.py
+@@
+-VALUE = 1
++VALUE = 2
+*** Add File: tests/forbidden.py
++tampered = True
+*** End Patch"""
+
+    result = toolbox.execute(_call("oh-denied", "apply_patch", {"patch": patch}))
+
+    assert result.ok is False
+    assert result.error_code is ToolErrorCode.PATH_DENIED
+    assert (root / "app" / "main.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert not (root / "tests" / "forbidden.py").exists()
+
+
+def test_openhands_patch_rejects_path_escape_without_mutation(tmp_path: Path) -> None:
+    root = _make_repository(tmp_path)
+    toolbox = RepositoryToolbox(workspace=LocalGitWorkspace(root), task=_task())
+    patch = """*** Begin Patch
+*** Add File: ../escape.py
++ESCAPED = True
+*** End Patch"""
+
+    result = toolbox.execute(_call("oh-escape", "apply_patch", {"patch": patch}))
+
+    assert result.ok is False
+    assert result.error_code is ToolErrorCode.INVALID_ARGUMENTS
+    assert not (root.parent / "escape.py").exists()
+
+
+def test_openhands_patch_flag_can_roll_back_to_legacy_exact_mode(tmp_path: Path) -> None:
+    root = _make_repository(tmp_path)
+    toolbox = RepositoryToolbox(
+        workspace=LocalGitWorkspace(root),
+        task=_task(),
+        openhands_patch_enabled=False,
+    )
+    structured = toolbox.execute(
+        _call(
+            "oh-disabled",
+            "apply_patch",
+            {
+                "patch": (
+                    "*** Begin Patch\n*** Update File: app/main.py\n@@\n"
+                    "-VALUE = 1\n+VALUE = 2\n*** End Patch"
+                )
+            },
+        )
+    )
+    legacy = toolbox.execute(
+        _call(
+            "legacy-still-works",
+            "apply_patch",
+            {"path": "app/main.py", "old_text": "VALUE = 1", "new_text": "VALUE = 2"},
+        )
+    )
+
+    assert structured.ok is False
+    assert structured.error_code is ToolErrorCode.INVALID_ARGUMENTS
+    assert legacy.ok is True
+    assert (root / "app" / "main.py").read_text(encoding="utf-8") == "VALUE = 2\n"
+
+
 def test_internal_symlink_cannot_redirect_writable_path_to_readonly_file(tmp_path: Path) -> None:
     root = _make_repository(tmp_path)
     link = root / "app" / "linked_test.py"
@@ -1026,4 +1122,3 @@ def test_developer_runtime_v3_condenser_keeps_only_recent_complete_tool_group(
         "no workspace mutation exists yet" in message.content
         for message in patch_request.messages
     )
-

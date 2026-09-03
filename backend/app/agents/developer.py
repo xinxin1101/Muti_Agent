@@ -58,6 +58,7 @@ class DeveloperAgent:
         runtime_v3_enabled: bool = False,
         runtime_mutation_gate_enabled: bool = True,
         runtime_repo_map_enabled: bool = False,
+        openhands_patch_enabled: bool = True,
         clock: Callable[[], float] = monotonic,
     ) -> None:
         normalized_model = model.strip()
@@ -99,6 +100,7 @@ class DeveloperAgent:
         self._runtime_v3_enabled = runtime_v3_enabled
         self._runtime_mutation_gate_enabled = runtime_mutation_gate_enabled
         self._runtime_repo_map_enabled = runtime_repo_map_enabled
+        self._openhands_patch_enabled = openhands_patch_enabled
         self._clock = clock
 
     async def run(
@@ -110,7 +112,11 @@ class DeveloperAgent:
         trace: TaskTraceCollector | None = None,
     ) -> DeveloperRunResult:
         self._validate_context_packet(task, context_packet)
-        toolbox = RepositoryToolbox(workspace=workspace, task=task)
+        toolbox = RepositoryToolbox(
+            workspace=workspace,
+            task=task,
+            openhands_patch_enabled=self._openhands_patch_enabled,
+        )
         if self._runtime_v3_enabled:
             return await self._run_with_runtime_v3(
                 task=task,
