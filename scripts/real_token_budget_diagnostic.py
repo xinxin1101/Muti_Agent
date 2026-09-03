@@ -1,0 +1,428 @@
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+from sqlalchemy import create_engine, text
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+BACKEND_ROOT = REPOSITORY_ROOT / "backend"
+API_BASE_URL = "http://127.0.0.1:8000"
+STARTUP_TIMEOUT_SECONDS = 60.0
+RUN_TIMEOUT_SECONDS = 1500.0
+POLL_SECONDS = 2.0
+
+REQUIREMENT = """
+Build a small but complete browser-playable Gomoku demo as exactly three work packages.
+
+The Planner must use these exact package ids and dependency order:
+1. gomoku-core-logic
+2. gomoku-ui-renderer, depends on gomoku-core-logic
+3. gomoku-integration-tests, depends on both previous packages
+
+Keep the implementation isolated under examples/gomoku/ and do not modify unrelated project code.
+
+gomoku-core-logic:
+- implement reusable 15x15 Gomoku board/game logic in examples/gomoku/gomoku_core.cjs
+- support move validation, placing black/white stones, rejecting occupied/out-of-range cells,
+  detecting five consecutive stones horizontally, vertically, and on both diagonals
+- expose a deterministic CommonJS API that can be tested with node
+
+gomoku-ui-renderer:
+- create examples/gomoku/index.html and examples/gomoku/gomoku_ui.js
+- render a 15x15 board, allow two local players to click cells, alternate black/white stones,
+  show current turn and winner, and provide a restart control
+- use the core rules rather than silently inventing incompatible board semantics
+
+gomoku-integration-tests:
+- add deterministic tests under examples/gomoku/ that exercise valid/invalid moves,
+  occupied-cell rejection, turn switching, all four win directions, and reset
+- use only commands available in the repository/verification environment; prefer node-based
+  deterministic verification without adding new external dependencies
+
+Each package must have concrete verification commands. Do not create more than these three packages.
+""".strip()
+
+
+class DiagnosticFailure(RuntimeError):
+    pass
+
+
+def _stop(process: subprocess.Popen[bytes] | None) -> None:
+    if process is None or process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=10)
+
+
+def _request_json(
+    method: str,
+    url: str,
+    *,
+    payload: dict[str, Any] | None = None,
+    timeout: float = 20.0,
+) -> dict[str, Any]:
+    body = None
+    headers: dict[str, str] = {}
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+        headers["content-type"] = "application/json"
+    request = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read().decode("utf-8")
+            decoded = json.loads(raw)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise DiagnosticFailure(f"{method} {url} HTTP {exc.code}: {detail}") from exc
+    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        raise DiagnosticFailure(f"{method} {url} failed: {exc}") from exc
+    if not isinstance(decoded, dict):
+        raise DiagnosticFailure(f"{method} {url} did not return a JSON object")
+    return decoded
+
+
+def _wait_ready(url: str, *, process: subprocess.Popen[bytes], log_path: Path) -> dict[str, Any]:
+    deadline = time.monotonic() + STARTUP_TIMEOUT_SECONDS
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise DiagnosticFailure(
+                f"process exited before {url} became ready\n"
+                + log_path.read_text(encoding="utf-8", errors="replace")
+            )
+        try:
+            return _request_json("GET", url, timeout=5.0)
+        except DiagnosticFailure as exc:
+            last_error = exc
+            time.sleep(1.0)
+    raise DiagnosticFailure(
+        f"timed out waiting for {url}: {last_error}\n"
+        + log_path.read_text(encoding="utf-8", errors="replace")
+    )
+
+
+def _safe_get(url: str) -> dict[str, Any]:
+    try:
+        return _request_json("GET", url)
+    except Exception as exc:
+        return {"diagnostic_error": f"{type(exc).__name__}: {exc}"}
+
+
+def _sync_database_url() -> str:
+    raw = os.environ["DEVFLOW_DATABASE_URL"]
+    return raw.replace("+psycopg", "")
+
+
+def _db_rows(run_id: str, table: str) -> list[dict[str, Any]]:
+    engine = create_engine(_sync_database_url())
+    try:
+        with engine.connect() as connection:
+            result = connection.execute(
+                text(f"SELECT * FROM {table} WHERE run_id = :run_id ORDER BY id"),
+                {"run_id": run_id},
+            )
+            rows = []
+            for item in result.mappings():
+                row = {}
+                for key, value in item.items():
+                    if hasattr(value, "isoformat"):
+                        row[key] = value.isoformat()
+                    elif isinstance(value, (str, int, float, bool)) or value is None:
+                        row[key] = value
+                    else:
+                        row[key] = str(value)
+                rows.append(row)
+            return rows
+    finally:
+        engine.dispose()
+
+
+def _metrics_snapshot(run_id: str) -> dict[str, Any]:
+    metrics = _safe_get(f"{API_BASE_URL}/api/v1/runs/{run_id}/metrics")
+    budget = metrics.get("token_budget") if isinstance(metrics, dict) else None
+    if not isinstance(budget, dict):
+        return {"at": time.time(), "metrics": metrics}
+    return {
+        "at": time.time(),
+        "status": metrics.get("status"),
+        "used_total_tokens": budget.get("used_total_tokens"),
+        "used_prompt_tokens": budget.get("used_prompt_tokens"),
+        "used_completion_tokens": budget.get("used_completion_tokens"),
+        "reserved_tokens": budget.get("reserved_tokens"),
+        "budget_status": budget.get("status"),
+        "roles": budget.get("roles"),
+        "work_packages": budget.get("work_packages"),
+        "cost_observation_count": budget.get("cost_observation_count"),
+    }
+
+
+def _wait_terminal(run_id: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    deadline = time.monotonic() + RUN_TIMEOUT_SECONDS
+    snapshots: list[dict[str, Any]] = []
+    last_signature: tuple[Any, ...] | None = None
+    last_run: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        last_run = _request_json("GET", f"{API_BASE_URL}/api/v1/runs/{run_id}")
+        snap = _metrics_snapshot(run_id)
+        signature = (
+            snap.get("status"),
+            snap.get("used_total_tokens"),
+            snap.get("reserved_tokens"),
+            snap.get("cost_observation_count"),
+        )
+        if signature != last_signature:
+            snapshots.append(snap)
+            last_signature = signature
+        if last_run.get("status") in {"SUCCEEDED", "FAILED"}:
+            return last_run, snapshots
+        time.sleep(POLL_SECONDS)
+    raise DiagnosticFailure(
+        f"run {run_id} did not reach terminal state; last={json.dumps(last_run, ensure_ascii=False)}"
+    )
+
+
+def _task_details(run_id: str, dag: dict[str, Any]) -> dict[str, Any]:
+    details: dict[str, Any] = {}
+    for task_id in dag.get("topological_order") or ():
+        details[str(task_id)] = _safe_get(
+            f"{API_BASE_URL}/api/v1/runs/{run_id}/tasks/{task_id}"
+        )
+    return details
+
+
+def _analyze(metrics: dict[str, Any], observations: list[dict[str, Any]]) -> dict[str, Any]:
+    budget = metrics.get("token_budget") if isinstance(metrics, dict) else {}
+    if not isinstance(budget, dict):
+        budget = {}
+    settled = [row for row in observations if row.get("actual_prompt_tokens") is not None]
+    estimated = sum(int(row.get("request_estimated_tokens") or 0) for row in settled)
+    actual_prompt = sum(int(row.get("actual_prompt_tokens") or 0) for row in settled)
+    actual_completion = sum(int(row.get("actual_completion_tokens") or 0) for row in settled)
+    tool_args = sum(int(row.get("tool_argument_tokens") or 0) for row in settled)
+    tool_results = sum(int(row.get("tool_result_tokens") or 0) for row in settled)
+    compacted = sum(int(row.get("compacted_tool_argument_tokens") or 0) for row in settled)
+    no_progress = sum(not bool(row.get("has_real_progress")) for row in settled)
+    largest_prompt = max(
+        settled,
+        key=lambda row: int(row.get("actual_prompt_tokens") or 0),
+        default=None,
+    )
+    by_task_role: dict[str, dict[str, int]] = {}
+    for row in settled:
+        key = f"{row.get('task_id')}::{row.get('role')}"
+        entry = by_task_role.setdefault(
+            key,
+            {"turns": 0, "estimated_prompt": 0, "actual_prompt": 0, "completion": 0},
+        )
+        entry["turns"] += 1
+        entry["estimated_prompt"] += int(row.get("request_estimated_tokens") or 0)
+        entry["actual_prompt"] += int(row.get("actual_prompt_tokens") or 0)
+        entry["completion"] += int(row.get("actual_completion_tokens") or 0)
+    return {
+        "run_budget": {
+            "total": budget.get("total_budget_tokens"),
+            "used": budget.get("used_total_tokens"),
+            "prompt": budget.get("used_prompt_tokens"),
+            "completion": budget.get("used_completion_tokens"),
+            "reserved": budget.get("reserved_tokens"),
+            "status": budget.get("status"),
+        },
+        "settled_developer_repair_turns": len(settled),
+        "estimated_prompt_sum": estimated,
+        "actual_prompt_sum": actual_prompt,
+        "actual_completion_sum": actual_completion,
+        "estimator_delta_sum": estimated - actual_prompt,
+        "estimator_delta_ratio": (
+            (estimated - actual_prompt) / actual_prompt if actual_prompt else None
+        ),
+        "tool_argument_tokens_sum": tool_args,
+        "tool_result_tokens_sum": tool_results,
+        "compacted_tool_argument_tokens_sum": compacted,
+        "no_real_progress_turns": no_progress,
+        "largest_actual_prompt_turn": largest_prompt,
+        "by_task_role": by_task_role,
+    }
+
+
+def main() -> int:
+    if not os.environ.get("DASHSCOPE_API_KEY"):
+        raise DiagnosticFailure("DASHSCOPE_API_KEY is required")
+    if not os.environ.get("DEVFLOW_DATABASE_URL"):
+        raise DiagnosticFailure("DEVFLOW_DATABASE_URL is required")
+    dramatiq = shutil.which("dramatiq")
+    if dramatiq is None:
+        raise DiagnosticFailure("dramatiq executable is not available")
+
+    report_path = Path(os.environ.get("DEVFLOW_DIAGNOSTIC_REPORT", "token-budget-diagnostic.json"))
+    repository_url = os.environ.get(
+        "DEVFLOW_DIAGNOSTIC_REPOSITORY_URL",
+        "https://github.com/xinxin1101/Muti_Agent.git",
+    )
+    repository_branch = os.environ.get("DEVFLOW_DIAGNOSTIC_REPOSITORY_BRANCH", "xin_01")
+
+    report: dict[str, Any] = {
+        "diagnostic": "real-qwen-multipackage-token-budget",
+        "model": os.environ.get("DEVFLOW_DEVELOPER_MODEL"),
+        "run_budget": os.environ.get("DEVFLOW_RUN_TOKEN_BUDGET_TOKENS"),
+        "requirement": REQUIREMENT,
+        "status": "STARTING",
+    }
+
+    api: subprocess.Popen[bytes] | None = None
+    worker: subprocess.Popen[bytes] | None = None
+    run_id: str | None = None
+
+    with tempfile.TemporaryDirectory(prefix="devflow-real-budget-diagnostic-") as temp_dir:
+        root = Path(temp_dir)
+        api_log_path = root / "api.log"
+        worker_log_path = root / "worker.log"
+        workspace_root = root / "workspaces"
+        child_env = os.environ.copy()
+        child_env.update(
+            {
+                "DEVFLOW_WORKSPACE_ROOT": str(workspace_root),
+                "DEVFLOW_DRAMATIQ_NAMESPACE": f"budget-diagnostic-{os.getpid()}",
+                "DEVFLOW_DRAMATIQ_QUEUE_NAME": "budget_diagnostic_tasks",
+                "DEVFLOW_WORKER_ID": "budget-diagnostic-worker",
+                "DEVFLOW_WORKER_LEASE_SECONDS": "45",
+                "DEVFLOW_WORKER_HEARTBEAT_INTERVAL_SECONDS": "8",
+            }
+        )
+
+        try:
+            with api_log_path.open("wb") as api_log, worker_log_path.open("wb") as worker_log:
+                api = subprocess.Popen(
+                    [sys.executable, "-m", "app.api.main"],
+                    cwd=BACKEND_ROOT,
+                    env=child_env,
+                    stdout=api_log,
+                    stderr=subprocess.STDOUT,
+                )
+                _wait_ready(
+                    f"{API_BASE_URL}/healthz",
+                    process=api,
+                    log_path=api_log_path,
+                )
+
+                worker = subprocess.Popen(
+                    [dramatiq, "app.workers.tasks"],
+                    cwd=BACKEND_ROOT,
+                    env=child_env,
+                    stdout=worker_log,
+                    stderr=subprocess.STDOUT,
+                )
+                time.sleep(2)
+                if worker.poll() is not None:
+                    raise DiagnosticFailure(
+                        "Dramatiq worker exited during startup\n"
+                        + worker_log_path.read_text(encoding="utf-8", errors="replace")
+                    )
+
+                report["readiness"] = _safe_get(f"{API_BASE_URL}/readyz")
+                project = _request_json(
+                    "POST",
+                    f"{API_BASE_URL}/api/v1/projects",
+                    payload={
+                        "repository_url": repository_url,
+                        "default_branch": repository_branch,
+                    },
+                    timeout=180.0,
+                )
+                report["project"] = project
+                launch = _request_json(
+                    "POST",
+                    f"{API_BASE_URL}/api/v1/runs/from-requirement",
+                    payload={
+                        "project_id": str(project["project_id"]),
+                        "requirement": REQUIREMENT,
+                    },
+                    timeout=180.0,
+                )
+                report["launch"] = launch
+                run_id = str(launch["run_id"])
+                terminal, snapshots = _wait_terminal(run_id)
+                report["run"] = terminal
+                report["budget_timeline"] = snapshots
+                report["dag"] = _safe_get(f"{API_BASE_URL}/api/v1/runs/{run_id}/dag")
+                report["metrics"] = _safe_get(f"{API_BASE_URL}/api/v1/runs/{run_id}/metrics")
+                report["trace"] = _safe_get(f"{API_BASE_URL}/api/v1/runs/{run_id}/trace")
+                report["tasks"] = _task_details(run_id, report["dag"])
+                report["cost_observations"] = _db_rows(
+                    run_id, "run_task_cost_observations"
+                )
+                report["budget_decisions"] = _db_rows(
+                    run_id, "run_token_budget_decisions"
+                )
+                report["analysis"] = _analyze(
+                    report["metrics"], report["cost_observations"]
+                )
+                report["status"] = "COMPLETE"
+        except Exception as exc:
+            report["status"] = "DIAGNOSTIC_ERROR"
+            report["error"] = {
+                "type": type(exc).__name__,
+                "message": str(exc)[:8000],
+            }
+            if run_id is not None:
+                report["run"] = _safe_get(f"{API_BASE_URL}/api/v1/runs/{run_id}")
+                report["dag"] = _safe_get(f"{API_BASE_URL}/api/v1/runs/{run_id}/dag")
+                report["metrics"] = _safe_get(f"{API_BASE_URL}/api/v1/runs/{run_id}/metrics")
+                report["trace"] = _safe_get(f"{API_BASE_URL}/api/v1/runs/{run_id}/trace")
+                try:
+                    report["cost_observations"] = _db_rows(
+                        run_id, "run_task_cost_observations"
+                    )
+                    report["budget_decisions"] = _db_rows(
+                        run_id, "run_token_budget_decisions"
+                    )
+                    report["analysis"] = _analyze(
+                        report["metrics"], report["cost_observations"]
+                    )
+                except Exception as db_exc:
+                    report["database_diagnostic_error"] = str(db_exc)
+        finally:
+            _stop(worker)
+            _stop(api)
+            report["api_log"] = (
+                api_log_path.read_text(encoding="utf-8", errors="replace")
+                if api_log_path.exists()
+                else ""
+            )
+            report["worker_log"] = (
+                worker_log_path.read_text(encoding="utf-8", errors="replace")
+                if worker_log_path.exists()
+                else ""
+            )
+            report_path.write_text(
+                json.dumps(report, ensure_ascii=False, indent=2, default=str) + "\n",
+                encoding="utf-8",
+            )
+
+    print(json.dumps({
+        "status": report.get("status"),
+        "model": report.get("model"),
+        "run_status": (report.get("run") or {}).get("status"),
+        "analysis": report.get("analysis"),
+        "report": str(report_path),
+    }, ensure_ascii=False, indent=2))
+    # A business Run may legitimately fail because the purpose is to capture the failure.
+    # Only infrastructure/setup failures before a useful report are treated as workflow errors.
+    return 0 if report.get("status") == "COMPLETE" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

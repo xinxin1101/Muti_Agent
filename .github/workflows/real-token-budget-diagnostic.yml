@@ -1,0 +1,124 @@
+name: Real Token Budget Diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - xin_01
+    paths:
+      - "scripts/real_token_budget_diagnostic.py"
+      - ".github/workflows/real-token-budget-diagnostic.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostic:
+    name: Real qwen3.5-flash Token Diagnostic
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY || secrets.SILICONFLOW_API_KEY }}
+      DEVFLOW_DATABASE_URL: postgresql+psycopg://devflow:devflow@127.0.0.1:5432/devflow_diagnostic
+      DEVFLOW_REDIS_URL: redis://127.0.0.1:6379/13
+      DEVFLOW_SILICONFLOW_BASE_URL: https://dashscope.aliyuncs.com/compatible-mode/v1
+      DEVFLOW_PLANNER_MODEL: qwen3.5-flash
+      DEVFLOW_DEVELOPER_MODEL: qwen3.5-flash
+      DEVFLOW_REVIEWER_MODEL: qwen3.5-flash
+      DEVFLOW_REPAIR_MODEL: qwen3.5-flash
+      DEVFLOW_FAILURE_EXPLANATION_MODEL: qwen3.5-flash
+      DEVFLOW_PLANNER_ENABLE_THINKING: "false"
+      DEVFLOW_DEVELOPER_ENABLE_THINKING: "false"
+      DEVFLOW_REPAIR_ENABLE_THINKING: "false"
+      DEVFLOW_REVIEWER_ENABLE_THINKING: "false"
+      DEVFLOW_FAILURE_EXPLANATION_ENABLE_THINKING: "false"
+      DEVFLOW_PLANNER_INITIAL_MAX_OUTPUT_TOKENS: "1000"
+      DEVFLOW_PLANNER_JSON_REPAIR_MAX_OUTPUT_TOKENS: "700"
+      DEVFLOW_PLANNER_BUDGET_REPLAN_MAX_OUTPUT_TOKENS: "800"
+      DEVFLOW_DEVELOPER_MAX_OUTPUT_TOKENS: "1400"
+      DEVFLOW_REVIEWER_MAX_OUTPUT_TOKENS: "800"
+      DEVFLOW_REPAIR_MAX_OUTPUT_TOKENS: "1000"
+      DEVFLOW_FAILURE_EXPLANATION_MAX_OUTPUT_TOKENS: "400"
+      DEVFLOW_RUN_TOKEN_BUDGET_TOKENS: "50000"
+      DEVFLOW_PLANNER_TOKEN_BUDGET_TOKENS: "7200"
+      DEVFLOW_PLANNER_MAX_ATTEMPTS: "2"
+      DEVFLOW_DEVELOPER_MAX_DURATION_SECONDS: "600"
+      DEVFLOW_DEVELOPER_MAX_MODEL_TURN_SECONDS: "180"
+      DEVFLOW_AGENT_RUNTIME_V3_ENABLED: "true"
+      DEVFLOW_DEVELOPER_RUNTIME_V3_ENABLED: "true"
+      DEVFLOW_REPAIR_RUNTIME_V3_ENABLED: "true"
+      DEVFLOW_RUNTIME_MUTATION_GATE_ENABLED: "true"
+      DEVFLOW_RUNTIME_IMPORT_PREFETCH_ENABLED: "true"
+      DEVFLOW_RUNTIME_REPO_MAP_ENABLED: "true"
+      DEVFLOW_RUNTIME_EVENT_CONDENSER_ENABLED: "true"
+      DEVFLOW_RUNTIME_STUCK_DETECTOR_ENABLED: "true"
+      DEVFLOW_OPENHANDS_PATCH_ENABLED: "true"
+      DEVFLOW_DIAGNOSTIC_REPORT: token-budget-diagnostic.json
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: devflow
+          POSTGRES_PASSWORD: devflow
+          POSTGRES_DB: devflow_diagnostic
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U devflow -d devflow_diagnostic"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Check out xin_01
+        uses: actions/checkout@v6
+
+      - name: Require real provider secret
+        shell: bash
+        run: |
+          if [ -z "${DASHSCOPE_API_KEY:-}" ]; then
+            echo "::error::DASHSCOPE_API_KEY is not configured."
+            exit 2
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.lock
+
+      - name: Install locked backend environment
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.lock
+          python -m pip install --no-deps -e .
+
+      - name: Apply migrations
+        working-directory: backend
+        run: alembic upgrade head
+
+      - name: Build verification sandbox
+        run: docker build -f backend/docker/verification.Dockerfile -t devflow-verifier:py311 backend
+
+      - name: Run full real-model token diagnostic
+        run: python scripts/real_token_budget_diagnostic.py
+
+      - name: Upload diagnostic report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-token-budget-diagnostic
+          path: token-budget-diagnostic.json
+          if-no-files-found: error
