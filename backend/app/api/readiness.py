@@ -168,7 +168,10 @@ class OperationalReadinessChecker:
             return (
                 ReadinessCheck(
                     state=ReadinessState.NOT_CONFIGURED,
-                    detail="DASHSCOPE_API_KEY (or a compatible legacy provider-key alias) is not configured.",
+                    detail=(
+                        "DASHSCOPE_API_KEY (or a compatible legacy provider-key alias) "
+                        "is not configured."
+                    ),
                 ),
                 tuple(
                     ModelReadiness(role=role, model=model, state=ReadinessState.NOT_CONFIGURED)
