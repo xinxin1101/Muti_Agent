@@ -614,10 +614,25 @@ async def _checkpoint_resume(
         )
     if second.run_result is None or second.run_result.status is not TaskRunState.SUCCEEDED:
         raise AssertionError("checkpoint resumed worker lacked a successful runtime result")
-    if not second.run_result.events[0].detail.startswith("从验证失败检查点恢复"):
+    resume_events = [
+        event
+        for event in second.run_result.events
+        if event.state is TaskRunState.RUNNING
+        and event.detail.startswith("从验证失败检查点恢复")
+    ]
+    if not resume_events:
         raise AssertionError(
-            f"resume did not start verifier-first: {second.run_result.events[0].detail}"
+            "resume did not contain the verifier-first RUNNING transition: "
+            + json.dumps(
+                [event.model_dump(mode="json") for event in second.run_result.events],
+                ensure_ascii=False,
+            )
         )
+    if any(
+        event.detail == "Developer Agent started initial work."
+        for event in second.run_result.events
+    ):
+        raise AssertionError("checkpoint resume event history replayed Developer")
 
     return {
         "first_run": {
@@ -703,16 +718,22 @@ async def _main(report_path: Path) -> int:
                 settings=settings,
                 raw_driver=raw_driver,
             )
+        report["status"] = "PASS"
+        return 0
+    except Exception as exc:
+        report["status"] = "FAIL"
+        report["failure"] = {
+            "type": type(exc).__name__,
+            "message": str(exc)[:2_000],
+        }
+        raise
     finally:
         await raw_driver.dispose()
-
-    report["status"] = "PASS"
-    report_path.write_text(
-        json.dumps(report, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    print(json.dumps(report, ensure_ascii=False, indent=2))
-    return 0
+        report_path.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
 
 
 def main() -> int:
