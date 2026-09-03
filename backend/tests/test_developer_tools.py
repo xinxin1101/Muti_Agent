@@ -327,6 +327,30 @@ def test_openhands_apply_patch_supports_atomic_multi_file_update_and_add(tmp_pat
     )
 
 
+def test_openhands_patch_supports_move_and_delete(tmp_path: Path) -> None:
+    root = _make_repository(tmp_path)
+    (root / "app" / "obsolete.py").write_text("OLD = True\n", encoding="utf-8")
+    toolbox = RepositoryToolbox(workspace=LocalGitWorkspace(root), task=_task())
+    patch = """*** Begin Patch
+*** Update File: app/main.py
+*** Move to: app/moved.py
+@@
+-VALUE = 1
++VALUE = 3
+*** Delete File: app/obsolete.py
+*** End Patch"""
+
+    result = toolbox.execute(_call("oh-move-delete", "apply_patch", {"patch": patch}))
+
+    assert result.ok is True
+    payload = json.loads(result.content)
+    assert payload["operations"] == ["update:app/moved.py", "delete:app/obsolete.py"]
+    assert payload["paths"] == ["app/main.py", "app/moved.py", "app/obsolete.py"]
+    assert not (root / "app" / "main.py").exists()
+    assert (root / "app" / "moved.py").read_text(encoding="utf-8") == "VALUE = 3\n"
+    assert not (root / "app" / "obsolete.py").exists()
+
+
 def test_openhands_patch_preflights_all_scopes_before_any_mutation(tmp_path: Path) -> None:
     root = _make_repository(tmp_path)
     toolbox = RepositoryToolbox(workspace=LocalGitWorkspace(root), task=_task())
