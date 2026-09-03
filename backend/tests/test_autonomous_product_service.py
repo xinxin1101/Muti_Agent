@@ -15,6 +15,8 @@ from app.api.autonomous import (
 )
 from app.api.models import ProductProject
 from app.dispatch.errors import TaskDispatchBrokerError
+from app.models.checkpoint import CheckpointReason, CheckpointResumeStrategy, TaskCheckpoint
+from app.models.context import ContextContinuationState
 from app.models.dag import TaskDAG, TaskNode
 from app.models.dispatch import TaskDispatchReceipt
 from app.models.task import TaskContract
@@ -364,3 +366,50 @@ def test_agent_only_rollout_policy_persists_agent_execution_modes() -> None:
         match.execution_mode is WorkflowExecutionMode.AGENT
         for match in evidence_store.workflow_matches
     )
+
+def test_legacy_budget_checkpoint_with_verification_state_resumes_verifier_first() -> None:
+    checkpoint = TaskCheckpoint(
+        task_id="gomoku-core",
+        base_commit="a" * 40,
+        commit_sha="b" * 40,
+        changed_files=("src/gomoku_engine.py",),
+        reason=CheckpointReason.RUN_TOKEN_BUDGET_EXHAUSTED,
+        summary="saved candidate",
+        context_state=ContextContinuationState(
+            summary_version="repository_summary_v1",
+            repository_head="b" * 40,
+            changed_files=("src/gomoku_engine.py",),
+            verification_summary="已执行 1 次验证；最近结果=失败。",
+            failure_summary="Deterministic custom verification failed.",
+            remaining_summary="repair GameLogic import contract",
+        ),
+    )
+
+    assert checkpoint.resume_strategy is None
+    assert (
+        AutonomousProductRuntimeService._checkpoint_resume_strategy(checkpoint)
+        is CheckpointResumeStrategy.VERIFY_THEN_REPAIR
+    )
+
+
+def test_budget_checkpoint_without_verification_still_continues_developer() -> None:
+    checkpoint = TaskCheckpoint(
+        task_id="gomoku-core",
+        base_commit="a" * 40,
+        commit_sha="b" * 40,
+        changed_files=("src/gomoku_engine.py",),
+        reason=CheckpointReason.RUN_TOKEN_BUDGET_EXHAUSTED,
+        summary="saved partial developer candidate",
+        context_state=ContextContinuationState(
+            summary_version="repository_summary_v1",
+            repository_head="b" * 40,
+            changed_files=("src/gomoku_engine.py",),
+            remaining_summary="continue implementation",
+        ),
+    )
+
+    assert (
+        AutonomousProductRuntimeService._checkpoint_resume_strategy(checkpoint)
+        is CheckpointResumeStrategy.CONTINUE_DEVELOPMENT
+    )
+
