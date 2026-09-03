@@ -1029,6 +1029,25 @@ class AutonomousProductRuntimeService(ProductRuntimeServiceWithGitHubPublication
         return checkpoint
 
     @staticmethod
+    def _checkpoint_resume_strategy(checkpoint: TaskCheckpoint) -> CheckpointResumeStrategy:
+        """Resolve explicit strategy and infer safe behavior for historical checkpoints."""
+
+        if checkpoint.resume_strategy is not None:
+            return checkpoint.resume_strategy
+        if checkpoint.reason is CheckpointReason.VERIFICATION_FAILURE:
+            return CheckpointResumeStrategy.VERIFY_THEN_REPAIR
+
+        context_state = checkpoint.context_state
+        if context_state is not None and context_state.verification_summary.strip():
+            return CheckpointResumeStrategy.VERIFY_THEN_REPAIR
+        if (
+            checkpoint.verification_summary.strip()
+            and "尚未执行" not in checkpoint.verification_summary
+        ):
+            return CheckpointResumeStrategy.VERIFY_THEN_REPAIR
+        return CheckpointResumeStrategy.CONTINUE_DEVELOPMENT
+
+    @staticmethod
     def _with_checkpoint_resume_context(
         *,
         dag: TaskDAG,
@@ -1037,11 +1056,7 @@ class AutonomousProductRuntimeService(ProductRuntimeServiceWithGitHubPublication
     ) -> TaskDAG:
         """Bind one recovered task to bounded checkpoint facts on a new server DAG."""
 
-        strategy = (
-            CheckpointResumeStrategy.VERIFY_THEN_REPAIR
-            if checkpoint.reason is CheckpointReason.VERIFICATION_FAILURE
-            else CheckpointResumeStrategy.CONTINUE_DEVELOPMENT
-        )
+        strategy = AutonomousProductRuntimeService._checkpoint_resume_strategy(checkpoint)
         context = TaskResumeContext(
             source_run_id=source_run_id,
             checkpoint_commit_sha=checkpoint.commit_sha,
