@@ -158,10 +158,10 @@ class StuckDetector:
             events,
             max_needed,
         )
-        if self._repeating_action_observation(actions, observations):
-            return StuckPattern.REPEATING_ACTION_OBSERVATION
         if self._action_error_streak(actions, observations) > self.thresholds.action_error:
             return StuckPattern.REPEATING_ACTION_ERROR
+        if self._repeating_action_observation(actions, observations):
+            return StuckPattern.REPEATING_ACTION_OBSERVATION
         if self._monologue(events):
             return StuckPattern.MONOLOGUE
         if (
