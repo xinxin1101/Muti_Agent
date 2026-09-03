@@ -302,8 +302,9 @@ def _safe_get(url: str) -> dict[str, Any]:
 
 
 def _sync_database_url() -> str:
-    raw = os.environ["DEVFLOW_DATABASE_URL"]
-    return raw.replace("+psycopg", "")
+    # The locked backend environment ships psycopg v3, not psycopg2. SQLAlchemy supports
+    # synchronous access through postgresql+psycopg, so keep the configured driver intact.
+    return os.environ["DEVFLOW_DATABASE_URL"]
 
 
 def _db_rows(run_id: str, table: str) -> list[dict[str, Any]]:
