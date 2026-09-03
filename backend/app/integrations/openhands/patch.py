@@ -67,7 +67,7 @@ class OpenHandsPatchAdapter:
                     raise DiffError(f"Add File Error: File already exists: {path}")
 
                 target_path = change.move_path or path
-                if change.move_path is not None:
+                if change.move_path:
                     cls._validate_relative_path(change.move_path)
                     if change.move_path == path:
                         raise DiffError(f"Move target must differ from source: {path}")
@@ -80,7 +80,7 @@ class OpenHandsPatchAdapter:
 
                 operations.append(f"{change.type.value}:{target_path}")
                 changed_paths.append(path)
-                if change.move_path is not None:
+                if change.move_path:
                     changed_paths.append(change.move_path)
 
             apply_commit(commit, write_file, remove_file)
