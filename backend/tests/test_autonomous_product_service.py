@@ -19,10 +19,13 @@ from app.dispatch.errors import TaskDispatchBrokerError
 from app.models.checkpoint import CheckpointReason, CheckpointResumeStrategy, TaskCheckpoint
 from app.models.context import ContextContinuationState
 from app.models.dag import TaskDAG, TaskNode
-from app.models.development_session import DevelopmentWorkPackageProgress, DevelopmentWorkPackageState
-from app.models.work_package import TaskBudgetAllocation
+from app.models.development_session import (
+    DevelopmentWorkPackageProgress,
+    DevelopmentWorkPackageState,
+)
 from app.models.dispatch import TaskDispatchReceipt
 from app.models.task import TaskContract
+from app.models.work_package import TaskBudgetAllocation
 from app.models.workflow import WorkflowActivationMode, WorkflowExecutionMode
 from app.persistence.dag import PersistedDAGSnapshot, PersistedDAGSource
 from app.verification.dependency_preflight import (
