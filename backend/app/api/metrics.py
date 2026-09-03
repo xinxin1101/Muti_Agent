@@ -6,6 +6,7 @@ from uuid import UUID
 
 from app.api.models import (
     ProductEvidenceMetrics,
+    ProductModelTurnTokenObservation,
     ProductPlanningTokenBudget,
     ProductRoleTokenUsage,
     ProductRunMetrics,
@@ -400,6 +401,28 @@ def build_run_metrics(
                 )
                 for item in token_budget.work_packages
             ),
+            cost_observations=tuple(
+                ProductModelTurnTokenObservation(
+                    observation_id=item.observation_id,
+                    task_id=item.task_id,
+                    role=item.role.value,
+                    iteration=item.iteration,
+                    request_estimated_tokens=item.request_estimated_tokens,
+                    actual_prompt_tokens=item.actual_prompt_tokens,
+                    actual_completion_tokens=item.actual_completion_tokens,
+                    actual_total_tokens=item.actual_total_tokens,
+                    estimate_delta_tokens=item.estimate_delta_tokens,
+                    context_growth_tokens=item.context_growth_tokens,
+                    tool_argument_tokens=item.tool_argument_tokens,
+                    write_patch_argument_tokens=item.write_patch_argument_tokens,
+                    tool_result_tokens=item.tool_result_tokens,
+                    compacted_tool_argument_tokens=item.compacted_tool_argument_tokens,
+                    has_real_progress=item.has_real_progress,
+                )
+                for item in token_budget.cost_observations
+            ),
+            cost_observation_count=token_budget.cost_observation_count,
+            cost_observations_truncated=token_budget.cost_observations_truncated,
         ),
         planning_budget=(
             ProductPlanningTokenBudget(

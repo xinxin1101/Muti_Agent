@@ -224,6 +224,25 @@ beforeEach(() => {
       reserved_tokens: 0,
       status: "NORMAL",
       roles: [],
+      cost_observations: [{
+        observation_id: 7,
+        task_id: "task-1",
+        role: "developer",
+        iteration: 2,
+        request_estimated_tokens: 5240,
+        actual_prompt_tokens: 4200,
+        actual_completion_tokens: 300,
+        actual_total_tokens: 4500,
+        estimate_delta_tokens: 1040,
+        context_growth_tokens: 900,
+        tool_argument_tokens: 1700,
+        write_patch_argument_tokens: 1200,
+        tool_result_tokens: 240,
+        compacted_tool_argument_tokens: 1200,
+        has_real_progress: true,
+      }],
+      cost_observation_count: 1,
+      cost_observations_truncated: false,
     },
     performance: {
       developer_model_latency_ms: 0,
@@ -312,6 +331,10 @@ describe("RunDashboardPage live timeline", () => {
     expect(screen.getByText("Hybrid 任务")).toBeInTheDocument();
     expect(screen.getByText("验证尝试")).toBeInTheDocument();
     expect(screen.getByText("审查结论")).toBeInTheDocument();
+    expect(screen.getByText("Token Budget Audit")).toBeInTheDocument();
+    expect(screen.getByText("请求估算")).toBeInTheDocument();
+    expect(screen.getByText("实际 Prompt")).toBeInTheDocument();
+    expect(screen.getByText("+1,040")).toBeInTheDocument();
     expect(screen.getByText(/状态仍来自 PERSISTED_RUN/)).toBeInTheDocument();
     expect(screen.queryByText(/success rate/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/approval rate/i)).not.toBeInTheDocument();
