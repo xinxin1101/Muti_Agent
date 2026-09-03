@@ -8,6 +8,9 @@ on:
     paths:
       - "scripts/real_gomoku_acceptance.py"
       - ".github/workflows/real-gomoku-acceptance.yml"
+      - "backend/app/providers/siliconflow.py"
+      - "backend/app/core/settings.py"
+      - "backend/app/api/readiness.py"
 
 permissions:
   contents: read
