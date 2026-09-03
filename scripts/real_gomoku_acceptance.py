@@ -365,7 +365,7 @@ async def _requirement_e2e(
         project_id=project_id,
         task=task,
         base_commit=workspace.head_commit(),
-        repository_url=f"file://{workspace.root}",
+        repository_url=f"https://acceptance.devflow.local/{project_id}",
     )
     store = await _store(settings, run_id=run_id, total_tokens=50_000)
     budgeted = _budgeted(
@@ -428,7 +428,7 @@ async def _real_import_repair(
         project_id=project_id,
         task=task,
         base_commit=workspace.head_commit(),
-        repository_url=f"file://{workspace.root}",
+        repository_url=f"https://acceptance.devflow.local/{project_id}",
     )
     store = await _store(settings, run_id=run_id, total_tokens=50_000)
     budgeted = _budgeted(
@@ -501,7 +501,7 @@ async def _checkpoint_resume(
         project_id=project_id,
         task=task,
         base_commit=base_commit,
-        repository_url=f"file://{workspace.root}",
+        repository_url=f"https://acceptance.devflow.local/{project_id}",
     )
     first_store = await _store(settings, run_id=first_run_id, total_tokens=1_000)
     first_budgeted = _budgeted(
@@ -567,7 +567,7 @@ async def _checkpoint_resume(
         project_id=project_id,
         task=task,
         base_commit=checkpoint.commit_sha,
-        repository_url=f"file://{workspace.root}",
+        repository_url=f"https://acceptance.devflow.local/{project_id}",
     )
     second_store = await _store(settings, run_id=second_run_id, total_tokens=50_000)
     second_budgeted = _budgeted(
