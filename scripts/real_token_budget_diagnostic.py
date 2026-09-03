@@ -22,34 +22,18 @@ RUN_TIMEOUT_SECONDS = 1500.0
 POLL_SECONDS = 2.0
 
 REQUIREMENT = """
-Build a small but complete browser-playable Gomoku demo as exactly three work packages.
+Create a small browser-playable Gomoku demo isolated under examples/gomoku/.
 
-The Planner must use these exact package ids and dependency order:
-1. gomoku-core-logic
-2. gomoku-ui-renderer, depends on gomoku-core-logic
-3. gomoku-integration-tests, depends on both previous packages
+The delivery should naturally separate into multiple work packages for:
+- reusable 15x15 Gomoku game logic with legal-move checks, occupied-cell rejection,
+  turn switching, reset, and five-in-a-row detection in all four directions;
+- a simple browser UI that renders the board, lets two local players click cells,
+  shows the current turn/winner, and supports restart;
+- deterministic integration tests that verify core rules and the completed demo without
+  introducing new external dependencies.
 
-Keep the implementation isolated under examples/gomoku/ and do not modify unrelated project code.
-
-gomoku-core-logic:
-- implement reusable 15x15 Gomoku board/game logic in examples/gomoku/gomoku_core.cjs
-- support move validation, placing black/white stones, rejecting occupied/out-of-range cells,
-  detecting five consecutive stones horizontally, vertically, and on both diagonals
-- expose a deterministic CommonJS API that can be tested with node
-
-gomoku-ui-renderer:
-- create examples/gomoku/index.html and examples/gomoku/gomoku_ui.js
-- render a 15x15 board, allow two local players to click cells, alternate black/white stones,
-  show current turn and winner, and provide a restart control
-- use the core rules rather than silently inventing incompatible board semantics
-
-gomoku-integration-tests:
-- add deterministic tests under examples/gomoku/ that exercise valid/invalid moves,
-  occupied-cell rejection, turn switching, all four win directions, and reset
-- use only commands available in the repository/verification environment; prefer node-based
-  deterministic verification without adding new external dependencies
-
-Each package must have concrete verification commands. Do not create more than these three packages.
+Use concrete writable-file ownership and deterministic verification commands for every
+work package. Keep unrelated repository code unchanged.
 """.strip()
 
 
