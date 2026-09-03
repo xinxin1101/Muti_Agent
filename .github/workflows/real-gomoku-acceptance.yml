@@ -1,0 +1,103 @@
+name: Real Gomoku Acceptance
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - xin_01
+    paths:
+      - "scripts/real_gomoku_acceptance.py"
+      - ".github/workflows/real-gomoku-acceptance.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  real-gomoku-acceptance:
+    name: Real Gomoku Acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
+      DEVFLOW_DATABASE_URL: postgresql+psycopg://devflow:devflow@127.0.0.1:5432/devflow_acceptance
+      DEVFLOW_REDIS_URL: redis://127.0.0.1:6379/14
+      DEVFLOW_WORKSPACE_ROOT: .devflow/real-gomoku-acceptance
+      DEVFLOW_AGENT_RUNTIME_V3_ENABLED: "true"
+      DEVFLOW_DEVELOPER_RUNTIME_V3_ENABLED: "true"
+      DEVFLOW_REPAIR_RUNTIME_V3_ENABLED: "true"
+      DEVFLOW_RUNTIME_MUTATION_GATE_ENABLED: "true"
+      DEVFLOW_RUNTIME_IMPORT_PREFETCH_ENABLED: "true"
+      DEVFLOW_RUNTIME_REPO_MAP_ENABLED: "true"
+      DEVFLOW_RUNTIME_EVENT_CONDENSER_ENABLED: "true"
+      DEVFLOW_RUNTIME_STUCK_DETECTOR_ENABLED: "true"
+      DEVFLOW_OPENHANDS_PATCH_ENABLED: "true"
+      DEVFLOW_SILICONFLOW_MAX_RETRIES: "2"
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: devflow
+          POSTGRES_PASSWORD: devflow
+          POSTGRES_DB: devflow_acceptance
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U devflow -d devflow_acceptance"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Check out xin_01
+        uses: actions/checkout@v6
+
+      - name: Require real provider secret
+        shell: bash
+        run: |
+          if [ -z "${SILICONFLOW_API_KEY:-}" ]; then
+            echo "::error::Repository secret SILICONFLOW_API_KEY is not configured."
+            exit 2
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.lock
+
+      - name: Install locked backend environment
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.lock
+          python -m pip install --no-deps -e .
+
+      - name: Apply migrations
+        working-directory: backend
+        run: alembic upgrade head
+
+      - name: Build verification sandbox
+        run: docker build -f backend/docker/verification.Dockerfile -t devflow-verifier:py311 backend
+
+      - name: Run real gomoku Runtime V3 acceptance
+        run: python scripts/real_gomoku_acceptance.py --report real-gomoku-acceptance.json
+
+      - name: Upload acceptance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-gomoku-acceptance
+          path: real-gomoku-acceptance.json
+          if-no-files-found: ignore
