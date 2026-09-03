@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from app.core import settings as settings_module
+from app.api.readiness import OperationalReadinessChecker, ReadinessState
 from app.core.settings import Settings
 from app.persistence.schema import (
     EXPECTED_ALEMBIC_REVISION,
@@ -88,6 +89,28 @@ def test_blank_optional_provider_secrets_are_not_treated_as_configured() -> None
 
     assert settings.siliconflow_api_key is None
     assert settings.github_token is None
+
+
+def test_dashscope_readiness_uses_manually_pinned_models_without_catalog_call() -> None:
+    settings = Settings(
+        _env_file=None,
+        DASHSCOPE_API_KEY="test-secret",
+        siliconflow_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        planner_model="qwen3.7-flash",
+        developer_model="qwen3.7-flash",
+        reviewer_model="qwen3.7-flash",
+        repair_model="qwen3.7-flash",
+        failure_explanation_model="qwen3.7-flash",
+    )
+    checker = OperationalReadinessChecker(settings)
+
+    provider, models = asyncio.run(checker._provider_models())
+
+    assert provider.state is ReadinessState.READY
+    assert "does not expose GET /models" in provider.detail
+    assert models
+    assert all(item.state is ReadinessState.READY for item in models)
+    assert {item.model for item in models} == {"qwen3.7-flash"}
 
 
 def test_database_schema_preflight_accepts_expected_revision(

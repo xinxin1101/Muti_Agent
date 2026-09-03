@@ -15,7 +15,7 @@ from app.providers.errors import AgentProviderError, ProviderErrorCode, normaliz
 
 
 class SiliconFlowDriver:
-    """OpenAI-compatible SiliconFlow implementation of the AgentDriver contract."""
+    """OpenAI-compatible AgentDriver; historical class name kept for compatibility."""
 
     provider_name = "siliconflow"
 
@@ -35,6 +35,7 @@ class SiliconFlowDriver:
             raise ValueError("max_retries must be between 0 and 5")
 
         self.base_url = base_url.rstrip("/")
+        self.provider_name = "dashscope" if self.is_dashscope_compatible else "siliconflow"
         self.timeout_seconds = timeout_seconds
         self.max_retries = max_retries
         self.proxy_url = proxy_url.rstrip("/") if proxy_url else None

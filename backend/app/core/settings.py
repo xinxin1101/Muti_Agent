@@ -101,7 +101,8 @@ class Settings(BaseSettings):
             "SILICONFLOW_API_KEY",
         ),
     )
-    siliconflow_base_url: str = "https://api.siliconflow.cn/v1"
+    # Historical field name kept for compatibility; the default provider is now Qwen/DashScope.
+    siliconflow_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     siliconflow_timeout_seconds: float = Field(default=60.0, gt=0.0, le=600.0)
     siliconflow_max_retries: int = Field(default=2, ge=0, le=5)
     # Prefer an explicit model-provider proxy, while accepting the existing shared Clash proxy
@@ -134,13 +135,13 @@ class Settings(BaseSettings):
     secrets_encryption_key: SecretStr | None = None
     github_publication_timeout_seconds: float = Field(default=30.0, gt=0.0, le=30.0)
 
-    # /readyz validates configured model ids against the provider catalogue instead of assuming
-    # that a historical default remains available forever.
-    planner_model: str = "zai-org/GLM-5.2"
-    developer_model: str = "Pro/deepseek-ai/DeepSeek-V3.2"
-    reviewer_model: str = "zai-org/GLM-5.2"
-    repair_model: str = "Pro/deepseek-ai/DeepSeek-V3.2"
-    failure_explanation_model: str = "zai-org/GLM-5.2"
+    # Qwen/DashScope OpenAI-compatible mode does not expose GET /models. Model ids are pinned
+    # explicitly and real calls remain the authority for authentication/model availability.
+    planner_model: str = "qwen3.7-flash"
+    developer_model: str = "qwen3.7-flash"
+    reviewer_model: str = "qwen3.7-flash"
+    repair_model: str = "qwen3.7-flash"
+    failure_explanation_model: str = "qwen3.7-flash"
     planner_enable_thinking: bool = False
     developer_enable_thinking: bool = False
     reviewer_enable_thinking: bool = False

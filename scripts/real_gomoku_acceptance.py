@@ -14,7 +14,14 @@ from uuid import UUID, uuid4
 from app.agents import DeveloperAgent, MultiTaskPlannerAgent, RepairAgent, ReviewerAgent
 from app.context.token_estimator import TokenEstimator
 from app.core.settings import Settings
-from app.models.agent import AgentResponse, TokenUsage
+from app.models.agent import (
+    AgentMessage,
+    AgentRequest,
+    AgentResponse,
+    AgentRole,
+    MessageRole,
+    TokenUsage,
+)
 from app.models.checkpoint import CheckpointReason, CheckpointResumeStrategy
 from app.models.dispatch import WorkerExecutionStatus
 from app.models.run import TaskRunState
@@ -568,12 +575,12 @@ async def _checkpoint_resume(
 
 
 async def _main(report_path: Path) -> int:
-    if not os.environ.get("SILICONFLOW_API_KEY", "").strip():
-        raise RuntimeError(
-            "SILICONFLOW_API_KEY is required. Configure it as a repository Actions secret "
-            "or export it locally before running this acceptance."
-        )
     settings = Settings()
+    if settings.siliconflow_api_key is None:
+        raise RuntimeError(
+            "A Qwen/DashScope API key is required. Configure DASHSCOPE_API_KEY or the "
+            "legacy SILICONFLOW_API_KEY alias before running this acceptance."
+        )
     if settings.database_url is None:
         raise RuntimeError("DEVFLOW_DATABASE_URL is required")
 
@@ -588,16 +595,29 @@ async def _main(report_path: Path) -> int:
         },
     }
     try:
-        model_ids = await raw_driver.list_model_ids()
-        required = {
-            settings.planner_model,
-            settings.developer_model,
-            settings.repair_model,
-            settings.reviewer_model,
+        # Qwen/DashScope's OpenAI-compatible endpoint intentionally does not expose GET /models.
+        # Validate the credential, endpoint and pinned model with one tiny real completion instead.
+        probe = await raw_driver.complete(
+            AgentRequest(
+                role=AgentRole.PLANNER,
+                model=settings.planner_model,
+                messages=[
+                    AgentMessage(
+                        role=MessageRole.USER,
+                        content="Reply with exactly: OK",
+                    )
+                ],
+                temperature=0.0,
+                max_output_tokens=16,
+                enable_thinking=False,
+            )
+        )
+        report["provider_probe"] = {
+            "base_url": settings.siliconflow_base_url,
+            "requested_model": settings.planner_model,
+            "response_model": probe.model,
+            "total_tokens": probe.usage.total_tokens,
         }
-        missing = sorted(required - set(model_ids))
-        if missing:
-            raise RuntimeError(f"configured acceptance models are unavailable: {missing}")
 
         with tempfile.TemporaryDirectory(prefix="devflow-real-gomoku-") as temp:
             root = Path(temp)

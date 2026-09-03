@@ -62,6 +62,11 @@ def test_default_settings() -> None:
     assert settings.planner_token_budget_tokens == 7_200
     assert settings.planner_max_attempts == 2
     assert settings.siliconflow_api_key is None
+    assert settings.siliconflow_base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    assert settings.planner_model == "qwen3.7-flash"
+    assert settings.developer_model == "qwen3.7-flash"
+    assert settings.reviewer_model == "qwen3.7-flash"
+    assert settings.repair_model == "qwen3.7-flash"
     assert settings.verification_sandbox_image == "devflow-verifier:py311"
     assert settings.verification_sandbox_cpus == 1.0
     assert settings.verification_sandbox_memory_mb == 512

@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY || secrets.DASHSCOPE_API_KEY || secrets.GEMINI_API_KEY }}
+      DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY || secrets.SILICONFLOW_API_KEY }}
       DEVFLOW_DATABASE_URL: postgresql+psycopg://devflow:devflow@127.0.0.1:5432/devflow_acceptance
       DEVFLOW_REDIS_URL: redis://127.0.0.1:6379/14
       DEVFLOW_WORKSPACE_ROOT: .devflow/real-gomoku-acceptance
@@ -31,6 +31,12 @@ jobs:
       DEVFLOW_RUNTIME_EVENT_CONDENSER_ENABLED: "true"
       DEVFLOW_RUNTIME_STUCK_DETECTOR_ENABLED: "true"
       DEVFLOW_OPENHANDS_PATCH_ENABLED: "true"
+      DEVFLOW_SILICONFLOW_BASE_URL: https://dashscope.aliyuncs.com/compatible-mode/v1
+      DEVFLOW_PLANNER_MODEL: qwen3.7-flash
+      DEVFLOW_DEVELOPER_MODEL: qwen3.7-flash
+      DEVFLOW_REPAIR_MODEL: qwen3.7-flash
+      DEVFLOW_REVIEWER_MODEL: qwen3.7-flash
+      DEVFLOW_FAILURE_EXPLANATION_MODEL: qwen3.7-flash
       DEVFLOW_SILICONFLOW_MAX_RETRIES: "2"
 
     services:
@@ -65,8 +71,8 @@ jobs:
       - name: Require real provider secret
         shell: bash
         run: |
-          if [ -z "${SILICONFLOW_API_KEY:-}" ]; then
-            echo "::error::No provider secret is configured under SILICONFLOW_API_KEY, DASHSCOPE_API_KEY, or GEMINI_API_KEY."
+          if [ -z "${DASHSCOPE_API_KEY:-}" ]; then
+            echo "::error::No Qwen/DashScope provider secret is configured under DASHSCOPE_API_KEY or the legacy SILICONFLOW_API_KEY alias."
             exit 2
           fi
 

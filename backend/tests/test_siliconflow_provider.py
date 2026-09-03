@@ -136,6 +136,26 @@ def test_settings_accepts_shared_clash_proxy_for_siliconflow(
     assert settings.siliconflow_proxy_url == "http://127.0.0.1:7897"
 
 
+def test_dashscope_provider_skips_unsupported_model_catalog_discovery() -> None:
+    driver = SiliconFlowDriver(
+        client=FakeClient(FakeCompletions(response=None)),
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+    )
+
+    assert driver.is_dashscope_compatible is True
+    assert driver.supports_model_catalog is False
+
+
+def test_siliconflow_provider_keeps_model_catalog_discovery() -> None:
+    driver = SiliconFlowDriver(
+        client=FakeClient(FakeCompletions(response=None)),
+        base_url="https://api.siliconflow.cn/v1",
+    )
+
+    assert driver.is_dashscope_compatible is False
+    assert driver.supports_model_catalog is True
+
+
 def test_driver_implements_agent_driver_protocol() -> None:
     driver = SiliconFlowDriver(client=FakeClient(FakeCompletions(response=None)))
 
@@ -505,4 +525,3 @@ def test_retry_after_header_is_bounded() -> None:
     error.response = SimpleNamespace(headers={"Retry-After": "12"})
 
     assert SiliconFlowDriver._retry_delay_seconds(error, retry_index=0) == 5.0
-
