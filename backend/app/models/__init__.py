@@ -7,7 +7,12 @@ from app.models.agent import (
     MessageRole,
     TokenUsage,
 )
-from app.models.checkpoint import CheckpointReason, TaskCheckpoint
+from app.models.checkpoint import (
+    CheckpointReason,
+    CheckpointResumeStrategy,
+    TaskCheckpoint,
+    TaskResumeContext,
+)
 from app.models.conflict import (
     MergeConflictEvidence,
     MergeConflictFile,
@@ -187,6 +192,7 @@ __all__ = [
     "CheckResult",
     "CheckType",
     "CheckpointReason",
+    "CheckpointResumeStrategy",
     "ContextBudget",
     "ContextContinuationState",
     "ContextFile",
@@ -265,6 +271,7 @@ __all__ = [
     "SingleTaskRunResult",
     "TaskContract",
     "TaskCheckpoint",
+    "TaskResumeContext",
     "TaskContinuationSummary",
     "TaskDAG",
     "TaskDispatchEnvelope",
