@@ -110,7 +110,9 @@ jobs:
         run: alembic upgrade head
 
       - name: Build verification sandbox
-        run: docker build -f backend/docker/verification.Dockerfile -t devflow-verifier:py311 backend
+        run: |
+          docker build -f backend/docker/verification.Dockerfile -t devflow-verifier:py311 backend
+          docker build -f backend/docker/verification-node.Dockerfile -t devflow-verifier:node24 backend
 
       - name: Run full real-model token diagnostic
         run: python scripts/real_token_budget_diagnostic.py
