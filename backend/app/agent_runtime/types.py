@@ -48,6 +48,7 @@ class AgentRuntimePolicy:
     tool_recovery_enabled: bool = False
     tool_recovery_max_output_tokens: int | None = None
     repeated_tool_failure_limit: int = 2
+    event_condenser_enabled: bool = True
     stuck_detector_enabled: bool = False
     stuck_action_observation_threshold: int = 4
     stuck_action_error_threshold: int = 3

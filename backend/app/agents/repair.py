@@ -70,6 +70,7 @@ class RepairAgent:
         runtime_v3_enabled: bool = False,
         runtime_mutation_gate_enabled: bool = True,
         runtime_import_prefetch_enabled: bool = True,
+        runtime_event_condenser_enabled: bool = True,
         runtime_stuck_detector_enabled: bool = False,
         openhands_patch_enabled: bool = True,
         clock: Callable[[], float] = monotonic,
@@ -112,6 +113,7 @@ class RepairAgent:
         self._runtime_v3_enabled = runtime_v3_enabled
         self._runtime_mutation_gate_enabled = runtime_mutation_gate_enabled
         self._runtime_import_prefetch_enabled = runtime_import_prefetch_enabled
+        self._runtime_event_condenser_enabled = runtime_event_condenser_enabled
         self._runtime_stuck_detector_enabled = runtime_stuck_detector_enabled
         self._openhands_patch_enabled = openhands_patch_enabled
         self._clock = clock
@@ -542,6 +544,7 @@ class RepairAgent:
             # additional observation turn, then require a mutation instead of re-exploration.
             max_observation_turns_without_mutation=1 if prefetch_performed else 2,
             max_mutation_gate_violations=1,
+            event_condenser_enabled=self._runtime_event_condenser_enabled,
             stuck_detector_enabled=self._runtime_stuck_detector_enabled,
         )
         runtime_result = await AgentLoop(

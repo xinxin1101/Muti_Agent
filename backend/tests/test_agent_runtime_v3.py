@@ -407,6 +407,7 @@ def test_runtime_v3_forces_mutation_after_two_observation_turns(tmp_path: Path) 
     gate_prompt = "\n".join(message.content for message in driver.requests[2].messages)
     assert "no workspace mutation exists yet" in gate_prompt
     assert "Use apply_patch or write_file" in gate_prompt
+    assert "DevFlow condensed working state" in gate_prompt
     assert target.read_text(encoding="utf-8") == "VALUE = 2\n"
 
 

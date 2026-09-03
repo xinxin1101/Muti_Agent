@@ -58,6 +58,7 @@ class DeveloperAgent:
         runtime_v3_enabled: bool = False,
         runtime_mutation_gate_enabled: bool = True,
         runtime_repo_map_enabled: bool = False,
+        runtime_event_condenser_enabled: bool = True,
         runtime_stuck_detector_enabled: bool = False,
         openhands_patch_enabled: bool = True,
         clock: Callable[[], float] = monotonic,
@@ -101,6 +102,7 @@ class DeveloperAgent:
         self._runtime_v3_enabled = runtime_v3_enabled
         self._runtime_mutation_gate_enabled = runtime_mutation_gate_enabled
         self._runtime_repo_map_enabled = runtime_repo_map_enabled
+        self._runtime_event_condenser_enabled = runtime_event_condenser_enabled
         self._runtime_stuck_detector_enabled = runtime_stuck_detector_enabled
         self._openhands_patch_enabled = openhands_patch_enabled
         self._clock = clock
@@ -566,6 +568,7 @@ class DeveloperAgent:
                 tool_recovery_enabled=True,
                 tool_recovery_max_output_tokens=self._invalid_tool_retry_max_output_tokens,
                 repeated_tool_failure_limit=2,
+                event_condenser_enabled=self._runtime_event_condenser_enabled,
                 stuck_detector_enabled=self._runtime_stuck_detector_enabled,
                 initial_liveness_credit=initial_liveness_credit,
             ),

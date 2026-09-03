@@ -71,6 +71,7 @@ class AgentLoop:
             max_retained_tool_groups=policy.max_retained_tool_groups,
             max_single_tool_result_tokens=policy.max_single_tool_result_tokens,
             max_tool_results_per_turn_tokens=policy.max_tool_results_per_turn_tokens,
+            event_native_enabled=policy.event_condenser_enabled,
         )
         started_at = self._clock()
         start_patch_hash = workspace.change_snapshot().patch_hash
@@ -415,11 +416,25 @@ class AgentLoop:
                         result=result,
                     )
 
+            condensation_count_before = condenser.condensation_count
             compacted_code_mutation = condenser.add_group(
                 assistant=assistant_message,
                 calls=response.tool_calls,
                 results=results,
             )
+            if condenser.condensation_count > condensation_count_before:
+                events.append(
+                    AgentRuntimeEvent(
+                        sequence=len(events),
+                        kind=AgentRuntimeEventKind.CONDENSATION,
+                        iteration=iteration,
+                        progress_kind=ToolProgressKind.NONE,
+                        detail=(
+                            f"condensations={condenser.condensation_count};"
+                            f"compacted_groups={condenser.state().compacted_tool_groups}"
+                        ),
+                    )
+                )
             patch_changed_now = (
                 workspace.change_snapshot().patch_hash != start_patch_hash
             )

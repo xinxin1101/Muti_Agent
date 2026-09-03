@@ -66,6 +66,8 @@ class Settings(BaseSettings):
     runtime_mutation_gate_enabled: bool = True
     runtime_import_prefetch_enabled: bool = True
     runtime_repo_map_enabled: bool = True
+    # OpenHands-style Event/View/Condensation backend for Runtime V3 context management.
+    runtime_event_condenser_enabled: bool = True
     # OpenHands-derived stuck detection supplements, but does not replace, DevFlow's bounded
     # Mutation Gate / repeated-tool-failure / token-budget authority.
     runtime_stuck_detector_enabled: bool = True

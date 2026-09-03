@@ -13,6 +13,8 @@ class AgentView(BaseModel):
 
     messages: tuple[AgentMessage, ...] = Field(min_length=1)
     compacted_tool_groups: int = Field(default=0, ge=0)
+    event_count: int = Field(default=0, ge=0)
+    condensation_count: int = Field(default=0, ge=0)
 
 
 class AgentViewBuilder:
@@ -26,4 +28,6 @@ class AgentViewBuilder:
         return AgentView(
             messages=state.messages,
             compacted_tool_groups=state.compacted_tool_groups,
+            event_count=state.event_count,
+            condensation_count=state.condensation_count,
         )

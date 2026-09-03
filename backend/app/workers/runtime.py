@@ -110,6 +110,7 @@ def build_single_task_runner(
         ),
         runtime_mutation_gate_enabled=settings.runtime_mutation_gate_enabled,
         runtime_repo_map_enabled=settings.runtime_repo_map_enabled,
+        runtime_event_condenser_enabled=settings.runtime_event_condenser_enabled,
         runtime_stuck_detector_enabled=settings.runtime_stuck_detector_enabled,
         openhands_patch_enabled=settings.openhands_patch_enabled,
     )
@@ -138,6 +139,7 @@ def build_single_task_runner(
         ),
         runtime_mutation_gate_enabled=settings.runtime_mutation_gate_enabled,
         runtime_import_prefetch_enabled=settings.runtime_import_prefetch_enabled,
+        runtime_event_condenser_enabled=settings.runtime_event_condenser_enabled,
         runtime_stuck_detector_enabled=settings.runtime_stuck_detector_enabled,
         openhands_patch_enabled=settings.openhands_patch_enabled,
     )
@@ -353,6 +355,7 @@ async def execute_task_from_settings(
                 max_retained_tool_groups=settings.developer_max_retained_tool_groups,
                 max_single_tool_result_tokens=settings.developer_max_single_tool_result_tokens,
                 max_tool_results_per_turn_tokens=settings.developer_max_tool_results_per_turn_tokens,
+                runtime_event_condenser_enabled=settings.runtime_event_condenser_enabled,
                 openhands_patch_enabled=settings.openhands_patch_enabled,
             ),
             verifier=build_verifier(settings),

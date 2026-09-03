@@ -13,3 +13,8 @@ limits, and mutation authority remain local to DevFlow.
 
 The upstream file itself notes that its implementation is adapted from the OpenAI Cookbook
 `apply_patch.py` reference. That provenance is intentionally preserved in the vendored source.
+
+## OH-3 Event / View / Condenser
+
+See `condenser/UPSTREAM.md`. The exact OpenHands condenser/view/event sources are retained there;
+DevFlow runs an adapter that keeps provider budgets and verification authority local.
