@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
+      SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY || secrets.DASHSCOPE_API_KEY || secrets.GEMINI_API_KEY }}
       DEVFLOW_DATABASE_URL: postgresql+psycopg://devflow:devflow@127.0.0.1:5432/devflow_acceptance
       DEVFLOW_REDIS_URL: redis://127.0.0.1:6379/14
       DEVFLOW_WORKSPACE_ROOT: .devflow/real-gomoku-acceptance
@@ -66,7 +66,7 @@ jobs:
         shell: bash
         run: |
           if [ -z "${SILICONFLOW_API_KEY:-}" ]; then
-            echo "::error::Repository secret SILICONFLOW_API_KEY is not configured."
+            echo "::error::No provider secret is configured under SILICONFLOW_API_KEY, DASHSCOPE_API_KEY, or GEMINI_API_KEY."
             exit 2
           fi
 
