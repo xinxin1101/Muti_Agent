@@ -892,6 +892,12 @@ class AutonomousProductRuntimeService(ProductRuntimeServiceWithGitHubPublication
             for item in session.work_packages
             if item.state is DevelopmentWorkPackageState.CHECKPOINTED
         )
+        checkpointed_development_reused = {
+            item.task_id
+            for item in session.work_packages
+            if item.state is DevelopmentWorkPackageState.CHECKPOINTED
+            and self._checkpoint_reuses_development(item)
+        }
         remaining = (
             ()
             if session.dag is None
@@ -957,6 +963,8 @@ class AutonomousProductRuntimeService(ProductRuntimeServiceWithGitHubPublication
             next_action=(
                 "重新规划或明确基于旧基线继续"
                 if baseline_state is DevelopmentSessionBaselineState.CHANGED
+                else "从检查点继续；优先验证已保存代码"
+                if checkpointed_development_reused
                 else "继续未完成工作包"
             ),
             budget=ProductDevelopmentSessionRecoveryBudget(
@@ -964,11 +972,25 @@ class AutonomousProductRuntimeService(ProductRuntimeServiceWithGitHubPublication
                 development_remaining_tokens=development_remaining,
                 repair_remaining_tokens=repair_remaining,
                 estimated_new_development_tokens=sum(
-                    allocations.get(item, 0) for item in remaining
+                    allocations.get(item, 0)
+                    for item in remaining
+                    if item not in checkpointed_development_reused
                 ),
-                estimated_tokens_saved=sum(allocations.get(item, 0) for item in completed),
+                estimated_tokens_saved=sum(
+                    allocations.get(item, 0)
+                    for item in (*completed, *sorted(checkpointed_development_reused))
+                ),
             ),
         )
+
+    @staticmethod
+    def _checkpoint_reuses_development(item) -> bool:
+        context_state = item.context_state or {}
+        context_verification = context_state.get("verification_summary")
+        if isinstance(context_verification, str) and context_verification.strip():
+            return True
+        summary = item.verification_summary.strip()
+        return bool(summary) and "尚未执行" not in summary
 
     def _require_development_session_store(self) -> PostgresDevelopmentSessionStore:
         if self._development_session_store is None:
