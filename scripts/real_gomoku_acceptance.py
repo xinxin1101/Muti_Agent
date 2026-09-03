@@ -37,6 +37,69 @@ from app.workers.runtime import build_verifier
 from app.workspace import LocalGitWorkspace
 
 
+class AcceptanceFailure(AssertionError):
+    def __init__(self, message: str, *, diagnostics: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.diagnostics = diagnostics
+
+
+def _run_diagnostics(result, budget) -> dict[str, Any]:  # type: ignore[no-untyped-def]
+    return {
+        "status": result.status.value,
+        "run_budget_total": budget.total_budget_tokens,
+        "run_budget_used": budget.used_total_tokens,
+        "developer": (
+            None
+            if result.developer is None
+            else {
+                "stop_reason": result.developer.stop_reason.value,
+                "iterations": result.developer.iterations,
+                "tool_calls": result.developer.tool_calls,
+                "tokens": result.developer.usage.total_tokens,
+                "changed_files": result.developer.changed_files,
+            }
+        ),
+        "agent_usage": [
+            {
+                "role": item.role.value,
+                "calls": item.calls,
+                "tokens": item.usage.total_tokens,
+                "prompt_tokens": item.usage.prompt_tokens,
+                "completion_tokens": item.usage.completion_tokens,
+            }
+            for item in result.agent_usage
+        ],
+        "verification_attempts": len(result.verifications),
+        "verification_passed": [item.passed for item in result.verifications],
+        "review_attempts": len(result.reviews),
+        "review_decisions": [item.decision.value for item in result.reviews],
+        "repair_attempts": result.repair_attempts,
+        "repairs": [
+            {
+                "attempt": item.attempt,
+                "stop_reason": item.stop_reason.value,
+                "iterations": item.iterations,
+                "tool_calls": item.tool_calls,
+                "tokens": item.usage.total_tokens,
+                "progress": None if item.progress is None else item.progress.status.value,
+            }
+            for item in result.repairs
+        ],
+        "events": [
+            {"state": event.state.value, "detail": event.detail[:300]}
+            for event in result.events
+        ],
+        "failures": [
+            {
+                "type": failure.failure_type.value,
+                "source": failure.source.value,
+                "message": failure.message[:500],
+            }
+            for failure in result.failures
+        ],
+    }
+
+
 TARGET = "src/gomoku_engine.py"
 VERIFY = (
     'python3 -c "from src.gomoku_engine import GameLogic; '
@@ -185,6 +248,7 @@ def _developer(
         max_iterations=settings.developer_max_iterations,
         max_duration_seconds=settings.developer_max_duration_seconds,
         max_model_turn_seconds=settings.developer_max_model_turn_seconds,
+        temperature=0.0,
         max_output_tokens=settings.developer_max_output_tokens,
         invalid_tool_retry_max_output_tokens=settings.developer_invalid_tool_retry_max_output_tokens,
         enable_thinking=False,
@@ -209,6 +273,7 @@ def _repair(settings: Settings, *, driver) -> RepairAgent:
         max_iterations=settings.repair_max_iterations,
         max_duration_seconds=settings.repair_max_duration_seconds,
         max_model_turn_seconds=settings.repair_max_model_turn_seconds,
+        temperature=0.0,
         max_output_tokens=settings.repair_max_output_tokens,
         enable_thinking=False,
         context_compaction_enabled=True,
@@ -229,6 +294,7 @@ def _reviewer(settings: Settings, *, driver) -> ReviewerAgent:
     return ReviewerAgent(
         driver=driver,
         model=settings.reviewer_model,
+        temperature=0.0,
         max_output_tokens=settings.reviewer_max_output_tokens,
         enable_thinking=False,
         role_context_projection_enabled=True,
@@ -388,12 +454,10 @@ async def _requirement_e2e(
         await store.dispose()
 
     if result.status is not TaskRunState.SUCCEEDED:
-        raise AssertionError(
-            "real requirement E2E failed: "
-            + json.dumps(
-                [failure.model_dump(mode="json") for failure in result.failures],
-                ensure_ascii=False,
-            )
+        diagnostics = _run_diagnostics(result, budget)
+        raise AcceptanceFailure(
+            "real requirement E2E failed",
+            diagnostics=diagnostics,
         )
     module_text = (workspace.root / TARGET).read_text(encoding="utf-8")
     if "class GameLogic" not in module_text or "def is_valid_move" not in module_text:
@@ -726,6 +790,9 @@ async def _main(report_path: Path) -> int:
             "type": type(exc).__name__,
             "message": str(exc)[:2_000],
         }
+        diagnostics = getattr(exc, "diagnostics", None)
+        if isinstance(diagnostics, dict):
+            report["failure"]["diagnostics"] = diagnostics
         raise
     finally:
         await raw_driver.dispose()
