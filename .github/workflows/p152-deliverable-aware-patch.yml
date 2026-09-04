@@ -19,27 +19,21 @@ jobs:
           ref: agent/p1.5.2-deliverable-aware-convergence
           fetch-depth: 0
 
-      - name: Apply P1.5.2 patch and audit fixes
+      - name: Clean and audit P1.5.2 runtime
         run: |
-          python -m py_compile scripts/p152_patch.py scripts/p152_fix_audit.py
-          python scripts/p152_patch.py
-          python scripts/p152_fix_audit.py
+          python -m py_compile scripts/p152_cleanup_audit.py
+          python scripts/p152_cleanup_audit.py
 
-      - name: Commit patched runtime
+      - name: Commit cleaned runtime
         run: |
           git config user.name "DevFlow CI Patch"
           git config user.email "devflow-ci@example.com"
           git add backend/app/agent_runtime/loop.py \
-                  backend/app/agent_runtime/types.py \
-                  backend/app/agents/developer.py \
-                  backend/app/models/trace.py \
-                  backend/app/trace/collector.py \
-                  backend/app/trace/projector.py \
                   backend/tests/test_developer_mutation_convergence.py
           git diff --cached --check
           if git diff --cached --quiet; then
-            echo "No functional audit fixes needed."
+            echo "No cleanup changes needed."
             exit 0
           fi
-          git commit -m "fix(runtime): complete deliverable convergence observability"
+          git commit -m "fix(runtime): clean deliverable convergence trace state"
           git push origin HEAD:agent/p1.5.2-deliverable-aware-convergence
