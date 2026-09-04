@@ -7,6 +7,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from app import agents, models
+from app.models.trace import TraceSpanKind
 from app.providers.base import AgentDriver
 from app.trace.collector import TaskTraceCollector
 from app.workspace import LocalGitWorkspace
@@ -858,7 +859,7 @@ def test_deliverable_completion_trace_records_structural_progress(tmp_path: Path
     )
     trace = TaskTraceCollector(run_id=uuid4(), task_id="developer-convergence", dispatch_id=uuid4(), generation=1)
     result = asyncio.run(_developer(driver).run(_task(writable_files=["src/index.html", "src/gomoku_ui.js"]), workspace=LocalGitWorkspace(root), trace=trace))
-    turns = {span.iteration: span for span in trace.batch().spans if span.agent_role is models.AgentRole.DEVELOPER and span.kind is models.TraceSpanKind.AGENT_TURN}
+    turns = {span.iteration: span for span in trace.batch().spans if span.agent_role is models.AgentRole.DEVELOPER and span.kind is TraceSpanKind.AGENT_TURN}
     assert result.stop_reason is models.DeveloperStopReason.MODEL_STOP
     assert turns[2].candidate_readiness_known is True
     assert turns[2].candidate_ready is False

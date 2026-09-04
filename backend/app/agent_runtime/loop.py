@@ -883,6 +883,21 @@ class AgentLoop:
                 )
                 convergence_nudge_triggered = True
 
+            if (
+                policy.deliverable_convergence_enabled
+                and deliverable_completion_mode
+                and candidate_readiness_known
+                and missing_required_paths
+                and not turn_made_progress
+            ):
+                runtime_instruction = self._deliverable_completion_prompt(
+                    strict=deliverable_convergence_violations > 0,
+                    completed_paths=completed_required_paths,
+                    missing_paths=missing_required_paths,
+                    repeated_files=deliverable_focus_files,
+                )
+                convergence_nudge_triggered = True
+
             if tool_recovery_instruction is not None:
                 if not turn_made_progress:
                     runtime_instruction = tool_recovery_instruction
@@ -899,6 +914,14 @@ class AgentLoop:
                     consecutive_mutation_turns=consecutive_mutation_turns,
                     same_file_mutation_streak=same_file_mutation_streak,
                     convergence_nudge_triggered=convergence_nudge_triggered,
+                    candidate_readiness_known=candidate_readiness_known,
+                    candidate_ready=(candidate_ready if candidate_readiness_known else None),
+                    missing_required_deliverables=missing_required_paths,
+                    deliverable_progress=deliverable_progress,
+                    deliverable_completion_mode=deliverable_completion_mode,
+                    deliverable_convergence_violations=(
+                        deliverable_convergence_violations
+                    ),
                 )
 
             stuck_decision = stuck_detector.inspect()
@@ -1075,6 +1098,41 @@ class AgentLoop:
             "Do not continue rewriting without a concrete unmet acceptance criterion. Inspect "
             "only the specific remaining uncertainty if needed. If no concrete requirement "
             "remains, stop tool use and hand the candidate to deterministic verification."
+        )
+
+    @staticmethod
+    def _format_paths(paths: tuple[str, ...]) -> str:
+        bounded = tuple(path[:256] for path in paths[:8] if path)
+        return "[" + ", ".join(bounded) + "]"
+
+    @classmethod
+    def _deliverable_completion_prompt(
+        cls,
+        *,
+        strict: bool,
+        completed_paths: tuple[str, ...],
+        missing_paths: tuple[str, ...],
+        repeated_files: tuple[str, ...],
+    ) -> str:
+        prefix = (
+            "DELIVERABLE COMPLETION MODE — FINAL BOUNDED CHANCE. "
+            if strict
+            else "DELIVERABLE COMPLETION MODE. "
+        )
+        return (
+            prefix
+            + "The exact structural candidate is incomplete. Completed required paths: "
+            + cls._format_paths(completed_paths)
+            + ". Missing required paths: "
+            + cls._format_paths(missing_paths)
+            + ". Recently repeated completed paths: "
+            + cls._format_paths(repeated_files)
+            + ". The next successful repository mutation should make structural delivery "
+            "progress by completing one missing required path. You may make one bounded "
+            "correction to an already-completed path only when a concrete acceptance criterion "
+            "requires it; do not repeat that correction across turns. Do not spend another turn "
+            "broadly rereading or polishing completed files. If a missing deliverable cannot be "
+            "created safely within the TaskContract, return exactly 'BLOCKED: <reason>'."
         )
 
     @staticmethod
