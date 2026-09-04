@@ -688,6 +688,14 @@ class AgentLoop:
                         consecutive_mutation_turns=consecutive_mutation_turns,
                         same_file_mutation_streak=same_file_mutation_streak,
                         convergence_nudge_triggered=convergence_nudge_triggered,
+                        candidate_readiness_known=candidate_readiness_known,
+                        candidate_ready=(candidate_ready if candidate_readiness_known else None),
+                        missing_required_deliverables=missing_required_paths,
+                        deliverable_progress=deliverable_progress,
+                        deliverable_completion_mode=deliverable_completion_mode,
+                        deliverable_convergence_violations=(
+                            deliverable_convergence_violations
+                        ),
                     )
                 await self._record_tool_cost_outcome(
                     policy=policy,
@@ -756,6 +764,14 @@ class AgentLoop:
                             consecutive_mutation_turns=consecutive_mutation_turns,
                             same_file_mutation_streak=same_file_mutation_streak,
                             convergence_nudge_triggered=convergence_nudge_triggered,
+                            candidate_readiness_known=candidate_readiness_known,
+                            candidate_ready=(candidate_ready if candidate_readiness_known else None),
+                            missing_required_deliverables=missing_required_paths,
+                            deliverable_progress=deliverable_progress,
+                            deliverable_completion_mode=deliverable_completion_mode,
+                            deliverable_convergence_violations=(
+                                deliverable_convergence_violations
+                            ),
                         )
                     await self._record_tool_cost_outcome(
                         policy=policy,
@@ -834,6 +850,14 @@ class AgentLoop:
                                     consecutive_mutation_turns=consecutive_mutation_turns,
                                     same_file_mutation_streak=same_file_mutation_streak,
                                     convergence_nudge_triggered=(convergence_nudge_triggered),
+                                    candidate_readiness_known=candidate_readiness_known,
+                                    candidate_ready=(candidate_ready if candidate_readiness_known else None),
+                                    missing_required_deliverables=missing_required_paths,
+                                    deliverable_progress=deliverable_progress,
+                                    deliverable_completion_mode=deliverable_completion_mode,
+                                    deliverable_convergence_violations=(
+                                        deliverable_convergence_violations
+                                    ),
                                 )
                             await self._record_tool_cost_outcome(
                                 policy=policy,
@@ -867,21 +891,6 @@ class AgentLoop:
                                 ),
                             )
                         )
-
-            if (
-                policy.deliverable_convergence_enabled
-                and deliverable_completion_mode
-                and candidate_readiness_known
-                and missing_required_paths
-                and not turn_made_progress
-            ):
-                runtime_instruction = self._deliverable_completion_prompt(
-                    strict=deliverable_convergence_violations > 0,
-                    completed_paths=completed_required_paths,
-                    missing_paths=missing_required_paths,
-                    repeated_files=deliverable_focus_files,
-                )
-                convergence_nudge_triggered = True
 
             if (
                 policy.deliverable_convergence_enabled
