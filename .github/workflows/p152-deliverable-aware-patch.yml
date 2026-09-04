@@ -37,3 +37,5 @@ jobs:
           fi
           git commit -m "fix(runtime): clean deliverable convergence trace state"
           git push origin HEAD:agent/p1.5.2-deliverable-aware-convergence
+
+# Structural audit rerun after AST-based trace completion.
