@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - xin_01
+      - agent/mutation-convergence-ab
     paths:
       - "scripts/real_token_budget_diagnostic.py"
       - ".github/workflows/real-token-budget-diagnostic.yml"
