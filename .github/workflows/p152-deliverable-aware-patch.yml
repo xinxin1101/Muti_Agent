@@ -24,10 +24,12 @@ jobs:
           python -m py_compile \
             scripts/p152_cleanup_audit.py \
             scripts/p152_projector_cleanup.py \
-            scripts/p152_format.py
+            scripts/p152_format.py \
+            scripts/p152_format_remaining.py
           python scripts/p152_cleanup_audit.py
           python scripts/p152_projector_cleanup.py
           python scripts/p152_format.py
+          python scripts/p152_format_remaining.py
           python -m compileall -q backend/app backend/tests/test_developer_mutation_convergence.py
 
       - name: Commit formatted runtime
@@ -42,5 +44,5 @@ jobs:
             echo "No formatting changes needed."
             exit 0
           fi
-          git commit -m "style(runtime): format deliverable convergence tests"
+          git commit -m "style(runtime): finish deliverable convergence formatting"
           git push origin HEAD:agent/p1.5.2-deliverable-aware-convergence
