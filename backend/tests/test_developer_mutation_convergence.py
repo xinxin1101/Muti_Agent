@@ -141,13 +141,7 @@ def test_progress_credit_is_scoped_to_the_previous_real_mutation_turn(
                     )
                 ]
             ),
-            _response(
-                content=(
-                    "已修改文件: src/gomoku_logic.py\n"
-                    "已执行验证: 无\n"
-                    "遗留事项: 无"
-                )
-            ),
+            _response(content=("已修改文件: src/gomoku_logic.py\n已执行验证: 无\n遗留事项: 无")),
         ]
     )
 
@@ -164,13 +158,11 @@ def test_progress_credit_is_scoped_to_the_previous_real_mutation_turn(
         False,
         False,
         True,
-        False,
     ]
     assert [request.liveness_credit for request in driver.requests] == [
         models.LivenessCredit.INITIAL_STARTUP,
         models.LivenessCredit.NORMAL,
         models.LivenessCredit.VERIFIED_PROGRESS,
-        models.LivenessCredit.NORMAL,
     ]
 
 
@@ -192,13 +184,7 @@ def test_identical_write_file_is_successful_tool_but_not_real_progress(
         [
             _response(tool_calls=[write]),
             _response(tool_calls=[same_write]),
-            _response(
-                content=(
-                    "已修改文件: src/gomoku_logic.py\n"
-                    "已执行验证: 无\n"
-                    "遗留事项: 无"
-                )
-            ),
+            _response(content=("已修改文件: src/gomoku_logic.py\n已执行验证: 无\n遗留事项: 无")),
         ]
     )
 
@@ -249,13 +235,7 @@ def test_same_file_second_mutation_turn_emits_repeated_convergence_nudge(
                     )
                 ]
             ),
-            _response(
-                content=(
-                    "已修改文件: src/gomoku_logic.py\n"
-                    "已执行验证: 无\n"
-                    "遗留事项: 无"
-                )
-            ),
+            _response(content=("已修改文件: src/gomoku_logic.py\n已执行验证: 无\n遗留事项: 无")),
         ]
     )
 
@@ -288,13 +268,7 @@ def test_mutation_then_model_stop_hands_candidate_to_verification(
                     )
                 ]
             ),
-            _response(
-                content=(
-                    "已修改文件: src/gomoku_logic.py\n"
-                    "已执行验证: 无\n"
-                    "遗留事项: 无"
-                )
-            ),
+            _response(content=("已修改文件: src/gomoku_logic.py\n已执行验证: 无\n遗留事项: 无")),
         ]
     )
 
@@ -345,11 +319,7 @@ def test_complex_task_can_continue_across_multiple_real_mutation_turns(
                 ]
             ),
             _response(
-                content=(
-                    "已修改文件: src/a.py, src/b.py, src/c.py\n"
-                    "已执行验证: 无\n"
-                    "遗留事项: 无"
-                )
+                content=("已修改文件: src/a.py, src/b.py, src/c.py\n已执行验证: 无\n遗留事项: 无")
             ),
         ]
     )
@@ -386,8 +356,7 @@ def test_candidate_handoff_preempts_repeated_post_mutation_observations(
         for index in range(4)
     ]
     driver = _RecordingDriver(
-        [_response(tool_calls=[write])]
-        + [_response(tool_calls=[search]) for search in searches]
+        [_response(tool_calls=[write])] + [_response(tool_calls=[search]) for search in searches]
     )
 
     result = asyncio.run(
@@ -399,8 +368,8 @@ def test_candidate_handoff_preempts_repeated_post_mutation_observations(
 
     assert result.stop_reason is models.DeveloperStopReason.MODEL_STOP
     assert result.changed_files == ["src/gomoku_logic.py"]
-    assert len(driver.requests) == 3
-    assert driver.progress_outcomes == [True, False, False]
+    assert len(driver.requests) == 2
+    assert driver.progress_outcomes == [True, False]
     assert "deterministic verification" in result.final_message
 
 
@@ -540,9 +509,175 @@ def test_candidate_handoff_terminal_turn_records_runtime_progress_trace(
     terminal_turn = next(
         span
         for span in trace.batch().spans
-        if span.agent_role is models.AgentRole.DEVELOPER and span.iteration == 3
+        if span.agent_role is models.AgentRole.DEVELOPER and span.iteration == 2
     )
     assert result.stop_reason is models.DeveloperStopReason.MODEL_STOP
     assert terminal_turn.has_workspace_patch is True
     assert terminal_turn.turn_made_progress is False
     assert terminal_turn.changed_files_this_turn == ()
+
+
+def test_structurally_ready_exact_candidate_hands_off_after_one_observation(
+    tmp_path: Path,
+) -> None:
+    root = _repository(tmp_path)
+    driver = _RecordingDriver(
+        [
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-ready",
+                        "write_file",
+                        {"path": "src/gomoku_logic.py", "content": "VALUE = 2\n"},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "read-ready",
+                        "read_range",
+                        {
+                            "path": "src/gomoku_logic.py",
+                            "start_line": 1,
+                            "end_line": 5,
+                        },
+                    )
+                ]
+            ),
+            _response(content="must not be requested"),
+        ]
+    )
+
+    result = asyncio.run(
+        _developer(driver).run(
+            _task(),
+            workspace=LocalGitWorkspace(root),
+        )
+    )
+
+    assert result.stop_reason is models.DeveloperStopReason.MODEL_STOP
+    assert len(driver.requests) == 2
+    assert driver.progress_outcomes == [True, False]
+    assert result.changed_files == ["src/gomoku_logic.py"]
+    assert "Structurally complete candidate" in result.final_message
+
+
+def test_incomplete_exact_candidate_does_not_handoff_until_all_deliverables_change(
+    tmp_path: Path,
+) -> None:
+    root = _repository(tmp_path)
+    driver = _RecordingDriver(
+        [
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-index",
+                        "write_file",
+                        {"path": "src/index.html", "content": "<main>board</main>\n"},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "read-index-1",
+                        "read_range",
+                        {"path": "src/index.html", "start_line": 1, "end_line": 5},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "read-index-2",
+                        "read_range",
+                        {"path": "src/index.html", "start_line": 1, "end_line": 5},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-ui",
+                        "write_file",
+                        {"path": "src/gomoku_ui.js", "content": "const SIZE = 15;\n"},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "read-ui",
+                        "read_range",
+                        {"path": "src/gomoku_ui.js", "start_line": 1, "end_line": 5},
+                    )
+                ]
+            ),
+            _response(content="must not be requested"),
+        ]
+    )
+
+    result = asyncio.run(
+        _developer(driver).run(
+            _task(writable_files=["src/index.html", "src/gomoku_ui.js"]),
+            workspace=LocalGitWorkspace(root),
+        )
+    )
+
+    assert result.stop_reason is models.DeveloperStopReason.MODEL_STOP
+    assert len(driver.requests) == 5
+    assert driver.progress_outcomes == [True, False, False, True, False]
+    assert result.changed_files == ["src/gomoku_ui.js", "src/index.html"]
+    assert "Structurally complete candidate" in result.final_message
+
+
+def test_glob_write_scope_preserves_p14_two_observation_handoff(
+    tmp_path: Path,
+) -> None:
+    root = _repository(tmp_path)
+    driver = _RecordingDriver(
+        [
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-helper",
+                        "write_file",
+                        {"path": "src/helper.py", "content": "HELPER = True\n"},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "read-helper-1",
+                        "read_range",
+                        {"path": "src/helper.py", "start_line": 1, "end_line": 5},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "read-helper-2",
+                        "read_range",
+                        {"path": "src/helper.py", "start_line": 1, "end_line": 5},
+                    )
+                ]
+            ),
+            _response(content="must not be requested"),
+        ]
+    )
+
+    result = asyncio.run(
+        _developer(driver).run(
+            _task(writable_files=["src/**"]),
+            workspace=LocalGitWorkspace(root),
+        )
+    )
+
+    assert result.stop_reason is models.DeveloperStopReason.MODEL_STOP
+    assert len(driver.requests) == 3
+    assert driver.progress_outcomes == [True, False, False]
+    assert result.changed_files == ["src/helper.py"]
+    assert "after 2 consecutive observation-only turns" in result.final_message

@@ -75,6 +75,8 @@ class AgentLoop:
         )
         started_at = self._clock()
         start_snapshot = workspace.change_snapshot()
+        candidate_required_paths = self._exact_candidate_required_paths(toolbox)
+        candidate_readiness_known = candidate_required_paths is not None
         previous_turn_made_progress = False
         consecutive_mutation_turns = 0
         last_mutated_files: tuple[str, ...] = ()
@@ -156,9 +158,7 @@ class AgentLoop:
                 tools=list(policy.tool_definitions),
             )
             try:
-                async with asyncio.timeout(
-                    min(remaining, policy.max_model_turn_seconds)
-                ):
+                async with asyncio.timeout(min(remaining, policy.max_model_turn_seconds)):
                     response = await self._driver.complete(request)
             except TimeoutError:
                 return self._result(
@@ -184,9 +184,7 @@ class AgentLoop:
                     enable_thinking=policy.enable_thinking,
                     context_usage=context_usage,
                     context_compacted_tool_groups=view.compacted_tool_groups,
-                    estimated_prompt_tokens=self._token_estimator.estimate_agent_request(
-                        request
-                    ),
+                    estimated_prompt_tokens=self._token_estimator.estimate_agent_request(request),
                 )
 
             total_prompt_tokens += response.usage.prompt_tokens
@@ -320,9 +318,7 @@ class AgentLoop:
                         tool_call_id=call.id,
                         name=call.name,
                         ok=False,
-                        content=(
-                            "This tool is not available for this Agent runtime policy."
-                        ),
+                        content=("This tool is not available for this Agent runtime policy."),
                         error_code=ToolErrorCode.UNKNOWN_TOOL,
                     )
                 else:
@@ -368,11 +364,7 @@ class AgentLoop:
                         tool_name=call.name,
                         ok=result.ok,
                         progress_kind=progress_kind,
-                        detail=(
-                            result.error_code.value
-                            if result.error_code is not None
-                            else "ok"
-                        ),
+                        detail=(result.error_code.value if result.error_code is not None else "ok"),
                     )
                 )
                 results.append(result)
@@ -393,9 +385,7 @@ class AgentLoop:
                     self._tool_failure_signature(call, result),
                 )
                 repeated_tool_failure_count = (
-                    repeated_tool_failure_count + 1
-                    if signature == last_tool_failure
-                    else 1
+                    repeated_tool_failure_count + 1 if signature == last_tool_failure else 1
                 )
                 last_tool_failure = signature
                 if repeated_tool_failure_count >= policy.repeated_tool_failure_limit:
@@ -422,14 +412,9 @@ class AgentLoop:
                         mutation_count=mutation_count,
                         mutation_gate_triggered=mutation_gate_triggered,
                         events=events,
-                        tool_failure_evidence=(
-                            self._safe_tool_failure_evidence(call, result),
-                        ),
+                        tool_failure_evidence=(self._safe_tool_failure_evidence(call, result),),
                     )
-                if (
-                    not tool_recovery_used
-                    and self._is_recoverable_tool_error(result)
-                ):
+                if not tool_recovery_used and self._is_recoverable_tool_error(result):
                     tool_recovery_instruction = self._tool_recovery_instruction(
                         call=call,
                         result=result,
@@ -455,15 +440,15 @@ class AgentLoop:
                     )
                 )
             after_turn_snapshot = workspace.change_snapshot()
-            has_workspace_patch = (
-                after_turn_snapshot.patch_hash != start_snapshot.patch_hash
-            )
-            turn_made_progress = (
-                after_turn_snapshot.patch_hash != before_turn_snapshot.patch_hash
-            )
+            has_workspace_patch = after_turn_snapshot.patch_hash != start_snapshot.patch_hash
+            turn_made_progress = after_turn_snapshot.patch_hash != before_turn_snapshot.patch_hash
             changed_files_this_turn = tuple(
                 after_turn_snapshot.files_changed_since(before_turn_snapshot)
             )
+            candidate_changed_files = set(after_turn_snapshot.files_changed_since(start_snapshot))
+            candidate_ready = candidate_required_paths is not None and set(
+                candidate_required_paths
+            ).issubset(candidate_changed_files)
             progress = ToolProgressClassifier.summarize(
                 response.tool_calls,
                 results,
@@ -481,10 +466,8 @@ class AgentLoop:
                     same_file_mutation_streak = 1 if changed_files_this_turn else 0
                 last_mutated_files = changed_files_this_turn
                 repeated_mutation = (
-                    consecutive_mutation_turns
-                    >= policy.consecutive_mutation_nudge_threshold
-                    or same_file_mutation_streak
-                    >= policy.same_file_mutation_nudge_threshold
+                    consecutive_mutation_turns >= policy.consecutive_mutation_nudge_threshold
+                    or same_file_mutation_streak >= policy.same_file_mutation_nudge_threshold
                 )
                 if policy.mutation_convergence_enabled and has_workspace_patch:
                     runtime_instruction = (
@@ -503,19 +486,29 @@ class AgentLoop:
                 and progress.mutation_attempt_count == 0
             ):
                 observation_turns_without_mutation += 1
+                candidate_handoff_ready = (
+                    candidate_ready
+                    if candidate_readiness_known
+                    else observation_turns_without_mutation
+                    >= policy.post_mutation_observation_handoff_threshold
+                )
                 if (
                     policy.mutation_convergence_enabled
                     and has_workspace_patch
-                    and observation_turns_without_mutation
-                    >= policy.post_mutation_observation_handoff_threshold
+                    and candidate_handoff_ready
                 ):
+                    handoff_detail = (
+                        "candidate_handoff_after_ready_observation"
+                        if candidate_readiness_known
+                        else "candidate_handoff_after_observation"
+                    )
                     events.append(
                         AgentRuntimeEvent(
                             sequence=len(events),
                             kind=AgentRuntimeEventKind.MUTATION_GATE,
                             iteration=iteration,
                             progress_kind=ToolProgressKind.OBSERVATION,
-                            detail="candidate_handoff_after_observation",
+                            detail=handoff_detail,
                         )
                     )
                     if trace is not None:
@@ -541,9 +534,17 @@ class AgentLoop:
                         iterations=iteration,
                         tool_calls=tool_call_count,
                         final_message=(
-                            "Candidate implementation handed to deterministic verification "
-                            f"after {observation_turns_without_mutation} consecutive "
-                            "observation-only turns with no repository progress."
+                            (
+                                "Structurally complete candidate implementation handed to "
+                                "deterministic verification after the first observation-only "
+                                "turn with no repository progress."
+                            )
+                            if candidate_readiness_known
+                            else (
+                                "Candidate implementation handed to deterministic verification "
+                                f"after {observation_turns_without_mutation} consecutive "
+                                "observation-only turns with no repository progress."
+                            )
                         ),
                         prompt_tokens=total_prompt_tokens,
                         completion_tokens=total_completion_tokens,
@@ -587,10 +588,7 @@ class AgentLoop:
                         )
                     else:
                         mutation_gate_violations += 1
-                        if (
-                            mutation_gate_violations
-                            > policy.max_mutation_gate_violations
-                        ):
+                        if mutation_gate_violations > policy.max_mutation_gate_violations:
                             if trace is not None:
                                 assert turn_span_id is not None
                                 trace.record_runtime_progress(
@@ -600,9 +598,7 @@ class AgentLoop:
                                     changed_files_this_turn=changed_files_this_turn,
                                     consecutive_mutation_turns=consecutive_mutation_turns,
                                     same_file_mutation_streak=same_file_mutation_streak,
-                                    convergence_nudge_triggered=(
-                                        convergence_nudge_triggered
-                                    ),
+                                    convergence_nudge_triggered=(convergence_nudge_triggered),
                                 )
                             await self._record_tool_cost_outcome(
                                 policy=policy,
@@ -772,6 +768,23 @@ class AgentLoop:
     @staticmethod
     def _is_explicit_blocker(content: str) -> bool:
         return content.lstrip().upper().startswith("BLOCKED:")
+
+    @staticmethod
+    def _exact_candidate_required_paths(
+        toolbox: RepositoryToolbox,
+    ) -> tuple[str, ...] | None:
+        """Return exact writable deliverables, or None when completeness is unknowable.
+
+        TaskContract.writable_files also defines authorization scope and may contain globs.
+        A glob describes where the Agent may write, not how many files must be delivered, so
+        it cannot safely prove candidate completeness. Exact paths are conservative structural
+        evidence: every path must remain changed relative to the task's starting snapshot.
+        """
+
+        writable_files = tuple(toolbox.task.writable_files)
+        if any("*" in path or "?" in path or path.endswith("/") for path in writable_files):
+            return None
+        return writable_files
 
     @staticmethod
     def _mutation_required_prompt(*, strict: bool, reason: str) -> str:
