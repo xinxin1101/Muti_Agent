@@ -310,6 +310,9 @@ class AgentLoop:
                 )
 
             before_turn_snapshot = workspace.change_snapshot()
+            has_workspace_patch_before_turn = (
+                before_turn_snapshot.patch_hash != start_snapshot.patch_hash
+            )
             candidate_changed_files_before_turn = set(
                 before_turn_snapshot.files_changed_since(start_snapshot)
             )
@@ -489,6 +492,7 @@ class AgentLoop:
 
             candidate_completed_this_turn = (
                 candidate_readiness_known
+                and has_workspace_patch_before_turn
                 and not candidate_ready_before_turn
                 and candidate_ready
             )

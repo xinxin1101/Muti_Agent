@@ -519,7 +519,7 @@ def test_candidate_handoff_terminal_turn_records_runtime_progress_trace(
     assert terminal_turn.changed_files_this_turn == ()
 
 
-def test_exact_candidate_hands_off_on_not_ready_to_ready_mutation_edge(
+def test_single_exact_candidate_requires_one_observation_before_handoff(
     tmp_path: Path,
 ) -> None:
     root = _repository(tmp_path)
@@ -531,6 +531,19 @@ def test_exact_candidate_hands_off_on_not_ready_to_ready_mutation_edge(
                         "write-ready",
                         "write_file",
                         {"path": "src/gomoku_logic.py", "content": "VALUE = 2\n"},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "read-ready",
+                        "read_range",
+                        {
+                            "path": "src/gomoku_logic.py",
+                            "start_line": 1,
+                            "end_line": 5,
+                        },
                     )
                 ]
             ),
@@ -546,10 +559,10 @@ def test_exact_candidate_hands_off_on_not_ready_to_ready_mutation_edge(
     )
 
     assert result.stop_reason is models.DeveloperStopReason.MODEL_STOP
-    assert len(driver.requests) == 1
-    assert driver.progress_outcomes == [True]
+    assert len(driver.requests) == 2
+    assert driver.progress_outcomes == [True, False]
     assert result.changed_files == ["src/gomoku_logic.py"]
-    assert "immediately after the mutation turn" in result.final_message
+    assert "first observation-only turn" in result.final_message
 
 
 def test_incomplete_exact_candidate_does_not_handoff_until_all_deliverables_change(
@@ -681,9 +694,18 @@ def test_completion_mutation_with_tool_failure_does_not_handoff_early(
             _response(
                 tool_calls=[
                     _call(
-                        "write-ready",
+                        "write-index",
                         "write_file",
-                        {"path": "src/gomoku_logic.py", "content": "VALUE = 2\n"},
+                        {"path": "src/index.html", "content": "<main>board</main>\n"},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-ui",
+                        "write_file",
+                        {"path": "src/gomoku_ui.js", "content": "const SIZE = 15;\n"},
                     ),
                     _call(
                         "read-missing",
@@ -697,11 +719,7 @@ def test_completion_mutation_with_tool_failure_does_not_handoff_early(
                     _call(
                         "read-ready",
                         "read_range",
-                        {
-                            "path": "src/gomoku_logic.py",
-                            "start_line": 1,
-                            "end_line": 5,
-                        },
+                        {"path": "src/gomoku_ui.js", "start_line": 1, "end_line": 5},
                     )
                 ]
             ),
@@ -711,7 +729,55 @@ def test_completion_mutation_with_tool_failure_does_not_handoff_early(
 
     result = asyncio.run(
         _developer(driver).run(
-            _task(writable_files=["src/gomoku_logic.py"]),
+            _task(writable_files=["src/index.html", "src/gomoku_ui.js"]),
+            workspace=LocalGitWorkspace(root),
+        )
+    )
+
+    assert result.stop_reason is models.DeveloperStopReason.MODEL_STOP
+    assert len(driver.requests) == 3
+    assert driver.progress_outcomes == [True, True, False]
+    assert result.changed_files == ["src/gomoku_ui.js", "src/index.html"]
+    assert "first observation-only turn" in result.final_message
+
+
+
+def test_first_turn_that_writes_all_exact_deliverables_does_not_handoff_immediately(
+    tmp_path: Path,
+) -> None:
+    root = _repository(tmp_path)
+    driver = _RecordingDriver(
+        [
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-index",
+                        "write_file",
+                        {"path": "src/index.html", "content": "<main>board</main>\n"},
+                    ),
+                    _call(
+                        "write-ui",
+                        "write_file",
+                        {"path": "src/gomoku_ui.js", "content": "const SIZE = 15;\n"},
+                    ),
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "read-ui",
+                        "read_range",
+                        {"path": "src/gomoku_ui.js", "start_line": 1, "end_line": 5},
+                    )
+                ]
+            ),
+            _response(content="must not be requested"),
+        ]
+    )
+
+    result = asyncio.run(
+        _developer(driver).run(
+            _task(writable_files=["src/index.html", "src/gomoku_ui.js"]),
             workspace=LocalGitWorkspace(root),
         )
     )
