@@ -12,38 +12,67 @@ while deliverable_observation_block + deliverable_observation_block in loop:
         1,
     )
 
-old_24 = '''                        same_file_mutation_streak=same_file_mutation_streak,\n                        convergence_nudge_triggered=convergence_nudge_triggered,\n                    )\n'''
-new_24 = '''                        same_file_mutation_streak=same_file_mutation_streak,\n                        convergence_nudge_triggered=convergence_nudge_triggered,\n                        candidate_readiness_known=candidate_readiness_known,\n                        candidate_ready=(candidate_ready if candidate_readiness_known else None),\n                        missing_required_deliverables=missing_required_paths,\n                        deliverable_progress=deliverable_progress,\n                        deliverable_completion_mode=deliverable_completion_mode,\n                        deliverable_convergence_violations=(\n                            deliverable_convergence_violations\n                        ),\n                    )\n'''
-loop = loop.replace(old_24, new_24)
+required_trace_fields = {
+    "candidate_readiness_known",
+    "candidate_ready",
+    "missing_required_deliverables",
+    "deliverable_progress",
+    "deliverable_completion_mode",
+    "deliverable_convergence_violations",
+}
 
-old_36 = '''                                    same_file_mutation_streak=same_file_mutation_streak,\n                                    convergence_nudge_triggered=(convergence_nudge_triggered),\n                                )\n'''
-new_36 = '''                                    same_file_mutation_streak=same_file_mutation_streak,\n                                    convergence_nudge_triggered=(convergence_nudge_triggered),\n                                    candidate_readiness_known=candidate_readiness_known,\n                                    candidate_ready=(\n                                        candidate_ready if candidate_readiness_known else None\n                                    ),\n                                    missing_required_deliverables=missing_required_paths,\n                                    deliverable_progress=deliverable_progress,\n                                    deliverable_completion_mode=deliverable_completion_mode,\n                                    deliverable_convergence_violations=(\n                                        deliverable_convergence_violations\n                                    ),\n                                )\n'''
-loop = loop.replace(old_36, new_36)
 
+def runtime_progress_calls(source: str) -> list[ast.Call]:
+    module = ast.parse(source)
+    calls: list[ast.Call] = []
+    for node in ast.walk(module):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr == "record_runtime_progress":
+            calls.append(node)
+    return calls
+
+
+# Insert missing structural trace keywords by AST source locations instead of indentation guesses.
+lines = loop.splitlines(keepends=True)
+insertions: list[tuple[int, str]] = []
+for call in runtime_progress_calls(loop):
+    keywords = {item.arg for item in call.keywords if item.arg is not None}
+    missing = required_trace_fields - keywords
+    if not missing:
+        continue
+    if call.end_lineno is None:
+        raise SystemExit("runtime-progress call has no end line")
+    closing_index = call.end_lineno - 1
+    closing_line = lines[closing_index]
+    closing_indent = closing_line[: len(closing_line) - len(closing_line.lstrip())]
+    keyword_indent = closing_indent + "    "
+    insertion = (
+        f"{keyword_indent}candidate_readiness_known=candidate_readiness_known,\n"
+        f"{keyword_indent}candidate_ready=(candidate_ready if candidate_readiness_known else None),\n"
+        f"{keyword_indent}missing_required_deliverables=missing_required_paths,\n"
+        f"{keyword_indent}deliverable_progress=deliverable_progress,\n"
+        f"{keyword_indent}deliverable_completion_mode=deliverable_completion_mode,\n"
+        f"{keyword_indent}deliverable_convergence_violations=(\n"
+        f"{keyword_indent}    deliverable_convergence_violations\n"
+        f"{keyword_indent}),\n"
+    )
+    insertions.append((closing_index, insertion))
+
+for closing_index, insertion in sorted(insertions, reverse=True):
+    lines[closing_index:closing_index] = [insertion]
+loop = "".join(lines)
 loop_path.write_text(loop, encoding="utf-8")
 
-module = ast.parse(loop)
-progress_calls = []
-for node in ast.walk(module):
-    if not isinstance(node, ast.Call):
-        continue
-    func = node.func
-    if isinstance(func, ast.Attribute) and func.attr == "record_runtime_progress":
-        progress_calls.append(node)
-        keywords = {item.arg for item in node.keywords if item.arg is not None}
-        required = {
-            "candidate_readiness_known",
-            "candidate_ready",
-            "missing_required_deliverables",
-            "deliverable_progress",
-            "deliverable_completion_mode",
-            "deliverable_convergence_violations",
-        }
-        missing = required - keywords
-        if missing:
-            raise SystemExit(
-                f"runtime-progress call on line {node.lineno} misses fields: {sorted(missing)}"
-            )
+progress_calls = runtime_progress_calls(loop)
+for call in progress_calls:
+    keywords = {item.arg for item in call.keywords if item.arg is not None}
+    missing = required_trace_fields - keywords
+    if missing:
+        raise SystemExit(
+            f"runtime-progress call on line {call.lineno} misses fields: {sorted(missing)}"
+        )
 if len(progress_calls) < 5:
     raise SystemExit(f"unexpected runtime-progress call count: {len(progress_calls)}")
 
@@ -52,6 +81,12 @@ if loop.count(deliverable_observation_block) != 1:
         "deliverable observation focus block must appear exactly once; "
         f"found {loop.count(deliverable_observation_block)}"
     )
+
+# Guard the new convergence state machine itself.
+if loop.count('detail="deliverable_completion_mode_entered"') != 1:
+    raise SystemExit("completion-mode entry event must appear exactly once")
+if loop.count('detail="deliverable_completion_gate_exhausted"') != 1:
+    raise SystemExit("completion-gate exhaustion event must appear exactly once")
 
 # Guard the test import/API shape as part of the audit.
 test_path = Path("backend/tests/test_developer_mutation_convergence.py")
