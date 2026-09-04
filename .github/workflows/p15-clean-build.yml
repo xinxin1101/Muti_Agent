@@ -1,0 +1,66 @@
+name: P1.5 Clean Builder
+
+on:
+  push:
+    branches:
+      - agent/p15-clean-builder
+    paths:
+      - .github/workflows/p15-clean-build.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: agent/p15-clean-builder
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.lock
+
+      - name: Apply P1.5 semantic patch
+        run: python scripts/p15_required_outputs_builder.py
+
+      - name: Install locked backend environment
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.lock
+          python -m pip install --no-deps -e .
+
+      - name: Lint focused files
+        working-directory: backend
+        run: |
+          ruff check app/models/task.py app/models/work_package.py app/planning/work_packages.py app/agents/planner.py app/agents/dag_planner.py app/agent_runtime/loop.py tests/test_models.py tests/test_planner_agent.py tests/test_multi_task_planner.py tests/test_work_package_planning.py tests/test_developer_mutation_convergence.py
+
+      - name: Run focused regression tests
+        working-directory: backend
+        run: |
+          pytest -q tests/test_models.py tests/test_planner_agent.py tests/test_multi_task_planner.py tests/test_work_package_planning.py tests/test_developer_mutation_convergence.py
+
+      - name: Commit semantic P1.5 files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            backend/app/models/task.py \
+            backend/app/models/work_package.py \
+            backend/app/planning/work_packages.py \
+            backend/app/agents/planner.py \
+            backend/app/agents/dag_planner.py \
+            backend/app/agent_runtime/loop.py \
+            backend/tests/test_models.py \
+            backend/tests/test_planner_agent.py \
+            backend/tests/test_multi_task_planner.py \
+            backend/tests/test_work_package_planning.py \
+            backend/tests/test_developer_mutation_convergence.py \
+            scripts/real_token_budget_diagnostic.py
+          git commit -m "fix(runtime): hand off candidates by required outputs"
+          git push origin HEAD:agent/p15-clean-builder
