@@ -4,9 +4,11 @@ import asyncio
 import json
 import subprocess
 from pathlib import Path
+from uuid import uuid4
 
 from app import agents, models
 from app.providers.base import AgentDriver
+from app.trace.collector import TaskTraceCollector
 from app.workspace import LocalGitWorkspace
 
 
@@ -214,7 +216,7 @@ def test_identical_write_file_is_successful_tool_but_not_real_progress(
     assert driver.requests[2].liveness_credit is models.LivenessCredit.NORMAL
 
 
-def test_three_same_file_mutation_turns_emit_repeated_convergence_nudge(
+def test_same_file_second_mutation_turn_emits_repeated_convergence_nudge(
     tmp_path: Path,
 ) -> None:
     root = _repository(tmp_path)
@@ -266,6 +268,7 @@ def test_three_same_file_mutation_turns_emit_repeated_convergence_nudge(
 
     assert result.stop_reason is models.DeveloperStopReason.MODEL_STOP
     assert "Re-evaluate the TaskContract" in _prompt(driver.requests[1])
+    assert "several consecutive turns" in _prompt(driver.requests[2])
     assert "several consecutive turns" in _prompt(driver.requests[3])
     assert driver.progress_outcomes == [True, True, True]
 
@@ -365,7 +368,7 @@ def test_complex_task_can_continue_across_multiple_real_mutation_turns(
     assert "several consecutive turns" in _prompt(driver.requests[3])
 
 
-def test_stuck_detector_remains_effective_after_workspace_has_patch(
+def test_candidate_handoff_preempts_repeated_post_mutation_observations(
     tmp_path: Path,
 ) -> None:
     root = _repository(tmp_path)
@@ -394,7 +397,152 @@ def test_stuck_detector_remains_effective_after_workspace_has_patch(
         )
     )
 
-    assert result.stop_reason is models.DeveloperStopReason.NO_PROGRESS
+    assert result.stop_reason is models.DeveloperStopReason.MODEL_STOP
     assert result.changed_files == ["src/gomoku_logic.py"]
+    assert len(driver.requests) == 3
+    assert driver.progress_outcomes == [True, False, False]
+    assert "deterministic verification" in result.final_message
+
+
+def test_real_mutation_resets_post_mutation_observation_handoff_counter(
+    tmp_path: Path,
+) -> None:
+    root = _repository(tmp_path)
+    driver = _RecordingDriver(
+        [
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-core-2",
+                        "write_file",
+                        {"path": "src/gomoku_logic.py", "content": "VALUE = 2\n"},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "read-core-2",
+                        "read_range",
+                        {
+                            "path": "src/gomoku_logic.py",
+                            "start_line": 1,
+                            "end_line": 5,
+                        },
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-helper",
+                        "write_file",
+                        {"path": "src/helper.py", "content": "HELPER = True\n"},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "read-helper",
+                        "read_range",
+                        {"path": "src/helper.py", "start_line": 1, "end_line": 5},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "read-core-final",
+                        "read_range",
+                        {
+                            "path": "src/gomoku_logic.py",
+                            "start_line": 1,
+                            "end_line": 5,
+                        },
+                    )
+                ]
+            ),
+        ]
+    )
+
+    result = asyncio.run(
+        _developer(driver).run(
+            _task(writable_files=["src/**"]),
+            workspace=LocalGitWorkspace(root),
+        )
+    )
+
+    assert result.stop_reason is models.DeveloperStopReason.MODEL_STOP
     assert len(driver.requests) == 5
-    assert driver.progress_outcomes == [True, False, False, False, False]
+    assert driver.progress_outcomes == [True, False, True, False, False]
+    assert result.changed_files == ["src/gomoku_logic.py", "src/helper.py"]
+
+
+def test_candidate_handoff_terminal_turn_records_runtime_progress_trace(
+    tmp_path: Path,
+) -> None:
+    root = _repository(tmp_path)
+    driver = _RecordingDriver(
+        [
+            _response(
+                tool_calls=[
+                    _call(
+                        "write",
+                        "write_file",
+                        {"path": "src/gomoku_logic.py", "content": "VALUE = 2\n"},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "read-1",
+                        "read_range",
+                        {
+                            "path": "src/gomoku_logic.py",
+                            "start_line": 1,
+                            "end_line": 5,
+                        },
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "read-2",
+                        "read_range",
+                        {
+                            "path": "src/gomoku_logic.py",
+                            "start_line": 1,
+                            "end_line": 5,
+                        },
+                    )
+                ]
+            ),
+        ]
+    )
+    trace = TaskTraceCollector(
+        run_id=uuid4(),
+        task_id="developer-convergence",
+        dispatch_id=uuid4(),
+        generation=1,
+    )
+
+    result = asyncio.run(
+        _developer(driver).run(
+            _task(),
+            workspace=LocalGitWorkspace(root),
+            trace=trace,
+        )
+    )
+
+    terminal_turn = next(
+        span
+        for span in trace.batch().spans
+        if span.agent_role is models.AgentRole.DEVELOPER and span.iteration == 3
+    )
+    assert result.stop_reason is models.DeveloperStopReason.MODEL_STOP
+    assert terminal_turn.has_workspace_patch is True
+    assert terminal_turn.turn_made_progress is False
+    assert terminal_turn.changed_files_this_turn == ()

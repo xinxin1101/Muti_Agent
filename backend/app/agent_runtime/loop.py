@@ -504,6 +504,57 @@ class AgentLoop:
             ):
                 observation_turns_without_mutation += 1
                 if (
+                    policy.mutation_convergence_enabled
+                    and has_workspace_patch
+                    and observation_turns_without_mutation
+                    >= policy.post_mutation_observation_handoff_threshold
+                ):
+                    events.append(
+                        AgentRuntimeEvent(
+                            sequence=len(events),
+                            kind=AgentRuntimeEventKind.MUTATION_GATE,
+                            iteration=iteration,
+                            progress_kind=ToolProgressKind.OBSERVATION,
+                            detail="candidate_handoff_after_observation",
+                        )
+                    )
+                    if trace is not None:
+                        assert turn_span_id is not None
+                        trace.record_runtime_progress(
+                            agent_turn_span_id=turn_span_id,
+                            has_workspace_patch=has_workspace_patch,
+                            turn_made_progress=turn_made_progress,
+                            changed_files_this_turn=changed_files_this_turn,
+                            consecutive_mutation_turns=consecutive_mutation_turns,
+                            same_file_mutation_streak=same_file_mutation_streak,
+                            convergence_nudge_triggered=convergence_nudge_triggered,
+                        )
+                    await self._record_tool_cost_outcome(
+                        policy=policy,
+                        calls=response.tool_calls,
+                        results=results,
+                        has_real_progress=False,
+                        compacted_code_mutation=compacted_code_mutation,
+                    )
+                    return self._result(
+                        stop_reason=AgentRuntimeStopReason.MODEL_STOP,
+                        iterations=iteration,
+                        tool_calls=tool_call_count,
+                        final_message=(
+                            "Candidate implementation handed to deterministic verification "
+                            f"after {observation_turns_without_mutation} consecutive "
+                            "observation-only turns with no repository progress."
+                        ),
+                        prompt_tokens=total_prompt_tokens,
+                        completion_tokens=total_completion_tokens,
+                        total_tokens=total_tokens,
+                        latency_ms=total_latency_ms,
+                        observation_count=observation_count,
+                        mutation_count=mutation_count,
+                        mutation_gate_triggered=mutation_gate_triggered,
+                        events=events,
+                    )
+                if (
                     policy.mutation_gate_enabled
                     and observation_turns_without_mutation
                     >= policy.max_observation_turns_without_mutation
@@ -540,6 +591,19 @@ class AgentLoop:
                             mutation_gate_violations
                             > policy.max_mutation_gate_violations
                         ):
+                            if trace is not None:
+                                assert turn_span_id is not None
+                                trace.record_runtime_progress(
+                                    agent_turn_span_id=turn_span_id,
+                                    has_workspace_patch=has_workspace_patch,
+                                    turn_made_progress=turn_made_progress,
+                                    changed_files_this_turn=changed_files_this_turn,
+                                    consecutive_mutation_turns=consecutive_mutation_turns,
+                                    same_file_mutation_streak=same_file_mutation_streak,
+                                    convergence_nudge_triggered=(
+                                        convergence_nudge_triggered
+                                    ),
+                                )
                             await self._record_tool_cost_outcome(
                                 policy=policy,
                                 calls=response.tool_calls,
@@ -735,8 +799,10 @@ class AgentLoop:
             "acceptance criteria before making another mutation. If the current implementation "
             "already satisfies the work package, stop using tools and return the final completion "
             "message so deterministic verification can begin. Only make another mutation when "
-            "you can identify a concrete remaining requirement. Prefer targeted reads or "
-            "apply_patch over rewriting an entire file."
+            "you can identify a concrete remaining requirement. Do not broadly reread completed "
+            "files to self-verify: correctness belongs to deterministic verification. Use only a "
+            "targeted read for a concrete unresolved fact; repeated observation-only turns will "
+            "hand the existing candidate to verification."
         )
 
     @staticmethod
