@@ -790,17 +790,50 @@ def test_first_turn_that_writes_all_exact_deliverables_does_not_handoff_immediat
 
 
 
-def test_deliverable_completion_mode_focuses_missing_exact_path(tmp_path: Path) -> None:
+def test_deliverable_completion_mode_focuses_missing_exact_path(
+    tmp_path: Path,
+) -> None:
     root = _repository(tmp_path)
     driver = _RecordingDriver(
         [
-            _response(tool_calls=[_call("write-index-1", "write_file", {"path": "src/index.html", "content": "<main>v1</main>\n"})]),
-            _response(tool_calls=[_call("write-index-2", "write_file", {"path": "src/index.html", "content": "<main>v2</main>\n"})]),
-            _response(tool_calls=[_call("write-ui", "write_file", {"path": "src/gomoku_ui.js", "content": "const SIZE = 15;\n"})]),
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-index-1",
+                        "write_file",
+                        {"path": "src/index.html", "content": "<main>v1</main>\n"},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-index-2",
+                        "write_file",
+                        {"path": "src/index.html", "content": "<main>v2</main>\n"},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-ui",
+                        "write_file",
+                        {"path": "src/gomoku_ui.js", "content": "const SIZE = 15;\n"},
+                    )
+                ]
+            ),
             _response(content="must not be requested"),
         ]
     )
-    result = asyncio.run(_developer(driver).run(_task(writable_files=["src/index.html", "src/gomoku_ui.js"]), workspace=LocalGitWorkspace(root)))
+
+    result = asyncio.run(
+        _developer(driver).run(
+            _task(writable_files=["src/index.html", "src/gomoku_ui.js"]),
+            workspace=LocalGitWorkspace(root),
+        )
+    )
+
     assert result.stop_reason is models.DeveloperStopReason.MODEL_STOP
     assert len(driver.requests) == 3
     completion_prompt = _prompt(driver.requests[2])
@@ -810,18 +843,59 @@ def test_deliverable_completion_mode_focuses_missing_exact_path(tmp_path: Path) 
     assert "immediately after the mutation turn" in result.final_message
 
 
-def test_deliverable_completion_mode_allows_one_bounded_correction(tmp_path: Path) -> None:
+def test_deliverable_completion_mode_allows_one_bounded_correction(
+    tmp_path: Path,
+) -> None:
     root = _repository(tmp_path)
     driver = _RecordingDriver(
         [
-            _response(tool_calls=[_call("write-index-1", "write_file", {"path": "src/index.html", "content": "<main>v1</main>\n"})]),
-            _response(tool_calls=[_call("write-index-2", "write_file", {"path": "src/index.html", "content": "<main>v2</main>\n"})]),
-            _response(tool_calls=[_call("write-index-3", "write_file", {"path": "src/index.html", "content": "<main>v3</main>\n"})]),
-            _response(tool_calls=[_call("write-ui", "write_file", {"path": "src/gomoku_ui.js", "content": "const SIZE = 15;\n"})]),
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-index-1",
+                        "write_file",
+                        {"path": "src/index.html", "content": "<main>v1</main>\n"},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-index-2",
+                        "write_file",
+                        {"path": "src/index.html", "content": "<main>v2</main>\n"},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-index-3",
+                        "write_file",
+                        {"path": "src/index.html", "content": "<main>v3</main>\n"},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-ui",
+                        "write_file",
+                        {"path": "src/gomoku_ui.js", "content": "const SIZE = 15;\n"},
+                    )
+                ]
+            ),
             _response(content="must not be requested"),
         ]
     )
-    result = asyncio.run(_developer(driver).run(_task(writable_files=["src/index.html", "src/gomoku_ui.js"]), workspace=LocalGitWorkspace(root)))
+
+    result = asyncio.run(
+        _developer(driver).run(
+            _task(writable_files=["src/index.html", "src/gomoku_ui.js"]),
+            workspace=LocalGitWorkspace(root),
+        )
+    )
+
     assert result.stop_reason is models.DeveloperStopReason.MODEL_STOP
     assert len(driver.requests) == 4
     assert "FINAL BOUNDED CHANCE" in _prompt(driver.requests[3])
@@ -829,18 +903,59 @@ def test_deliverable_completion_mode_allows_one_bounded_correction(tmp_path: Pat
     assert result.changed_files == ["src/gomoku_ui.js", "src/index.html"]
 
 
-def test_deliverable_completion_gate_stops_second_unproductive_rewrite(tmp_path: Path) -> None:
+def test_deliverable_completion_gate_stops_second_unproductive_rewrite(
+    tmp_path: Path,
+) -> None:
     root = _repository(tmp_path)
     driver = _RecordingDriver(
         [
-            _response(tool_calls=[_call("write-index-1", "write_file", {"path": "src/index.html", "content": "<main>v1</main>\n"})]),
-            _response(tool_calls=[_call("write-index-2", "write_file", {"path": "src/index.html", "content": "<main>v2</main>\n"})]),
-            _response(tool_calls=[_call("write-index-3", "write_file", {"path": "src/index.html", "content": "<main>v3</main>\n"})]),
-            _response(tool_calls=[_call("write-index-4", "write_file", {"path": "src/index.html", "content": "<main>v4</main>\n"})]),
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-index-1",
+                        "write_file",
+                        {"path": "src/index.html", "content": "<main>v1</main>\n"},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-index-2",
+                        "write_file",
+                        {"path": "src/index.html", "content": "<main>v2</main>\n"},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-index-3",
+                        "write_file",
+                        {"path": "src/index.html", "content": "<main>v3</main>\n"},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-index-4",
+                        "write_file",
+                        {"path": "src/index.html", "content": "<main>v4</main>\n"},
+                    )
+                ]
+            ),
             _response(content="must not be requested"),
         ]
     )
-    result = asyncio.run(_developer(driver).run(_task(writable_files=["src/index.html", "src/gomoku_ui.js"]), workspace=LocalGitWorkspace(root)))
+
+    result = asyncio.run(
+        _developer(driver).run(
+            _task(writable_files=["src/index.html", "src/gomoku_ui.js"]),
+            workspace=LocalGitWorkspace(root),
+        )
+    )
+
     assert result.stop_reason is models.DeveloperStopReason.NO_PROGRESS
     assert len(driver.requests) == 4
     assert driver.progress_outcomes == [True, True, True, True]
@@ -848,18 +963,62 @@ def test_deliverable_completion_gate_stops_second_unproductive_rewrite(tmp_path:
     assert result.changed_files == ["src/index.html"]
 
 
-def test_deliverable_completion_trace_records_structural_progress(tmp_path: Path) -> None:
+def test_deliverable_completion_trace_records_structural_progress(
+    tmp_path: Path,
+) -> None:
     root = _repository(tmp_path)
     driver = _RecordingDriver(
         [
-            _response(tool_calls=[_call("write-index-1", "write_file", {"path": "src/index.html", "content": "<main>v1</main>\n"})]),
-            _response(tool_calls=[_call("write-index-2", "write_file", {"path": "src/index.html", "content": "<main>v2</main>\n"})]),
-            _response(tool_calls=[_call("write-ui", "write_file", {"path": "src/gomoku_ui.js", "content": "const SIZE = 15;\n"})]),
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-index-1",
+                        "write_file",
+                        {"path": "src/index.html", "content": "<main>v1</main>\n"},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-index-2",
+                        "write_file",
+                        {"path": "src/index.html", "content": "<main>v2</main>\n"},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-ui",
+                        "write_file",
+                        {"path": "src/gomoku_ui.js", "content": "const SIZE = 15;\n"},
+                    )
+                ]
+            ),
         ]
     )
-    trace = TaskTraceCollector(run_id=uuid4(), task_id="developer-convergence", dispatch_id=uuid4(), generation=1)
-    result = asyncio.run(_developer(driver).run(_task(writable_files=["src/index.html", "src/gomoku_ui.js"]), workspace=LocalGitWorkspace(root), trace=trace))
-    turns = {span.iteration: span for span in trace.batch().spans if span.agent_role is models.AgentRole.DEVELOPER and span.kind is TraceSpanKind.AGENT_TURN}
+    trace = TaskTraceCollector(
+        run_id=uuid4(),
+        task_id="developer-convergence",
+        dispatch_id=uuid4(),
+        generation=1,
+    )
+
+    result = asyncio.run(
+        _developer(driver).run(
+            _task(writable_files=["src/index.html", "src/gomoku_ui.js"]),
+            workspace=LocalGitWorkspace(root),
+            trace=trace,
+        )
+    )
+    turns = {
+        span.iteration: span
+        for span in trace.batch().spans
+        if span.agent_role is models.AgentRole.DEVELOPER
+        and span.kind is TraceSpanKind.AGENT_TURN
+    }
+
     assert result.stop_reason is models.DeveloperStopReason.MODEL_STOP
     assert turns[2].candidate_readiness_known is True
     assert turns[2].candidate_ready is False

@@ -689,7 +689,11 @@ class AgentLoop:
                         same_file_mutation_streak=same_file_mutation_streak,
                         convergence_nudge_triggered=convergence_nudge_triggered,
                         candidate_readiness_known=candidate_readiness_known,
-                        candidate_ready=(candidate_ready if candidate_readiness_known else None),
+                        candidate_ready=(
+                                        candidate_ready
+                                        if candidate_readiness_known
+                                        else None
+                                    ),
                         missing_required_deliverables=missing_required_paths,
                         deliverable_progress=deliverable_progress,
                         deliverable_completion_mode=deliverable_completion_mode,
@@ -765,7 +769,11 @@ class AgentLoop:
                             same_file_mutation_streak=same_file_mutation_streak,
                             convergence_nudge_triggered=convergence_nudge_triggered,
                             candidate_readiness_known=candidate_readiness_known,
-                            candidate_ready=(candidate_ready if candidate_readiness_known else None),
+                            candidate_ready=(
+                                    candidate_ready
+                                    if candidate_readiness_known
+                                    else None
+                                ),
                             missing_required_deliverables=missing_required_paths,
                             deliverable_progress=deliverable_progress,
                             deliverable_completion_mode=deliverable_completion_mode,
