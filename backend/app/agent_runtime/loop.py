@@ -75,6 +75,11 @@ class AgentLoop:
         )
         started_at = self._clock()
         start_snapshot = workspace.change_snapshot()
+        required_output_files = (
+            frozenset(toolbox.task.required_output_files)
+            if toolbox.task.required_output_files is not None
+            else None
+        )
         previous_turn_made_progress = False
         consecutive_mutation_turns = 0
         last_mutated_files: tuple[str, ...] = ()
@@ -464,6 +469,17 @@ class AgentLoop:
             changed_files_this_turn = tuple(
                 after_turn_snapshot.files_changed_since(before_turn_snapshot)
             )
+            candidate_changed_files = frozenset(
+                after_turn_snapshot.files_changed_since(start_snapshot)
+            )
+            candidate_ready = (
+                required_output_files is not None
+                and required_output_files.issubset(candidate_changed_files)
+                and all(
+                    workspace.resolve_path(path).is_file()
+                    for path in required_output_files
+                )
+            )
             progress = ToolProgressClassifier.summarize(
                 response.tool_calls,
                 results,
@@ -503,19 +519,28 @@ class AgentLoop:
                 and progress.mutation_attempt_count == 0
             ):
                 observation_turns_without_mutation += 1
+                handoff_threshold = (
+                    1
+                    if candidate_ready
+                    else policy.post_mutation_observation_handoff_threshold
+                )
                 if (
                     policy.mutation_convergence_enabled
                     and has_workspace_patch
-                    and observation_turns_without_mutation
-                    >= policy.post_mutation_observation_handoff_threshold
+                    and observation_turns_without_mutation >= handoff_threshold
                 ):
+                    readiness_handoff = candidate_ready and handoff_threshold == 1
                     events.append(
                         AgentRuntimeEvent(
                             sequence=len(events),
                             kind=AgentRuntimeEventKind.MUTATION_GATE,
                             iteration=iteration,
                             progress_kind=ToolProgressKind.OBSERVATION,
-                            detail="candidate_handoff_after_observation",
+                            detail=(
+                                "candidate_handoff_after_ready_observation"
+                                if readiness_handoff
+                                else "candidate_handoff_after_observation"
+                            ),
                         )
                     )
                     if trace is not None:
@@ -541,9 +566,16 @@ class AgentLoop:
                         iterations=iteration,
                         tool_calls=tool_call_count,
                         final_message=(
-                            "Candidate implementation handed to deterministic verification "
-                            f"after {observation_turns_without_mutation} consecutive "
-                            "observation-only turns with no repository progress."
+                            (
+                                "Structurally ready candidate handed to deterministic verification "
+                                "after the first observation-only turn with no repository progress."
+                            )
+                            if readiness_handoff
+                            else (
+                                "Candidate implementation handed to deterministic verification "
+                                f"after {observation_turns_without_mutation} consecutive "
+                                "observation-only turns with no repository progress."
+                            )
                         ),
                         prompt_tokens=total_prompt_tokens,
                         completion_tokens=total_completion_tokens,

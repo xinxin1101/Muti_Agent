@@ -35,6 +35,7 @@ def test_task_contract_accepts_valid_scope() -> None:
 
     assert contract.task_id == "TASK-001"
     assert contract.writable_files == ["src/**"]
+    assert contract.required_output_files is None
     assert contract.readonly_files == ["tests/**"]
     assert contract.max_retries == 2
 
@@ -187,3 +188,30 @@ def test_failure_report_accepts_taxonomy_value() -> None:
 
     assert report.failure_type == "SCOPE_VIOLATION"
     assert report.retryable is False
+
+
+
+def test_task_contract_accepts_explicit_required_output_within_writable_scope() -> None:
+    contract = make_task_contract(required_output_files=["src/auth/service.py"])
+
+    assert contract.required_output_files == ["src/auth/service.py"]
+
+
+@pytest.mark.parametrize("path", ["src/**", "src/*.py", "src/auth/"])
+def test_task_contract_rejects_non_exact_required_output(path: str) -> None:
+    with pytest.raises(ValidationError, match="exact repository file paths"):
+        make_task_contract(required_output_files=[path])
+
+
+def test_task_contract_rejects_required_output_outside_writable_scope() -> None:
+    with pytest.raises(ValidationError, match="outside writable scope"):
+        make_task_contract(required_output_files=["tests/test_auth.py"])
+
+
+def test_task_contract_rejects_required_output_protected_by_readonly_scope() -> None:
+    with pytest.raises(ValidationError, match="protected by readonly scope"):
+        make_task_contract(
+            writable_files=["src/**", "tests/generated.py"],
+            readonly_files=["tests/**"],
+            required_output_files=["tests/generated.py"],
+        )

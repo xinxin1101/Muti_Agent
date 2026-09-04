@@ -148,3 +148,26 @@ def test_independent_subsystems_with_interface_remain_multi_package() -> None:
 
     assert result.routing_audit.mode is WorkPackageRoutingMode.MULTI
     assert any("declared_interface_dependencies=" in item for item in result.routing_audit.reasons)
+
+
+
+def test_converter_keeps_required_outputs_separate_from_owned_paths() -> None:
+    package = _package(
+        owned_paths=("gomoku/**",),
+        required_output_files=("gomoku/core.py",),
+    )
+
+    result = WorkPackagePlanValidator().validate_and_convert(
+        WorkPackagePlan(packages=(package,)),
+        requirement="实现核心模型。",
+        max_tasks=8,
+    )
+
+    task = result.dag.node("core-model").task
+    assert task.writable_files == ["gomoku/**"]
+    assert task.required_output_files == ["gomoku/core.py"]
+
+
+def test_work_package_rejects_required_output_outside_owned_scope() -> None:
+    with pytest.raises(ValueError, match="outside owned path scope"):
+        _package(required_output_files=("other/core.py",))

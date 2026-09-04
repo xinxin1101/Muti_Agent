@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
@@ -27,6 +29,36 @@ def _normalize_non_empty_text(value: str) -> str:
     return normalized
 
 
+def _normalize_required_output_path(value: str) -> str:
+    path = _normalize_scope_pattern(value)
+    if "*" in path or "?" in path or path.endswith("/"):
+        raise ValueError("required output files must be exact repository file paths")
+    return path
+
+
+def _scope_pattern_matches(path: str, pattern: str) -> bool:
+    result: list[str] = []
+    index = 0
+    while index < len(pattern):
+        if pattern.startswith("**/", index):
+            result.append("(?:.*/)?")
+            index += 3
+            continue
+        if pattern.startswith("**", index):
+            result.append(".*")
+            index += 2
+            continue
+        char = pattern[index]
+        if char == "*":
+            result.append("[^/]*")
+        elif char == "?":
+            result.append("[^/]")
+        else:
+            result.append(re.escape(char))
+        index += 1
+    return re.fullmatch("".join(result), path) is not None
+
+
 class TaskContract(BaseModel):
     """Validated execution contract produced by planning and consumed by runtime workers."""
 
@@ -40,6 +72,7 @@ class TaskContract(BaseModel):
     objective: str = Field(min_length=1, max_length=4000)
     readable_files: list[str] = Field(default_factory=list)
     writable_files: list[str] = Field(min_length=1)
+    required_output_files: list[str] | None = Field(default=None, min_length=1, max_length=16)
     readonly_files: list[str] = Field(default_factory=list)
     acceptance_criteria: list[str] = Field(min_length=1)
     verification_commands: list[str] = Field(min_length=1)
@@ -58,6 +91,16 @@ class TaskContract(BaseModel):
             raise ValueError("scope patterns must not contain duplicates")
         return normalized
 
+    @field_validator("required_output_files")
+    @classmethod
+    def validate_required_output_files(cls, values: list[str] | None) -> list[str] | None:
+        if values is None:
+            return None
+        normalized = [_normalize_required_output_path(value) for value in values]
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("required output files must not contain duplicates")
+        return normalized
+
     @field_validator("acceptance_criteria", "verification_commands")
     @classmethod
     def validate_non_empty_items(cls, values: list[str]) -> list[str]:
@@ -72,4 +115,13 @@ class TaskContract(BaseModel):
         if overlap:
             joined = ", ".join(sorted(overlap))
             raise ValueError(f"writable_files and readonly_files overlap: {joined}")
+        for path in self.required_output_files or []:
+            if not any(_scope_pattern_matches(path, pattern) for pattern in self.writable_files):
+                raise ValueError(
+                    f"required output file is outside writable scope: {path}"
+                )
+            if any(_scope_pattern_matches(path, pattern) for pattern in self.readonly_files):
+                raise ValueError(
+                    f"required output file is protected by readonly scope: {path}"
+                )
         return self

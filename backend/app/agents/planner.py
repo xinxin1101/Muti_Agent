@@ -161,14 +161,18 @@ class PlannerAgent:
             "machine-consumed. Return one JSON object only: no Markdown fences, commentary, prose, "
             "or extra keys. It must use exactly this compact shape:\n"
             '{"task_id":"ascii-id","objective":"...","readable_files":["..."],'
-            '"writable_files":["..."],"readonly_files":["..."],'
+            '"writable_files":["..."],"required_output_files":["src/file.py"],'
+            '"readonly_files":["..."],'
             '"acceptance_criteria":["..."],"verification_commands":["..."],'
             '"max_retries":0}\n\n'
             "Planning rules:\n"
             "1. Preserve the user's requested development goal.\n"
             "2. Use a stable task_id containing only letters, digits, '.', '_', or '-'.\n"
             "3. All file scopes must be repository-relative POSIX-style paths or glob patterns.\n"
-            "4. writable_files must contain at least one narrowly scoped implementation path.\n"
+            "4. writable_files defines write authorization and must contain at least one narrowly "
+            "scoped implementation path. required_output_files is separate completion evidence: "
+            "list only exact files that must be created or modified, never globs; use null when "
+            "the exact mandatory outputs are unknown.\n"
             "5. readonly_files should protect tests or other files the implementation must not "
             "modify.\n"
             "6. acceptance_criteria must be concrete and externally checkable.\n"

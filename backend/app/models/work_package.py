@@ -4,7 +4,12 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.models.task import _normalize_non_empty_text, _normalize_scope_pattern
+from app.models.task import (
+    _normalize_non_empty_text,
+    _normalize_required_output_path,
+    _normalize_scope_pattern,
+    _scope_pattern_matches,
+)
 
 
 class PlanningComplexity(StrEnum):
@@ -85,6 +90,9 @@ class WorkPackage(BaseModel):
     objective: str = Field(min_length=1, max_length=1_500)
     deliverable: str = Field(min_length=1, max_length=256)
     owned_paths: tuple[str, ...] = Field(min_length=1, max_length=5)
+    required_output_files: tuple[str, ...] | None = Field(
+        default=None, min_length=1, max_length=5
+    )
     readable_paths: tuple[str, ...] = Field(default_factory=tuple, max_length=32)
     produces: tuple[str, ...] = Field(min_length=1, max_length=16)
     consumes: tuple[str, ...] = Field(max_length=16)
@@ -106,6 +114,18 @@ class WorkPackage(BaseModel):
             raise ValueError("work package paths must not contain duplicates")
         return normalized
 
+    @field_validator("required_output_files")
+    @classmethod
+    def normalize_required_outputs(
+        cls, values: tuple[str, ...] | None
+    ) -> tuple[str, ...] | None:
+        if values is None:
+            return None
+        normalized = tuple(_normalize_required_output_path(value) for value in values)
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("required output files must not contain duplicates")
+        return normalized
+
     @field_validator("produces", "consumes", "acceptance_criteria", "verification_commands")
     @classmethod
     def normalize_items(cls, values: tuple[str, ...]) -> tuple[str, ...]:
@@ -118,6 +138,11 @@ class WorkPackage(BaseModel):
     def validate_boundaries(self) -> WorkPackage:
         if set(self.owned_paths) & set(self.readable_paths):
             raise ValueError("owned_paths and readable_paths must not overlap")
+        for path in self.required_output_files or ():
+            if not any(_scope_pattern_matches(path, pattern) for pattern in self.owned_paths):
+                raise ValueError(
+                    f"required output file is outside owned path scope: {path}"
+                )
         if (
             self.estimated_complexity is PlanningComplexity.LOW
             and self.recommended_token_budget > 4_000

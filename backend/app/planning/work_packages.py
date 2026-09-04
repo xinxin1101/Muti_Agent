@@ -104,6 +104,11 @@ class WorkPackagePlanValidator:
                     objective=package.objective,
                     readable_files=list(package.readable_paths),
                     writable_files=list(package.owned_paths),
+                    required_output_files=(
+                        list(package.required_output_files)
+                        if package.required_output_files is not None
+                        else None
+                    ),
                     readonly_files=[],
                     acceptance_criteria=list(package.acceptance_criteria),
                     verification_commands=list(package.verification_commands),

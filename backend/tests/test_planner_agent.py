@@ -10,6 +10,7 @@ VALID_TASK = {
     "objective": "Add JWT login support to the FastAPI application.",
     "readable_files": ["app/**", "tests/**"],
     "writable_files": ["app/auth/**"],
+    "required_output_files": ["app/auth/service.py"],
     "readonly_files": ["tests/**"],
     "acceptance_criteria": [
         "Valid credentials return a JWT access token.",
@@ -53,11 +54,13 @@ def test_planner_returns_valid_task_contract_without_repair() -> None:
 
     assert task.task_id == "AUTH-001"
     assert task.writable_files == ["app/auth/**"]
+    assert task.required_output_files == ["app/auth/service.py"]
     assert len(driver.requests) == 1
     assert driver.requests[0].role is models.AgentRole.PLANNER
     assert driver.requests[0].model == "test/planner"
     assert driver.requests[0].messages[0].role.value == "system"
     assert "compact shape" in driver.requests[0].messages[0].content
+    assert "required_output_files" in driver.requests[0].messages[0].content
     assert "TaskContract JSON Schema" not in driver.requests[0].messages[0].content
     assert driver.requests[0].max_output_tokens == 1_200
 

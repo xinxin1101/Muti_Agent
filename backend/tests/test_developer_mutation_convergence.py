@@ -80,12 +80,17 @@ def _repository(tmp_path: Path) -> Path:
     return root
 
 
-def _task(*, writable_files: list[str] | None = None) -> models.TaskContract:
+def _task(
+    *,
+    writable_files: list[str] | None = None,
+    required_output_files: list[str] | None = None,
+) -> models.TaskContract:
     return models.TaskContract(
         task_id="developer-convergence",
         objective="Implement the requested repository change.",
         readable_files=["**"],
         writable_files=writable_files or ["src/gomoku_logic.py"],
+        required_output_files=required_output_files,
         readonly_files=[],
         acceptance_criteria=["The requested repository change exists."],
         verification_commands=["python3 -c \"print('ok')\""],
@@ -546,3 +551,161 @@ def test_candidate_handoff_terminal_turn_records_runtime_progress_trace(
     assert terminal_turn.has_workspace_patch is True
     assert terminal_turn.turn_made_progress is False
     assert terminal_turn.changed_files_this_turn == ()
+
+
+
+def test_explicit_ready_candidate_hands_off_after_first_observation(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    driver = _RecordingDriver(
+        [
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-ready",
+                        "write_file",
+                        {"path": "src/gomoku_logic.py", "content": "VALUE = 2\n"},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "read-ready",
+                        "read_range",
+                        {
+                            "path": "src/gomoku_logic.py",
+                            "start_line": 1,
+                            "end_line": 5,
+                        },
+                    )
+                ]
+            ),
+            _response(content="must not be requested"),
+        ]
+    )
+
+    result = asyncio.run(
+        _developer(driver).run(
+            _task(
+                writable_files=["src/gomoku_logic.py", "src/optional.py"],
+                required_output_files=["src/gomoku_logic.py"],
+            ),
+            workspace=LocalGitWorkspace(root),
+        )
+    )
+
+    assert result.stop_reason is models.DeveloperStopReason.MODEL_STOP
+    assert len(driver.requests) == 2
+    assert driver.progress_outcomes == [True, False]
+    assert "Structurally ready candidate" in result.final_message
+
+
+def test_incomplete_required_outputs_do_not_trigger_early_handoff(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    driver = _RecordingDriver(
+        [
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-index",
+                        "write_file",
+                        {"path": "src/index.html", "content": "<main>board</main>\n"},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "read-index",
+                        "read_range",
+                        {"path": "src/index.html", "start_line": 1, "end_line": 5},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-ui",
+                        "write_file",
+                        {"path": "src/gomoku_ui.js", "content": "const SIZE = 15;\n"},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "read-ui",
+                        "read_range",
+                        {"path": "src/gomoku_ui.js", "start_line": 1, "end_line": 5},
+                    )
+                ]
+            ),
+            _response(content="must not be requested"),
+        ]
+    )
+
+    result = asyncio.run(
+        _developer(driver).run(
+            _task(
+                writable_files=["src/index.html", "src/gomoku_ui.js"],
+                required_output_files=["src/index.html", "src/gomoku_ui.js"],
+            ),
+            workspace=LocalGitWorkspace(root),
+        )
+    )
+
+    assert result.stop_reason is models.DeveloperStopReason.MODEL_STOP
+    assert len(driver.requests) == 4
+    assert driver.progress_outcomes == [True, False, True, False]
+    assert "Structurally ready candidate" in result.final_message
+
+
+def test_missing_required_output_preserves_p14_fallback_handoff(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    driver = _RecordingDriver(
+        [
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-index",
+                        "write_file",
+                        {"path": "src/index.html", "content": "<main>board</main>\n"},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "read-index-1",
+                        "read_range",
+                        {"path": "src/index.html", "start_line": 1, "end_line": 5},
+                    )
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "read-index-2",
+                        "read_range",
+                        {"path": "src/index.html", "start_line": 1, "end_line": 5},
+                    )
+                ]
+            ),
+            _response(content="must not be requested"),
+        ]
+    )
+
+    result = asyncio.run(
+        _developer(driver).run(
+            _task(
+                writable_files=["src/index.html", "src/gomoku_ui.js"],
+                required_output_files=["src/index.html", "src/gomoku_ui.js"],
+            ),
+            workspace=LocalGitWorkspace(root),
+        )
+    )
+
+    assert result.stop_reason is models.DeveloperStopReason.MODEL_STOP
+    assert len(driver.requests) == 3
+    assert driver.progress_outcomes == [True, False, False]
+    assert "after 2 consecutive observation-only turns" in result.final_message

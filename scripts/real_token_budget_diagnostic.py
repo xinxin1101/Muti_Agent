@@ -60,6 +60,7 @@ def _diagnostic_dag() -> TaskDAG:
         ),
         readable_files=["examples/gomoku/**"],
         writable_files=["examples/gomoku/gomoku_core.js"],
+        required_output_files=["examples/gomoku/gomoku_core.js"],
         acceptance_criteria=[
             "Node require() returns GameLogic and BOARD_SIZE=15.",
             "GameLogic rejects out-of-range and occupied cells.",
@@ -89,6 +90,10 @@ def _diagnostic_dag() -> TaskDAG:
         ),
         readable_files=["examples/gomoku/**"],
         writable_files=["examples/gomoku/index.html", "examples/gomoku/gomoku_ui.js"],
+        required_output_files=[
+            "examples/gomoku/index.html",
+            "examples/gomoku/gomoku_ui.js",
+        ],
         acceptance_criteria=[
             "index.html loads gomoku_ui.js and contains board, status, and restart elements.",
             "gomoku_ui.js creates 225 cells and handles click-driven two-player turns.",
@@ -115,6 +120,7 @@ def _diagnostic_dag() -> TaskDAG:
         ),
         readable_files=["examples/gomoku/**"],
         writable_files=["examples/gomoku/gomoku_integration.test.cjs"],
+        required_output_files=["examples/gomoku/gomoku_integration.test.cjs"],
         readonly_files=[
             "examples/gomoku/gomoku_core.js",
             "examples/gomoku/index.html",
