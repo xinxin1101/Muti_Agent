@@ -21,21 +21,22 @@ jobs:
 
       - name: Clean and audit P1.5.2 runtime
         run: |
-          python -m py_compile scripts/p152_cleanup_audit.py
+          python -m py_compile scripts/p152_cleanup_audit.py scripts/p152_projector_cleanup.py
           python scripts/p152_cleanup_audit.py
+          python scripts/p152_projector_cleanup.py
+          python -m compileall -q backend/app
 
       - name: Commit cleaned runtime
         run: |
           git config user.name "DevFlow CI Patch"
           git config user.email "devflow-ci@example.com"
           git add backend/app/agent_runtime/loop.py \
+                  backend/app/trace/projector.py \
                   backend/tests/test_developer_mutation_convergence.py
           git diff --cached --check
           if git diff --cached --quiet; then
             echo "No cleanup changes needed."
             exit 0
           fi
-          git commit -m "fix(runtime): clean deliverable convergence trace state"
+          git commit -m "fix(trace): deduplicate deliverable projection fields"
           git push origin HEAD:agent/p1.5.2-deliverable-aware-convergence
-
-# Structural audit rerun after AST-based trace completion.
