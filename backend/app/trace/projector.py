@@ -402,16 +402,6 @@ class CausalTraceProjector:
                     deliverable_convergence_violations=(
                         item.deliverable_convergence_violations
                     ),
-                    candidate_readiness_known=item.candidate_readiness_known,
-                    candidate_ready=item.candidate_ready,
-                    missing_required_deliverables=(
-                        item.missing_required_deliverables
-                    ),
-                    deliverable_progress=item.deliverable_progress,
-                    deliverable_completion_mode=item.deliverable_completion_mode,
-                    deliverable_convergence_violations=(
-                        item.deliverable_convergence_violations
-                    ),
                 )
                 existing_ids.add(item.span_id)
 
