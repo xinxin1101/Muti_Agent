@@ -1,0 +1,306 @@
+from pathlib import Path
+
+
+def replace_once(path: str, old: str, new: str) -> None:
+    file_path = Path(path)
+    text = file_path.read_text(encoding="utf-8")
+    if old not in text:
+        if new in text:
+            return
+        raise SystemExit(f"anchor not found in {path}: {old[:120]!r}")
+    file_path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
+replace_once(
+    "backend/app/agent_runtime/types.py",
+    "    same_file_mutation_nudge_threshold: int = 2\n    tool_recovery_enabled: bool = False\n",
+    "    same_file_mutation_nudge_threshold: int = 2\n"
+    "    deliverable_convergence_enabled: bool = False\n"
+    "    max_deliverable_convergence_violations: int = 1\n"
+    "    tool_recovery_enabled: bool = False\n",
+)
+
+replace_once(
+    "backend/app/agents/developer.py",
+    "                mutation_convergence_enabled=True,\n                tool_recovery_enabled=True,\n",
+    "                mutation_convergence_enabled=True,\n"
+    "                deliverable_convergence_enabled=True,\n"
+    "                tool_recovery_enabled=True,\n",
+)
+
+trace_fields = (
+    "    convergence_nudge_triggered: bool = False\n"
+    "    candidate_readiness_known: bool = False\n"
+    "    candidate_ready: bool | None = None\n"
+    "    missing_required_deliverables: tuple[str, ...] = Field(\n"
+    "        default_factory=tuple, max_length=8\n"
+    "    )\n"
+    "    deliverable_progress: bool = False\n"
+    "    deliverable_completion_mode: bool = False\n"
+    "    deliverable_convergence_violations: int = Field(default=0, ge=0)\n"
+)
+trace_path = Path("backend/app/models/trace.py")
+trace_text = trace_path.read_text(encoding="utf-8")
+anchor = "    convergence_nudge_triggered: bool = False\n"
+if "    candidate_readiness_known: bool = False\n" not in trace_text:
+    if trace_text.count(anchor) != 2:
+        raise SystemExit("expected two trace convergence field anchors")
+    trace_text = trace_text.replace(anchor, trace_fields)
+    trace_path.write_text(trace_text, encoding="utf-8")
+
+replace_once(
+    "backend/app/trace/collector.py",
+    "        same_file_mutation_streak: int,\n"
+    "        convergence_nudge_triggered: bool,\n"
+    "    ) -> None:\n"
+    "        safe_changed_files = tuple(\n"
+    "            path[:512] for path in changed_files_this_turn[:8] if path\n"
+    "        )\n",
+    "        same_file_mutation_streak: int,\n"
+    "        convergence_nudge_triggered: bool,\n"
+    "        candidate_readiness_known: bool = False,\n"
+    "        candidate_ready: bool | None = None,\n"
+    "        missing_required_deliverables: tuple[str, ...] = (),\n"
+    "        deliverable_progress: bool = False,\n"
+    "        deliverable_completion_mode: bool = False,\n"
+    "        deliverable_convergence_violations: int = 0,\n"
+    "    ) -> None:\n"
+    "        safe_changed_files = tuple(\n"
+    "            path[:512] for path in changed_files_this_turn[:8] if path\n"
+    "        )\n"
+    "        safe_missing_deliverables = tuple(\n"
+    "            path[:512] for path in missing_required_deliverables[:8] if path\n"
+    "        )\n",
+)
+replace_once(
+    "backend/app/trace/collector.py",
+    "                    \"convergence_nudge_triggered\": convergence_nudge_triggered,\n"
+    "                }\n",
+    "                    \"convergence_nudge_triggered\": convergence_nudge_triggered,\n"
+    "                    \"candidate_readiness_known\": candidate_readiness_known,\n"
+    "                    \"candidate_ready\": candidate_ready,\n"
+    "                    \"missing_required_deliverables\": safe_missing_deliverables,\n"
+    "                    \"deliverable_progress\": deliverable_progress,\n"
+    "                    \"deliverable_completion_mode\": deliverable_completion_mode,\n"
+    "                    \"deliverable_convergence_violations\": max(\n"
+    "                        0, deliverable_convergence_violations\n"
+    "                    ),\n"
+    "                }\n",
+)
+
+replace_once(
+    "backend/app/trace/projector.py",
+    "                    same_file_mutation_streak=item.same_file_mutation_streak,\n"
+    "                    convergence_nudge_triggered=item.convergence_nudge_triggered,\n",
+    "                    same_file_mutation_streak=item.same_file_mutation_streak,\n"
+    "                    convergence_nudge_triggered=item.convergence_nudge_triggered,\n"
+    "                    candidate_readiness_known=item.candidate_readiness_known,\n"
+    "                    candidate_ready=item.candidate_ready,\n"
+    "                    missing_required_deliverables=(\n"
+    "                        item.missing_required_deliverables\n"
+    "                    ),\n"
+    "                    deliverable_progress=item.deliverable_progress,\n"
+    "                    deliverable_completion_mode=item.deliverable_completion_mode,\n"
+    "                    deliverable_convergence_violations=(\n"
+    "                        item.deliverable_convergence_violations\n"
+    "                    ),\n",
+)
+replace_once(
+    "backend/app/trace/projector.py",
+    "        same_file_mutation_streak: int = 0,\n"
+    "        convergence_nudge_triggered: bool = False,\n"
+    "    ) -> None:\n",
+    "        same_file_mutation_streak: int = 0,\n"
+    "        convergence_nudge_triggered: bool = False,\n"
+    "        candidate_readiness_known: bool = False,\n"
+    "        candidate_ready: bool | None = None,\n"
+    "        missing_required_deliverables: tuple[str, ...] = (),\n"
+    "        deliverable_progress: bool = False,\n"
+    "        deliverable_completion_mode: bool = False,\n"
+    "        deliverable_convergence_violations: int = 0,\n"
+    "    ) -> None:\n",
+)
+replace_once(
+    "backend/app/trace/projector.py",
+    "                same_file_mutation_streak=same_file_mutation_streak,\n"
+    "                convergence_nudge_triggered=convergence_nudge_triggered,\n"
+    "            )\n",
+    "                same_file_mutation_streak=same_file_mutation_streak,\n"
+    "                convergence_nudge_triggered=convergence_nudge_triggered,\n"
+    "                candidate_readiness_known=candidate_readiness_known,\n"
+    "                candidate_ready=candidate_ready,\n"
+    "                missing_required_deliverables=missing_required_deliverables,\n"
+    "                deliverable_progress=deliverable_progress,\n"
+    "                deliverable_completion_mode=deliverable_completion_mode,\n"
+    "                deliverable_convergence_violations=(\n"
+    "                    deliverable_convergence_violations\n"
+    "                ),\n"
+    "            )\n",
+)
+
+loop_path = Path("backend/app/agent_runtime/loop.py")
+loop = loop_path.read_text(encoding="utf-8")
+
+old = "        mutation_gate_violations = 0\n        no_patch_model_stops = 0\n"
+new = (
+    "        mutation_gate_violations = 0\n"
+    "        deliverable_completion_mode = False\n"
+    "        deliverable_convergence_violations = 0\n"
+    "        deliverable_focus_files: tuple[str, ...] = ()\n"
+    "        no_patch_model_stops = 0\n"
+)
+if old in loop:
+    loop = loop.replace(old, new, 1)
+elif new not in loop:
+    raise SystemExit("runtime state anchor not found")
+
+old = '''            if not response.tool_calls:\n                has_workspace_patch = (\n                    workspace.change_snapshot().patch_hash != start_snapshot.patch_hash\n                )\n                if trace is not None:\n'''
+new = '''            if not response.tool_calls:\n                current_snapshot = workspace.change_snapshot()\n                has_workspace_patch = current_snapshot.patch_hash != start_snapshot.patch_hash\n                candidate_changed_files = set(\n                    current_snapshot.files_changed_since(start_snapshot)\n                )\n                candidate_ready = candidate_required_paths is not None and set(\n                    candidate_required_paths\n                ).issubset(candidate_changed_files)\n                missing_required_paths = tuple(\n                    path\n                    for path in (candidate_required_paths or ())\n                    if path not in candidate_changed_files\n                )\n                if trace is not None:\n'''
+if old in loop:
+    loop = loop.replace(old, new, 1)
+elif new not in loop:
+    raise SystemExit("no-tool snapshot anchor not found")
+
+old = '''                        same_file_mutation_streak=0,\n                        convergence_nudge_triggered=False,\n                    )\n'''
+new = '''                        same_file_mutation_streak=0,\n                        convergence_nudge_triggered=False,\n                        candidate_readiness_known=candidate_readiness_known,\n                        candidate_ready=(\n                            candidate_ready if candidate_readiness_known else None\n                        ),\n                        missing_required_deliverables=missing_required_paths,\n                        deliverable_progress=False,\n                        deliverable_completion_mode=deliverable_completion_mode,\n                        deliverable_convergence_violations=(\n                            deliverable_convergence_violations\n                        ),\n                    )\n'''
+if old in loop:
+    loop = loop.replace(old, new, 1)
+elif new not in loop:
+    raise SystemExit("no-tool trace anchor not found")
+
+old = '''            candidate_ready_before_turn = candidate_required_paths is not None and set(\n                candidate_required_paths\n            ).issubset(candidate_changed_files_before_turn)\n            results: list[ToolExecutionResult] = []\n'''
+new = '''            candidate_ready_before_turn = candidate_required_paths is not None and set(\n                candidate_required_paths\n            ).issubset(candidate_changed_files_before_turn)\n            missing_required_paths_before_turn = tuple(\n                path\n                for path in (candidate_required_paths or ())\n                if path not in candidate_changed_files_before_turn\n            )\n            completed_required_paths_before_turn = set(candidate_required_paths or ()) - set(\n                missing_required_paths_before_turn\n            )\n            results: list[ToolExecutionResult] = []\n'''
+if old in loop:
+    loop = loop.replace(old, new, 1)
+elif new not in loop:
+    raise SystemExit("before-turn readiness anchor not found")
+
+old = '''            candidate_ready = candidate_required_paths is not None and set(\n                candidate_required_paths\n            ).issubset(candidate_changed_files)\n            progress = ToolProgressClassifier.summarize(\n'''
+new = '''            candidate_ready = candidate_required_paths is not None and set(\n                candidate_required_paths\n            ).issubset(candidate_changed_files)\n            missing_required_paths = tuple(\n                path\n                for path in (candidate_required_paths or ())\n                if path not in candidate_changed_files\n            )\n            completed_required_paths = tuple(\n                path\n                for path in (candidate_required_paths or ())\n                if path in candidate_changed_files\n            )\n            deliverable_progress = (\n                candidate_readiness_known\n                and len(missing_required_paths) < len(missing_required_paths_before_turn)\n            )\n            mutation_only_touched_completed_deliverables = (\n                bool(changed_files_this_turn)\n                and candidate_readiness_known\n                and set(changed_files_this_turn).issubset(\n                    completed_required_paths_before_turn\n                )\n            )\n            progress = ToolProgressClassifier.summarize(\n'''
+if old in loop:
+    loop = loop.replace(old, new, 1)
+elif new not in loop:
+    raise SystemExit("after-turn readiness anchor not found")
+
+old = '''                if policy.mutation_convergence_enabled and has_workspace_patch:\n                    runtime_instruction = (\n                        self._repeated_mutation_convergence_prompt()\n                        if repeated_mutation\n                        else self._post_mutation_convergence_prompt()\n                    )\n                    convergence_nudge_triggered = True\n            else:\n'''
+new = '''                if policy.mutation_convergence_enabled and has_workspace_patch:\n                    runtime_instruction = (\n                        self._repeated_mutation_convergence_prompt()\n                        if repeated_mutation\n                        else self._post_mutation_convergence_prompt()\n                    )\n                    convergence_nudge_triggered = True\n                    if policy.deliverable_convergence_enabled and candidate_readiness_known:\n                        if deliverable_progress:\n                            deliverable_completion_mode = False\n                            deliverable_convergence_violations = 0\n                            deliverable_focus_files = ()\n                        elif (\n                            deliverable_completion_mode\n                            and missing_required_paths\n                            and progress.failed_count == 0\n                        ):\n                            deliverable_convergence_violations += 1\n                            deliverable_focus_files = changed_files_this_turn\n                            runtime_instruction = self._deliverable_completion_prompt(\n                                strict=True,\n                                completed_paths=completed_required_paths,\n                                missing_paths=missing_required_paths,\n                                repeated_files=deliverable_focus_files,\n                            )\n                            convergence_nudge_triggered = True\n                            events.append(\n                                AgentRuntimeEvent(\n                                    sequence=len(events),\n                                    kind=AgentRuntimeEventKind.MUTATION_GATE,\n                                    iteration=iteration,\n                                    progress_kind=ToolProgressKind.MUTATION,\n                                    detail=(\n                                        \"deliverable_completion_violation:\"\n                                        f\"{deliverable_convergence_violations}\"\n                                    ),\n                                )\n                            )\n                            if (\n                                deliverable_convergence_violations\n                                > policy.max_deliverable_convergence_violations\n                            ):\n                                events.append(\n                                    AgentRuntimeEvent(\n                                        sequence=len(events),\n                                        kind=AgentRuntimeEventKind.MUTATION_GATE,\n                                        iteration=iteration,\n                                        progress_kind=ToolProgressKind.MUTATION,\n                                        detail=\"deliverable_completion_gate_exhausted\",\n                                    )\n                                )\n                                if trace is not None:\n                                    assert turn_span_id is not None\n                                    trace.record_runtime_progress(\n                                        agent_turn_span_id=turn_span_id,\n                                        has_workspace_patch=has_workspace_patch,\n                                        turn_made_progress=turn_made_progress,\n                                        changed_files_this_turn=changed_files_this_turn,\n                                        consecutive_mutation_turns=consecutive_mutation_turns,\n                                        same_file_mutation_streak=same_file_mutation_streak,\n                                        convergence_nudge_triggered=True,\n                                        candidate_readiness_known=candidate_readiness_known,\n                                        candidate_ready=candidate_ready,\n                                        missing_required_deliverables=missing_required_paths,\n                                        deliverable_progress=deliverable_progress,\n                                        deliverable_completion_mode=True,\n                                        deliverable_convergence_violations=(\n                                            deliverable_convergence_violations\n                                        ),\n                                    )\n                                await self._record_tool_cost_outcome(\n                                    policy=policy,\n                                    calls=response.tool_calls,\n                                    results=results,\n                                    has_real_progress=True,\n                                    compacted_code_mutation=compacted_code_mutation,\n                                )\n                                return self._result(\n                                    stop_reason=AgentRuntimeStopReason.NO_PROGRESS,\n                                    iterations=iteration,\n                                    tool_calls=tool_call_count,\n                                    final_message=(\n                                        \"Developer stopped after repeatedly mutating already-\"\n                                        \"covered deliverables without reducing the exact missing \"\n                                        \"deliverable set: \"\n                                        + self._format_paths(missing_required_paths)\n                                    ),\n                                    prompt_tokens=total_prompt_tokens,\n                                    completion_tokens=total_completion_tokens,\n                                    total_tokens=total_tokens,\n                                    latency_ms=total_latency_ms,\n                                    observation_count=observation_count,\n                                    mutation_count=mutation_count,\n                                    mutation_gate_triggered=True,\n                                    events=events,\n                                )\n                        elif (\n                            missing_required_paths\n                            and same_file_mutation_streak\n                            >= policy.same_file_mutation_nudge_threshold\n                            and mutation_only_touched_completed_deliverables\n                            and progress.failed_count == 0\n                        ):\n                            deliverable_completion_mode = True\n                            deliverable_convergence_violations = 0\n                            deliverable_focus_files = changed_files_this_turn\n                            runtime_instruction = self._deliverable_completion_prompt(\n                                strict=False,\n                                completed_paths=completed_required_paths,\n                                missing_paths=missing_required_paths,\n                                repeated_files=deliverable_focus_files,\n                            )\n                            convergence_nudge_triggered = True\n                            events.append(\n                                AgentRuntimeEvent(\n                                    sequence=len(events),\n                                    kind=AgentRuntimeEventKind.MUTATION_GATE,\n                                    iteration=iteration,\n                                    progress_kind=ToolProgressKind.MUTATION,\n                                    detail=\"deliverable_completion_mode_entered\",\n                                )\n                            )\n            else:\n'''
+if old in loop:
+    loop = loop.replace(old, new, 1)
+elif new not in loop:
+    raise SystemExit("mutation prompt anchor not found")
+
+old = '''            if tool_recovery_instruction is not None:\n                if not turn_made_progress:\n                    runtime_instruction = tool_recovery_instruction\n'''
+new = '''            if (\n                policy.deliverable_convergence_enabled\n                and deliverable_completion_mode\n                and candidate_readiness_known\n                and missing_required_paths\n                and not turn_made_progress\n            ):\n                runtime_instruction = self._deliverable_completion_prompt(\n                    strict=deliverable_convergence_violations > 0,\n                    completed_paths=completed_required_paths,\n                    missing_paths=missing_required_paths,\n                    repeated_files=deliverable_focus_files,\n                )\n                convergence_nudge_triggered = True\n\n            if tool_recovery_instruction is not None:\n                if not turn_made_progress:\n                    runtime_instruction = tool_recovery_instruction\n'''
+if old in loop:
+    loop = loop.replace(old, new, 1)
+elif new not in loop:
+    raise SystemExit("tool recovery anchor not found")
+
+old_trace_tail = '''                    same_file_mutation_streak=same_file_mutation_streak,\n                    convergence_nudge_triggered=convergence_nudge_triggered,\n                )\n'''
+new_trace_tail = '''                    same_file_mutation_streak=same_file_mutation_streak,\n                    convergence_nudge_triggered=convergence_nudge_triggered,\n                    candidate_readiness_known=candidate_readiness_known,\n                    candidate_ready=(candidate_ready if candidate_readiness_known else None),\n                    missing_required_deliverables=missing_required_paths,\n                    deliverable_progress=deliverable_progress,\n                    deliverable_completion_mode=deliverable_completion_mode,\n                    deliverable_convergence_violations=(\n                        deliverable_convergence_violations\n                    ),\n                )\n'''
+if "missing_required_deliverables=missing_required_paths" not in loop:
+    occurrences = loop.count(old_trace_tail)
+    if occurrences < 3:
+        raise SystemExit(f"expected at least 3 post-tool trace anchors, got {occurrences}")
+    loop = loop.replace(old_trace_tail, new_trace_tail)
+
+helper_anchor = '''    @staticmethod\n    def _safe_tool_failure_evidence(call: Any, result: ToolExecutionResult) -> str:\n'''
+helper = '''    @staticmethod\n    def _format_paths(paths: tuple[str, ...]) -> str:\n        bounded = tuple(path[:256] for path in paths[:8] if path)\n        return \"[\" + \", \".join(bounded) + \"]\"\n\n    @classmethod\n    def _deliverable_completion_prompt(\n        cls,\n        *,\n        strict: bool,\n        completed_paths: tuple[str, ...],\n        missing_paths: tuple[str, ...],\n        repeated_files: tuple[str, ...],\n    ) -> str:\n        prefix = (\n            \"DELIVERABLE COMPLETION MODE — FINAL BOUNDED CHANCE. \"\n            if strict\n            else \"DELIVERABLE COMPLETION MODE. \"\n        )\n        return (\n            prefix\n            + \"The exact structural candidate is incomplete. Completed required paths: \"\n            + cls._format_paths(completed_paths)\n            + \". Missing required paths: \"\n            + cls._format_paths(missing_paths)\n            + \". Recently repeated completed paths: \"\n            + cls._format_paths(repeated_files)\n            + \". The next successful repository mutation should make structural delivery \"\n            \"progress by completing one missing required path. You may make one bounded \"\n            \"correction to an already-completed path only when a concrete acceptance criterion \"\n            \"requires it; do not repeat that correction across turns. Do not spend another turn \"\n            \"broadly rereading or polishing completed files. If a missing deliverable cannot be \"\n            \"created safely within the TaskContract, return exactly 'BLOCKED: <reason>'.\"\n        )\n\n    @staticmethod\n    def _safe_tool_failure_evidence(call: Any, result: ToolExecutionResult) -> str:\n'''
+if helper_anchor in loop:
+    loop = loop.replace(helper_anchor, helper, 1)
+elif "def _deliverable_completion_prompt(" not in loop:
+    raise SystemExit("helper insertion anchor not found")
+
+loop_path.write_text(loop, encoding="utf-8")
+
+test_path = Path("backend/tests/test_developer_mutation_convergence.py")
+tests = test_path.read_text(encoding="utf-8")
+marker = "def test_deliverable_completion_mode_focuses_missing_exact_path"
+if marker not in tests:
+    tests += r'''
+
+
+def test_deliverable_completion_mode_focuses_missing_exact_path(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    driver = _RecordingDriver(
+        [
+            _response(tool_calls=[_call("write-index-1", "write_file", {"path": "src/index.html", "content": "<main>v1</main>\n"})]),
+            _response(tool_calls=[_call("write-index-2", "write_file", {"path": "src/index.html", "content": "<main>v2</main>\n"})]),
+            _response(tool_calls=[_call("write-ui", "write_file", {"path": "src/gomoku_ui.js", "content": "const SIZE = 15;\n"})]),
+            _response(content="must not be requested"),
+        ]
+    )
+    result = asyncio.run(_developer(driver).run(_task(writable_files=["src/index.html", "src/gomoku_ui.js"]), workspace=LocalGitWorkspace(root)))
+    assert result.stop_reason is models.DeveloperStopReason.MODEL_STOP
+    assert len(driver.requests) == 3
+    completion_prompt = _prompt(driver.requests[2])
+    assert "DELIVERABLE COMPLETION MODE" in completion_prompt
+    assert "src/index.html" in completion_prompt
+    assert "src/gomoku_ui.js" in completion_prompt
+    assert "immediately after the mutation turn" in result.final_message
+
+
+def test_deliverable_completion_mode_allows_one_bounded_correction(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    driver = _RecordingDriver(
+        [
+            _response(tool_calls=[_call("write-index-1", "write_file", {"path": "src/index.html", "content": "<main>v1</main>\n"})]),
+            _response(tool_calls=[_call("write-index-2", "write_file", {"path": "src/index.html", "content": "<main>v2</main>\n"})]),
+            _response(tool_calls=[_call("write-index-3", "write_file", {"path": "src/index.html", "content": "<main>v3</main>\n"})]),
+            _response(tool_calls=[_call("write-ui", "write_file", {"path": "src/gomoku_ui.js", "content": "const SIZE = 15;\n"})]),
+            _response(content="must not be requested"),
+        ]
+    )
+    result = asyncio.run(_developer(driver).run(_task(writable_files=["src/index.html", "src/gomoku_ui.js"]), workspace=LocalGitWorkspace(root)))
+    assert result.stop_reason is models.DeveloperStopReason.MODEL_STOP
+    assert len(driver.requests) == 4
+    assert "FINAL BOUNDED CHANCE" in _prompt(driver.requests[3])
+    assert "src/gomoku_ui.js" in _prompt(driver.requests[3])
+    assert result.changed_files == ["src/gomoku_ui.js", "src/index.html"]
+
+
+def test_deliverable_completion_gate_stops_second_unproductive_rewrite(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    driver = _RecordingDriver(
+        [
+            _response(tool_calls=[_call("write-index-1", "write_file", {"path": "src/index.html", "content": "<main>v1</main>\n"})]),
+            _response(tool_calls=[_call("write-index-2", "write_file", {"path": "src/index.html", "content": "<main>v2</main>\n"})]),
+            _response(tool_calls=[_call("write-index-3", "write_file", {"path": "src/index.html", "content": "<main>v3</main>\n"})]),
+            _response(tool_calls=[_call("write-index-4", "write_file", {"path": "src/index.html", "content": "<main>v4</main>\n"})]),
+            _response(content="must not be requested"),
+        ]
+    )
+    result = asyncio.run(_developer(driver).run(_task(writable_files=["src/index.html", "src/gomoku_ui.js"]), workspace=LocalGitWorkspace(root)))
+    assert result.stop_reason is models.DeveloperStopReason.NO_PROGRESS
+    assert len(driver.requests) == 4
+    assert driver.progress_outcomes == [True, True, True, True]
+    assert "src/gomoku_ui.js" in result.final_message
+    assert result.changed_files == ["src/index.html"]
+
+
+def test_deliverable_completion_trace_records_structural_progress(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    driver = _RecordingDriver(
+        [
+            _response(tool_calls=[_call("write-index-1", "write_file", {"path": "src/index.html", "content": "<main>v1</main>\n"})]),
+            _response(tool_calls=[_call("write-index-2", "write_file", {"path": "src/index.html", "content": "<main>v2</main>\n"})]),
+            _response(tool_calls=[_call("write-ui", "write_file", {"path": "src/gomoku_ui.js", "content": "const SIZE = 15;\n"})]),
+        ]
+    )
+    trace = TaskTraceCollector(run_id=uuid4(), task_id="developer-convergence", dispatch_id=uuid4(), generation=1)
+    result = asyncio.run(_developer(driver).run(_task(writable_files=["src/index.html", "src/gomoku_ui.js"]), workspace=LocalGitWorkspace(root), trace=trace))
+    turns = {span.iteration: span for span in trace.batch().spans if span.agent_role is models.AgentRole.DEVELOPER and span.kind is models.TraceSpanKind.AGENT_TURN}
+    assert result.stop_reason is models.DeveloperStopReason.MODEL_STOP
+    assert turns[2].candidate_readiness_known is True
+    assert turns[2].candidate_ready is False
+    assert turns[2].missing_required_deliverables == ("src/gomoku_ui.js",)
+    assert turns[2].deliverable_progress is False
+    assert turns[2].deliverable_completion_mode is True
+    assert turns[2].deliverable_convergence_violations == 0
+    assert turns[3].candidate_ready is True
+    assert turns[3].missing_required_deliverables == ()
+    assert turns[3].deliverable_progress is True
+    assert turns[3].deliverable_completion_mode is False
+'''
+
+test_path.write_text(tests, encoding="utf-8")
