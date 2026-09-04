@@ -1,0 +1,106 @@
+name: P1.5.1 Mutation Complete Patch
+
+on:
+  push:
+    branches:
+      - agent/p1.5.1-mutation-complete-handoff
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: agent/p1.5.1-mutation-complete-handoff
+          fetch-depth: 0
+
+      - name: Apply P1.5.1 runtime and regression patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          loop_path = Path('backend/app/agent_runtime/loop.py')
+          loop = loop_path.read_text(encoding='utf-8')
+
+          before_marker = '''            before_turn_snapshot = workspace.change_snapshot()\n            results: list[ToolExecutionResult] = []\n'''
+          before_replacement = '''            before_turn_snapshot = workspace.change_snapshot()\n            candidate_changed_files_before_turn = set(\n                before_turn_snapshot.files_changed_since(start_snapshot)\n            )\n            candidate_ready_before_turn = candidate_required_paths is not None and set(\n                candidate_required_paths\n            ).issubset(candidate_changed_files_before_turn)\n            results: list[ToolExecutionResult] = []\n'''
+          if before_marker in loop:
+              loop = loop.replace(before_marker, before_replacement, 1)
+          elif before_replacement not in loop:
+              raise SystemExit('P1.5.1 before-turn readiness marker not found')
+
+          handoff_anchor = '''            else:\n                consecutive_mutation_turns = 0\n                last_mutated_files = ()\n                same_file_mutation_streak = 0\n            if (\n                not turn_made_progress\n                and progress.observation_count > 0\n                and progress.mutation_attempt_count == 0\n            ):\n'''
+          handoff_replacement = '''            else:\n                consecutive_mutation_turns = 0\n                last_mutated_files = ()\n                same_file_mutation_streak = 0\n\n            candidate_completed_this_turn = (\n                candidate_readiness_known\n                and not candidate_ready_before_turn\n                and candidate_ready\n            )\n            if (\n                policy.mutation_convergence_enabled\n                and turn_made_progress\n                and candidate_completed_this_turn\n                and progress.failed_count == 0\n            ):\n                events.append(\n                    AgentRuntimeEvent(\n                        sequence=len(events),\n                        kind=AgentRuntimeEventKind.MUTATION_GATE,\n                        iteration=iteration,\n                        progress_kind=ToolProgressKind.MUTATION,\n                        detail=\"candidate_handoff_after_completion_mutation\",\n                    )\n                )\n                if trace is not None:\n                    assert turn_span_id is not None\n                    trace.record_runtime_progress(\n                        agent_turn_span_id=turn_span_id,\n                        has_workspace_patch=has_workspace_patch,\n                        turn_made_progress=turn_made_progress,\n                        changed_files_this_turn=changed_files_this_turn,\n                        consecutive_mutation_turns=consecutive_mutation_turns,\n                        same_file_mutation_streak=same_file_mutation_streak,\n                        convergence_nudge_triggered=convergence_nudge_triggered,\n                    )\n                await self._record_tool_cost_outcome(\n                    policy=policy,\n                    calls=response.tool_calls,\n                    results=results,\n                    has_real_progress=True,\n                    compacted_code_mutation=compacted_code_mutation,\n                )\n                return self._result(\n                    stop_reason=AgentRuntimeStopReason.MODEL_STOP,\n                    iterations=iteration,\n                    tool_calls=tool_call_count,\n                    final_message=(\n                        \"Structurally complete candidate implementation handed to \"\n                        \"deterministic verification immediately after the mutation turn \"\n                        \"completed all exact deliverables.\"\n                    ),\n                    prompt_tokens=total_prompt_tokens,\n                    completion_tokens=total_completion_tokens,\n                    total_tokens=total_tokens,\n                    latency_ms=total_latency_ms,\n                    observation_count=observation_count,\n                    mutation_count=mutation_count,\n                    mutation_gate_triggered=mutation_gate_triggered,\n                    events=events,\n                )\n\n            if (\n                not turn_made_progress\n                and progress.observation_count > 0\n                and progress.mutation_attempt_count == 0\n            ):\n'''
+          if handoff_anchor in loop:
+              loop = loop.replace(handoff_anchor, handoff_replacement, 1)
+          elif 'candidate_handoff_after_completion_mutation' not in loop:
+              raise SystemExit('P1.5.1 handoff anchor not found')
+
+          loop_path.write_text(loop, encoding='utf-8')
+
+          test_path = Path('backend/tests/test_developer_mutation_convergence.py')
+          tests = test_path.read_text(encoding='utf-8')
+
+          # Existing convergence tests should exercise the unknown-readiness fallback rather than
+          # being short-circuited by the new exact-deliverable completion edge.
+          tests = tests.replace('_task(),', '_task(writable_files=["src/**"]),')
+
+          old_credit = '''    assert [request.budget_progress for request in driver.requests] == [\n        False,\n        False,\n        True,\n    ]\n    assert [request.liveness_credit for request in driver.requests] == [\n        models.LivenessCredit.INITIAL_STARTUP,\n        models.LivenessCredit.NORMAL,\n        models.LivenessCredit.VERIFIED_PROGRESS,\n    ]\n'''
+          new_credit = '''    assert [request.budget_progress for request in driver.requests] == [\n        False,\n        False,\n        True,\n        False,\n    ]\n    assert [request.liveness_credit for request in driver.requests] == [\n        models.LivenessCredit.INITIAL_STARTUP,\n        models.LivenessCredit.NORMAL,\n        models.LivenessCredit.VERIFIED_PROGRESS,\n        models.LivenessCredit.NORMAL,\n    ]\n'''
+          if old_credit in tests:
+              tests = tests.replace(old_credit, new_credit, 1)
+
+          old_preempt = '''    assert len(driver.requests) == 2\n    assert driver.progress_outcomes == [True, False]\n    assert \"deterministic verification\" in result.final_message\n'''
+          new_preempt = '''    assert len(driver.requests) == 3\n    assert driver.progress_outcomes == [True, False, False]\n    assert \"deterministic verification\" in result.final_message\n'''
+          # This is the first matching block after test_candidate_handoff_preempts...
+          preempt_pos = tests.find('def test_candidate_handoff_preempts_repeated_post_mutation_observations')
+          if preempt_pos != -1:
+              suffix = tests[preempt_pos:]
+              if old_preempt in suffix:
+                  suffix = suffix.replace(old_preempt, new_preempt, 1)
+                  tests = tests[:preempt_pos] + suffix
+
+          old_terminal_iter = '''        if span.agent_role is models.AgentRole.DEVELOPER and span.iteration == 2\n'''
+          terminal_pos = tests.find('def test_candidate_handoff_terminal_turn_records_runtime_progress_trace')
+          if terminal_pos != -1:
+              suffix = tests[terminal_pos:]
+              if old_terminal_iter in suffix:
+                  suffix = suffix.replace(old_terminal_iter, '''        if span.agent_role is models.AgentRole.DEVELOPER and span.iteration == 3\n''', 1)
+                  tests = tests[:terminal_pos] + suffix
+
+          ready_start = tests.find('def test_structurally_ready_exact_candidate_hands_off_after_one_observation')
+          ready_end = tests.find('\n\ndef test_incomplete_exact_candidate', ready_start)
+          if ready_start == -1 or ready_end == -1:
+              raise SystemExit('ready exact candidate test block not found')
+          ready_test = '''def test_exact_candidate_hands_off_on_not_ready_to_ready_mutation_edge(\n    tmp_path: Path,\n) -> None:\n    root = _repository(tmp_path)\n    driver = _RecordingDriver(\n        [\n            _response(\n                tool_calls=[\n                    _call(\n                        \"write-ready\",\n                        \"write_file\",\n                        {\"path\": \"src/gomoku_logic.py\", \"content\": \"VALUE = 2\\n\"},\n                    )\n                ]\n            ),\n            _response(content=\"must not be requested\"),\n        ]\n    )\n\n    result = asyncio.run(\n        _developer(driver).run(\n            _task(writable_files=[\"src/gomoku_logic.py\"]),\n            workspace=LocalGitWorkspace(root),\n        )\n    )\n\n    assert result.stop_reason is models.DeveloperStopReason.MODEL_STOP\n    assert len(driver.requests) == 1\n    assert driver.progress_outcomes == [True]\n    assert result.changed_files == [\"src/gomoku_logic.py\"]\n    assert \"immediately after the mutation turn\" in result.final_message\n'''
+          tests = tests[:ready_start] + ready_test + tests[ready_end:]
+
+          incomplete_pos = tests.find('def test_incomplete_exact_candidate_does_not_handoff_until_all_deliverables_change')
+          if incomplete_pos == -1:
+              raise SystemExit('incomplete exact candidate test not found')
+          suffix = tests[incomplete_pos:]
+          suffix = suffix.replace('''    assert len(driver.requests) == 5\n    assert driver.progress_outcomes == [True, False, False, True, False]\n''', '''    assert len(driver.requests) == 4\n    assert driver.progress_outcomes == [True, False, False, True]\n''', 1)
+          suffix = suffix.replace('''    assert \"Structurally complete candidate\" in result.final_message\n''', '''    assert \"immediately after the mutation turn\" in result.final_message\n''', 1)
+          tests = tests[:incomplete_pos] + suffix
+
+          safety_test_name = 'test_completion_mutation_with_tool_failure_does_not_handoff_early'
+          if safety_test_name not in tests:
+              tests += '''\n\ndef test_completion_mutation_with_tool_failure_does_not_handoff_early(\n    tmp_path: Path,\n) -> None:\n    root = _repository(tmp_path)\n    driver = _RecordingDriver(\n        [\n            _response(\n                tool_calls=[\n                    _call(\n                        \"write-ready\",\n                        \"write_file\",\n                        {\"path\": \"src/gomoku_logic.py\", \"content\": \"VALUE = 2\\n\"},\n                    ),\n                    _call(\n                        \"read-missing\",\n                        \"read_range\",\n                        {\"path\": \"src/missing.py\", \"start_line\": 1, \"end_line\": 5},\n                    ),\n                ]\n            ),\n            _response(\n                tool_calls=[\n                    _call(\n                        \"read-ready\",\n                        \"read_range\",\n                        {\n                            \"path\": \"src/gomoku_logic.py\",\n                            \"start_line\": 1,\n                            \"end_line\": 5,\n                        },\n                    )\n                ]\n            ),\n            _response(content=\"must not be requested\"),\n        ]\n    )\n\n    result = asyncio.run(\n        _developer(driver).run(\n            _task(writable_files=[\"src/gomoku_logic.py\"]),\n            workspace=LocalGitWorkspace(root),\n        )\n    )\n\n    assert result.stop_reason is models.DeveloperStopReason.MODEL_STOP\n    assert len(driver.requests) == 2\n    assert driver.progress_outcomes == [True, False]\n    assert \"first observation-only turn\" in result.final_message\n'''
+
+          test_path.write_text(tests, encoding='utf-8')
+          PY
+
+          if git diff --quiet -- backend/app/agent_runtime/loop.py backend/tests/test_developer_mutation_convergence.py; then
+            echo "P1.5.1 patch already applied; no commit needed."
+            exit 0
+          fi
+
+          git config user.name "DevFlow CI Patch"
+          git config user.email "devflow-ci@example.com"
+          git add backend/app/agent_runtime/loop.py backend/tests/test_developer_mutation_convergence.py
+          git commit -m "feat(runtime): hand off mutation-complete candidate"
+          git push origin HEAD:agent/p1.5.1-mutation-complete-handoff
