@@ -310,6 +310,12 @@ class AgentLoop:
                 )
 
             before_turn_snapshot = workspace.change_snapshot()
+            candidate_changed_files_before_turn = set(
+                before_turn_snapshot.files_changed_since(start_snapshot)
+            )
+            candidate_ready_before_turn = candidate_required_paths is not None and set(
+                candidate_required_paths
+            ).issubset(candidate_changed_files_before_turn)
             results: list[ToolExecutionResult] = []
             for call in response.tool_calls:
                 tool_started = trace.clock() if trace is not None else 0.0
@@ -480,6 +486,64 @@ class AgentLoop:
                 consecutive_mutation_turns = 0
                 last_mutated_files = ()
                 same_file_mutation_streak = 0
+
+            candidate_completed_this_turn = (
+                candidate_readiness_known
+                and not candidate_ready_before_turn
+                and candidate_ready
+            )
+            if (
+                policy.mutation_convergence_enabled
+                and turn_made_progress
+                and candidate_completed_this_turn
+                and progress.failed_count == 0
+            ):
+                events.append(
+                    AgentRuntimeEvent(
+                        sequence=len(events),
+                        kind=AgentRuntimeEventKind.MUTATION_GATE,
+                        iteration=iteration,
+                        progress_kind=ToolProgressKind.MUTATION,
+                        detail="candidate_handoff_after_completion_mutation",
+                    )
+                )
+                if trace is not None:
+                    assert turn_span_id is not None
+                    trace.record_runtime_progress(
+                        agent_turn_span_id=turn_span_id,
+                        has_workspace_patch=has_workspace_patch,
+                        turn_made_progress=turn_made_progress,
+                        changed_files_this_turn=changed_files_this_turn,
+                        consecutive_mutation_turns=consecutive_mutation_turns,
+                        same_file_mutation_streak=same_file_mutation_streak,
+                        convergence_nudge_triggered=convergence_nudge_triggered,
+                    )
+                await self._record_tool_cost_outcome(
+                    policy=policy,
+                    calls=response.tool_calls,
+                    results=results,
+                    has_real_progress=True,
+                    compacted_code_mutation=compacted_code_mutation,
+                )
+                return self._result(
+                    stop_reason=AgentRuntimeStopReason.MODEL_STOP,
+                    iterations=iteration,
+                    tool_calls=tool_call_count,
+                    final_message=(
+                        "Structurally complete candidate implementation handed to "
+                        "deterministic verification immediately after the mutation turn "
+                        "completed all exact deliverables."
+                    ),
+                    prompt_tokens=total_prompt_tokens,
+                    completion_tokens=total_completion_tokens,
+                    total_tokens=total_tokens,
+                    latency_ms=total_latency_ms,
+                    observation_count=observation_count,
+                    mutation_count=mutation_count,
+                    mutation_gate_triggered=mutation_gate_triggered,
+                    events=events,
+                )
+
             if (
                 not turn_made_progress
                 and progress.observation_count > 0

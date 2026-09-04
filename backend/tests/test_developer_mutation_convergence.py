@@ -147,7 +147,7 @@ def test_progress_credit_is_scoped_to_the_previous_real_mutation_turn(
 
     result = asyncio.run(
         _developer(driver).run(
-            _task(),
+            _task(writable_files=["src/**"]),
             workspace=LocalGitWorkspace(root),
         )
     )
@@ -158,11 +158,13 @@ def test_progress_credit_is_scoped_to_the_previous_real_mutation_turn(
         False,
         False,
         True,
+        False,
     ]
     assert [request.liveness_credit for request in driver.requests] == [
         models.LivenessCredit.INITIAL_STARTUP,
         models.LivenessCredit.NORMAL,
         models.LivenessCredit.VERIFIED_PROGRESS,
+        models.LivenessCredit.NORMAL,
     ]
 
 
@@ -190,7 +192,7 @@ def test_identical_write_file_is_successful_tool_but_not_real_progress(
 
     result = asyncio.run(
         _developer(driver).run(
-            _task(),
+            _task(writable_files=["src/**"]),
             workspace=LocalGitWorkspace(root),
         )
     )
@@ -241,7 +243,7 @@ def test_same_file_second_mutation_turn_emits_repeated_convergence_nudge(
 
     result = asyncio.run(
         _developer(driver).run(
-            _task(),
+            _task(writable_files=["src/**"]),
             workspace=LocalGitWorkspace(root),
         )
     )
@@ -274,7 +276,7 @@ def test_mutation_then_model_stop_hands_candidate_to_verification(
 
     result = asyncio.run(
         _developer(driver).run(
-            _task(),
+            _task(writable_files=["src/**"]),
             workspace=LocalGitWorkspace(root),
         )
     )
@@ -361,15 +363,15 @@ def test_candidate_handoff_preempts_repeated_post_mutation_observations(
 
     result = asyncio.run(
         _developer(driver, stuck_detector_enabled=True).run(
-            _task(),
+            _task(writable_files=["src/**"]),
             workspace=LocalGitWorkspace(root),
         )
     )
 
     assert result.stop_reason is models.DeveloperStopReason.MODEL_STOP
     assert result.changed_files == ["src/gomoku_logic.py"]
-    assert len(driver.requests) == 2
-    assert driver.progress_outcomes == [True, False]
+    assert len(driver.requests) == 3
+    assert driver.progress_outcomes == [True, False, False]
     assert "deterministic verification" in result.final_message
 
 
@@ -500,7 +502,7 @@ def test_candidate_handoff_terminal_turn_records_runtime_progress_trace(
 
     result = asyncio.run(
         _developer(driver).run(
-            _task(),
+            _task(writable_files=["src/**"]),
             workspace=LocalGitWorkspace(root),
             trace=trace,
         )
@@ -509,7 +511,7 @@ def test_candidate_handoff_terminal_turn_records_runtime_progress_trace(
     terminal_turn = next(
         span
         for span in trace.batch().spans
-        if span.agent_role is models.AgentRole.DEVELOPER and span.iteration == 2
+        if span.agent_role is models.AgentRole.DEVELOPER and span.iteration == 3
     )
     assert result.stop_reason is models.DeveloperStopReason.MODEL_STOP
     assert terminal_turn.has_workspace_patch is True
@@ -517,7 +519,7 @@ def test_candidate_handoff_terminal_turn_records_runtime_progress_trace(
     assert terminal_turn.changed_files_this_turn == ()
 
 
-def test_structurally_ready_exact_candidate_hands_off_after_one_observation(
+def test_exact_candidate_hands_off_on_not_ready_to_ready_mutation_edge(
     tmp_path: Path,
 ) -> None:
     root = _repository(tmp_path)
@@ -532,35 +534,22 @@ def test_structurally_ready_exact_candidate_hands_off_after_one_observation(
                     )
                 ]
             ),
-            _response(
-                tool_calls=[
-                    _call(
-                        "read-ready",
-                        "read_range",
-                        {
-                            "path": "src/gomoku_logic.py",
-                            "start_line": 1,
-                            "end_line": 5,
-                        },
-                    )
-                ]
-            ),
             _response(content="must not be requested"),
         ]
     )
 
     result = asyncio.run(
         _developer(driver).run(
-            _task(),
+            _task(writable_files=["src/gomoku_logic.py"]),
             workspace=LocalGitWorkspace(root),
         )
     )
 
     assert result.stop_reason is models.DeveloperStopReason.MODEL_STOP
-    assert len(driver.requests) == 2
-    assert driver.progress_outcomes == [True, False]
+    assert len(driver.requests) == 1
+    assert driver.progress_outcomes == [True]
     assert result.changed_files == ["src/gomoku_logic.py"]
-    assert "Structurally complete candidate" in result.final_message
+    assert "immediately after the mutation turn" in result.final_message
 
 
 def test_incomplete_exact_candidate_does_not_handoff_until_all_deliverables_change(
@@ -626,10 +615,10 @@ def test_incomplete_exact_candidate_does_not_handoff_until_all_deliverables_chan
     )
 
     assert result.stop_reason is models.DeveloperStopReason.MODEL_STOP
-    assert len(driver.requests) == 5
-    assert driver.progress_outcomes == [True, False, False, True, False]
+    assert len(driver.requests) == 4
+    assert driver.progress_outcomes == [True, False, False, True]
     assert result.changed_files == ["src/gomoku_ui.js", "src/index.html"]
-    assert "Structurally complete candidate" in result.final_message
+    assert "immediately after the mutation turn" in result.final_message
 
 
 def test_glob_write_scope_preserves_p14_two_observation_handoff(
@@ -681,3 +670,53 @@ def test_glob_write_scope_preserves_p14_two_observation_handoff(
     assert driver.progress_outcomes == [True, False, False]
     assert result.changed_files == ["src/helper.py"]
     assert "after 2 consecutive observation-only turns" in result.final_message
+
+
+def test_completion_mutation_with_tool_failure_does_not_handoff_early(
+    tmp_path: Path,
+) -> None:
+    root = _repository(tmp_path)
+    driver = _RecordingDriver(
+        [
+            _response(
+                tool_calls=[
+                    _call(
+                        "write-ready",
+                        "write_file",
+                        {"path": "src/gomoku_logic.py", "content": "VALUE = 2\n"},
+                    ),
+                    _call(
+                        "read-missing",
+                        "read_range",
+                        {"path": "src/missing.py", "start_line": 1, "end_line": 5},
+                    ),
+                ]
+            ),
+            _response(
+                tool_calls=[
+                    _call(
+                        "read-ready",
+                        "read_range",
+                        {
+                            "path": "src/gomoku_logic.py",
+                            "start_line": 1,
+                            "end_line": 5,
+                        },
+                    )
+                ]
+            ),
+            _response(content="must not be requested"),
+        ]
+    )
+
+    result = asyncio.run(
+        _developer(driver).run(
+            _task(writable_files=["src/gomoku_logic.py"]),
+            workspace=LocalGitWorkspace(root),
+        )
+    )
+
+    assert result.stop_reason is models.DeveloperStopReason.MODEL_STOP
+    assert len(driver.requests) == 2
+    assert driver.progress_outcomes == [True, False]
+    assert "first observation-only turn" in result.final_message
