@@ -124,3 +124,5 @@ jobs:
           name: real-token-budget-diagnostic
           path: token-budget-diagnostic.json
           if-no-files-found: error
+
+# P1.4 Candidate Handoff A/B trigger only; no runtime or diagnostic parameter changes.
