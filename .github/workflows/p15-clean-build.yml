@@ -26,7 +26,27 @@ jobs:
           cache-dependency-path: backend/requirements-dev.lock
 
       - name: Apply P1.5 semantic patch
-        run: python scripts/p15_required_outputs_builder.py
+        run: |
+          python scripts/p15_required_outputs_builder.py
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("backend/app/agents/dag_planner.py")
+          text = path.read_text(encoding="utf-8")
+          old = (
+              '            "files that must be created or modified, never globs, and use null when exact mandatory "\n'
+          )
+          new = (
+              '            "files that must be created or modified, never globs, and use null when exact "\n'
+              '            "mandatory outputs are unknown. Every required output must be covered by "\n'
+          )
+          text = text.replace(
+              old + '            "outputs are unknown. Every required output must be covered by owned_paths.\\n"\n',
+              new + '            "owned_paths.\\n"\n',
+              1,
+          )
+          path.write_text(text, encoding="utf-8")
+          PY
 
       - name: Install locked backend environment
         working-directory: backend
