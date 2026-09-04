@@ -1,3 +1,2 @@
 P1.5.2 deliverable-aware mutation convergence validation trigger only.
-rerun after projector trace cleanup.
-rerun after Ruff formatting cleanup.
+final full Backend Quality after all lint and trace cleanup.
