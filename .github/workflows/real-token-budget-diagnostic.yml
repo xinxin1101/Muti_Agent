@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - xin_01
+      - agent/p1.5-real-gomoku-ab
     paths:
       - "scripts/real_token_budget_diagnostic.py"
       - ".github/workflows/real-token-budget-diagnostic.yml"
@@ -82,6 +83,8 @@ jobs:
     steps:
       - name: Check out xin_01
         uses: actions/checkout@v6
+        with:
+          ref: xin_01
 
       - name: Require real provider secret
         shell: bash
@@ -125,4 +128,4 @@ jobs:
           path: token-budget-diagnostic.json
           if-no-files-found: error
 
-# P1.4 Candidate Handoff A/B trigger only; no runtime or diagnostic parameter changes.
+# P1.5 Candidate Readiness A/B trigger only. The job checks out xin_01 explicitly, so runtime/config under test is the merged P1.5 branch head.
