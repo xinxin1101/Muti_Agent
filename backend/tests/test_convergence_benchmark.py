@@ -65,7 +65,7 @@ def _valid_new() -> ConvergenceIssueExpectation:
         expectation_id="repair-regression",
         kind=ConvergenceExpectationKind.VALID_NEW_BLOCKER,
         file="src/ui.js",
-        message_patterns=(r"null|missing element|不存在"),
+        message_patterns=(r"null|missing element|不存在",),
     )
 
 

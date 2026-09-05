@@ -84,9 +84,12 @@ class ConvergenceIssueExpectation(BenchmarkModel):
     def validate_bounds(self) -> ConvergenceIssueExpectation:
         if self.line_start is None and self.line_end is not None:
             raise ValueError("line_end requires line_start")
-        if self.line_end is not None and self.line_start is not None:
-            if self.line_end < self.line_start:
-                raise ValueError("line_end must be greater than or equal to line_start")
+        if (
+            self.line_end is not None
+            and self.line_start is not None
+            and self.line_end < self.line_start
+        ):
+            raise ValueError("line_end must be greater than or equal to line_start")
         if self.minimum_pattern_matches > len(self.message_patterns):
             raise ValueError("minimum_pattern_matches exceeds configured patterns")
         return self
@@ -271,7 +274,9 @@ def analyze_convergence(run: ConvergenceRunInput) -> ConvergenceRunMetrics:
                     review_round=review_round,
                     issue_index=issue_index,
                     issue_class=issue_class,
-                    expectation_id=(expectation.expectation_id if expectation is not None else None),
+                    expectation_id=(
+                        expectation.expectation_id if expectation is not None else None
+                    ),
                     file=issue.file,
                     line=issue.line,
                     message=issue.message,
