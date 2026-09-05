@@ -1,0 +1,135 @@
+name: P1.5.4-E Fixed Candidate Closure A-B
+
+on:
+  push:
+    branches:
+      - p154e-closure-ab-20260905
+    paths:
+      - ".github/workflows/p154e-fixed-candidate-closure-ab.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fixed-candidate:
+    name: P1.5.4-E Closure ${{ matrix.label }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - label: A
+            source_sha: 357debe3bd4ae08aa3ff5a255ea3b2bf7e3fb1d0
+            artifact: p154e-closure-a
+          - label: B
+            source_sha: 97021ca208dedcd787ac90e1a77aa186aeb06848
+            artifact: p154e-closure-b
+    env:
+      DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY || secrets.SILICONFLOW_API_KEY }}
+      DEVFLOW_DATABASE_URL: postgresql+psycopg://devflow:devflow@127.0.0.1:5432/devflow_acceptance
+      DEVFLOW_REDIS_URL: redis://127.0.0.1:6379/14
+      DEVFLOW_WORKSPACE_ROOT: .devflow/p154e-closure
+      DEVFLOW_RUN_TOKEN_BUDGET_TOKENS: "50000"
+      DEVFLOW_AGENT_RUNTIME_V3_ENABLED: "true"
+      DEVFLOW_DEVELOPER_RUNTIME_V3_ENABLED: "true"
+      DEVFLOW_REPAIR_RUNTIME_V3_ENABLED: "true"
+      DEVFLOW_RUNTIME_MUTATION_GATE_ENABLED: "true"
+      DEVFLOW_RUNTIME_IMPORT_PREFETCH_ENABLED: "true"
+      DEVFLOW_RUNTIME_REPO_MAP_ENABLED: "true"
+      DEVFLOW_RUNTIME_EVENT_CONDENSER_ENABLED: "true"
+      DEVFLOW_RUNTIME_STUCK_DETECTOR_ENABLED: "true"
+      DEVFLOW_OPENHANDS_PATCH_ENABLED: "true"
+      DEVFLOW_CONTEXT_COMPACTION_ENABLED: "true"
+      DEVFLOW_ROLE_CONTEXT_PROJECTION_ENABLED: "true"
+      DEVFLOW_ADAPTIVE_PACKAGE_BUDGET_ENABLED: "true"
+      DEVFLOW_SILICONFLOW_BASE_URL: https://dashscope.aliyuncs.com/compatible-mode/v1
+      DEVFLOW_PLANNER_MODEL: qwen3.5-flash
+      DEVFLOW_DEVELOPER_MODEL: qwen3.5-flash
+      DEVFLOW_REPAIR_MODEL: qwen3.5-flash
+      DEVFLOW_REVIEWER_MODEL: qwen3.5-flash
+      DEVFLOW_FAILURE_EXPLANATION_MODEL: qwen3.5-flash
+      DEVFLOW_SILICONFLOW_MAX_RETRIES: "2"
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: devflow
+          POSTGRES_PASSWORD: devflow
+          POSTGRES_DB: devflow_acceptance
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U devflow -d devflow_acceptance"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Check out experiment harness
+        uses: actions/checkout@v6
+        with:
+          ref: p154e-closure-ab-20260905
+
+      - name: Preserve fixed-candidate harness
+        run: cp scripts/p154c_fixed_candidate_repair_ab.py /tmp/p154e_fixed_candidate_closure_ab.py
+
+      - name: Check out exact A-B source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ matrix.source_sha }}
+          clean: true
+
+      - name: Prove pinned source
+        run: test "$(git rev-parse HEAD)" = "${{ matrix.source_sha }}"
+
+      - name: Require provider secret
+        run: test -n "${DASHSCOPE_API_KEY:-}"
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.lock
+
+      - name: Install backend
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.lock
+          python -m pip install --no-deps -e .
+
+      - name: Apply migrations
+        working-directory: backend
+        run: alembic upgrade head
+
+      - name: Build verification sandbox
+        run: docker build -f backend/docker/verification.Dockerfile -t devflow-verifier:py311 backend
+
+      - name: Run fixed-candidate closure variant
+        run: >-
+          python /tmp/p154e_fixed_candidate_closure_ab.py
+          --label "${{ matrix.label }}"
+          --source-sha "${{ matrix.source_sha }}"
+          --report "p154e-closure-${{ matrix.label }}.json"
+
+      - name: Upload fixed-candidate report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: p154e-closure-${{ matrix.label }}.json
+          if-no-files-found: warn
