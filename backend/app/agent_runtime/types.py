@@ -45,6 +45,8 @@ class AgentRuntimePolicy:
     mutation_gate_enabled: bool = False
     max_observation_turns_without_mutation: int = 2
     max_mutation_gate_violations: int = 1
+    mutation_only_after_gate_enabled: bool = False
+    handoff_after_successful_mutation: bool = False
     mutation_convergence_enabled: bool = False
     post_mutation_observation_handoff_threshold: int = 2
     consecutive_mutation_nudge_threshold: int = 3
