@@ -1,0 +1,50 @@
+name: P1.5.5 Convergence Benchmark Focused
+
+on:
+  push:
+    branches:
+      - p155-convergence-validation-20260905
+    paths:
+      - ".github/workflows/p155-convergence-focused.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out validation branch
+        uses: actions/checkout@v6
+        with:
+          ref: p155-convergence-validation-20260905
+
+      - name: Prove benchmark source parent
+        run: test "$(git rev-parse HEAD^)" = "a7fe708beb25d086b9e47357e8d3ab9bd9952b85"
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.lock
+
+      - name: Install backend
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.lock
+          python -m pip install --no-deps -e .
+
+      - name: Ruff focused files
+        working-directory: backend
+        run: >-
+          ruff check
+          app/benchmark/convergence.py
+          tests/test_convergence_benchmark.py
+
+      - name: Pytest convergence benchmark
+        working-directory: backend
+        run: pytest -q tests/test_convergence_benchmark.py
