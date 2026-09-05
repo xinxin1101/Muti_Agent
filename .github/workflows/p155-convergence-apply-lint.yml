@@ -1,0 +1,77 @@
+name: P1.5.5 Apply Convergence Lint Fix
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - p155-convergence-validation-20260905
+    paths:
+      - ".github/workflows/p155-convergence-apply-lint.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact feature branch
+        uses: actions/checkout@v6
+        with:
+          ref: p155-convergence-benchmark-20260905
+          fetch-depth: 2
+
+      - name: Prove expected feature head
+        run: test "$(git rev-parse HEAD)" = "a7fe708beb25d086b9e47357e8d3ab9bd9952b85"
+
+      - name: Apply exact lint-only patch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("backend/app/benchmark/convergence.py")
+          text = path.read_text(encoding="utf-8")
+
+          old = '''        if self.line_end is not None and self.line_start is not None:\n            if self.line_end < self.line_start:\n                raise ValueError("line_end must be greater than or equal to line_start")\n'''
+          new = '''        if (\n            self.line_end is not None\n            and self.line_start is not None\n            and self.line_end < self.line_start\n        ):\n            raise ValueError("line_end must be greater than or equal to line_start")\n'''
+          if text.count(old) != 1:
+              raise SystemExit("unexpected validate_bounds source")
+          text = text.replace(old, new)
+
+          old = '''                    expectation_id=(expectation.expectation_id if expectation is not None else None),\n'''
+          new = '''                    expectation_id=(\n                        expectation.expectation_id if expectation is not None else None\n                    ),\n'''
+          if text.count(old) != 1:
+              raise SystemExit("unexpected expectation_id source")
+          text = text.replace(old, new)
+          path.write_text(text, encoding="utf-8")
+          PY
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.lock
+
+      - name: Install backend
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.lock
+          python -m pip install --no-deps -e .
+
+      - name: Validate focused benchmark
+        working-directory: backend
+        run: |
+          ruff check app/benchmark/convergence.py tests/test_convergence_benchmark.py
+          pytest -q tests/test_convergence_benchmark.py
+
+      - name: Commit and push feature branch
+        run: |
+          git config user.name "DevFlow P1.5.5"
+          git config user.email "actions@users.noreply.github.com"
+          git add backend/app/benchmark/convergence.py
+          git diff --cached --check
+          git commit -m "style(benchmark): satisfy convergence analyzer lint"
+          git push origin HEAD:p155-convergence-benchmark-20260905
