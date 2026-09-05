@@ -117,6 +117,7 @@ from app.models.repair import (
 )
 from app.models.review import (
     ReviewDecision,
+    ReviewerClosureContext,
     ReviewIssue,
     ReviewOutcome,
     ReviewSeverity,
@@ -256,6 +257,7 @@ __all__ = [
     "RepairRunResult",
     "RepairStopReason",
     "ReviewDecision",
+    "ReviewerClosureContext",
     "ReviewIssue",
     "ReviewOutcome",
     "ReviewSeverity",

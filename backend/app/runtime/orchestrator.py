@@ -29,6 +29,10 @@ from app.models.context import ContextContinuationState, ContextFileDigest, Cont
 from app.models.run import AgentUsageSummary, SingleTaskRunResult, TaskRunState
 from app.providers.errors import AgentProviderError, ProviderErrorCode
 from app.runtime.failure_classifier import FailureClassifier
+from app.runtime.reviewer_closure import (
+    build_reviewer_closure_context,
+    capture_reviewer_closure_baseline,
+)
 from app.runtime.state_machine import TaskStateMachine
 from app.trace.collector import TaskTraceCollector
 from app.verification import DeterministicVerifier
@@ -83,6 +87,7 @@ class SingleTaskOrchestrator:
         reviews = []
         repairs = []
         developer_result = None
+        pending_review_closure = None
 
         machine.transition(
             TaskRunState.RUNNING,
@@ -259,6 +264,17 @@ class SingleTaskOrchestrator:
                     failures=[self._context_failure(exc, stage="reviewer")],
                 )
 
+            closure_context = (
+                build_reviewer_closure_context(
+                    pending_review_closure,
+                    workspace=workspace,
+                    review_round=len(reviews) + 1,
+                    repair_attempt_end=len(repairs),
+                )
+                if pending_review_closure is not None
+                else None
+            )
+
             try:
                 if trace is None:
                     decision = await self._reviewer.review(
@@ -266,6 +282,7 @@ class SingleTaskOrchestrator:
                         verification,
                         workspace=workspace,
                         context_packet=reviewer_context,
+                        closure_context=closure_context,
                     )
                 else:
                     decision = await self._reviewer.review(
@@ -273,6 +290,7 @@ class SingleTaskOrchestrator:
                         verification,
                         workspace=workspace,
                         context_packet=reviewer_context,
+                        closure_context=closure_context,
                         trace=trace,
                     )
             except InvalidReviewerOutputError as exc:
@@ -316,6 +334,7 @@ class SingleTaskOrchestrator:
                 )
 
             reviews.append(decision)
+            pending_review_closure = None
             if decision.decision is ReviewOutcome.PASS:
                 machine.transition(
                     TaskRunState.SUCCEEDED,
@@ -333,6 +352,12 @@ class SingleTaskOrchestrator:
                 )
 
             failures = FailureClassifier.from_review(decision)
+            pending_review_closure = capture_reviewer_closure_baseline(
+                task,
+                decision,
+                workspace=workspace,
+                repair_attempt_start=len(repairs) + 1,
+            )
             repair_result = await self._repair_until_patch(
                 task=task,
                 failures=failures,

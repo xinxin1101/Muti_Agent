@@ -363,6 +363,18 @@ def test_semantic_review_rejection_repairs_then_reverifies_and_passes(tmp_path: 
     assert any(
         "REVIEW_REJECTED" in message.content for message in repair_driver.requests[0].messages
     )
+    assert "CLOSURE REVIEW MODE" not in reviewer_driver.requests[0].messages[0].content
+    assert "CLOSURE REVIEW MODE" in reviewer_driver.requests[1].messages[0].content
+    closure_packet = reviewer_driver.requests[1].messages[1].content
+    assert '"review_round": 2' in closure_packet
+    assert '"repair_attempt_start": 1' in closure_packet
+    assert '"repair_attempt_end": 1' in closure_packet
+    assert '"repair_changed_files"' in closure_packet
+    assert "module.py" in closure_packet
+    assert "Add the required reviewed marker" in closure_packet
+    assert "Repair delta since the previous rejected review" in closure_packet
+    assert "-VALUE = 2" in closure_packet
+    assert "+VALUE = 2  # reviewed" in closure_packet
 
 
 def test_retry_budget_exhaustion_preserves_test_failure(tmp_path: Path) -> None:

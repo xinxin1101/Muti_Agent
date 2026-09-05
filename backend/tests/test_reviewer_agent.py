@@ -177,6 +177,7 @@ def test_reviewer_receives_task_actual_diff_and_verification_without_tools(tmp_p
     assert "return token.startswith('signed:')" in packet
     assert "Actual Git diff" in packet
     assert "untrusted" in request.messages[0].content
+    assert "CLOSURE REVIEW MODE" not in request.messages[0].content
 
 
 def test_reviewer_can_reject_semantic_bug_after_hard_checks_pass(tmp_path: Path) -> None:
