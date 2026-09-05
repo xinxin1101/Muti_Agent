@@ -147,6 +147,23 @@ class AgentLoop:
                 liveness_credit = LivenessCredit.TOOL_RECOVERY
                 tool_recovery_pending = False
                 tool_recovery_used = True
+            mutation_only_turn = (
+                policy.mutation_only_after_gate_enabled and mutation_gate_triggered
+            )
+            effective_allowed_tool_names = (
+                policy.allowed_tool_names.intersection({"apply_patch", "write_file"})
+                if mutation_only_turn
+                else policy.allowed_tool_names
+            )
+            effective_tool_definitions = (
+                tuple(
+                    definition
+                    for definition in policy.tool_definitions
+                    if definition.name in effective_allowed_tool_names
+                )
+                if mutation_only_turn
+                else policy.tool_definitions
+            )
             request = AgentRequest(
                 role=policy.role,
                 model=policy.model,
@@ -158,7 +175,7 @@ class AgentLoop:
                 context_estimated_tokens=context_estimated_tokens,
                 execution_iteration=iteration,
                 liveness_credit=liveness_credit,
-                tools=list(policy.tool_definitions),
+                tools=list(effective_tool_definitions),
             )
             try:
                 async with asyncio.timeout(min(remaining, policy.max_model_turn_seconds)):
@@ -353,7 +370,7 @@ class AgentLoop:
             results: list[ToolExecutionResult] = []
             for call in response.tool_calls:
                 tool_started = trace.clock() if trace is not None else 0.0
-                if call.name not in policy.allowed_tool_names:
+                if call.name not in effective_allowed_tool_names:
                     result = ToolExecutionResult(
                         tool_call_id=call.id,
                         name=call.name,
@@ -657,6 +674,68 @@ class AgentLoop:
                 last_mutated_files = ()
                 same_file_mutation_streak = 0
 
+            if (
+                policy.handoff_after_successful_mutation
+                and turn_made_progress
+                and has_workspace_patch
+                and progress.successful_mutation_tool_count > 0
+                and progress.failed_count == 0
+            ):
+                events.append(
+                    AgentRuntimeEvent(
+                        sequence=len(events),
+                        kind=AgentRuntimeEventKind.MUTATION_GATE,
+                        iteration=iteration,
+                        progress_kind=ToolProgressKind.MUTATION,
+                        detail="handoff_after_successful_mutation",
+                    )
+                )
+                if trace is not None:
+                    assert turn_span_id is not None
+                    trace.record_runtime_progress(
+                        agent_turn_span_id=turn_span_id,
+                        has_workspace_patch=has_workspace_patch,
+                        turn_made_progress=turn_made_progress,
+                        changed_files_this_turn=changed_files_this_turn,
+                        consecutive_mutation_turns=consecutive_mutation_turns,
+                        same_file_mutation_streak=same_file_mutation_streak,
+                        convergence_nudge_triggered=convergence_nudge_triggered,
+                        candidate_readiness_known=candidate_readiness_known,
+                        candidate_ready=(
+                            candidate_ready if candidate_readiness_known else None
+                        ),
+                        missing_required_deliverables=missing_required_paths,
+                        deliverable_progress=deliverable_progress,
+                        deliverable_completion_mode=deliverable_completion_mode,
+                        deliverable_convergence_violations=(
+                            deliverable_convergence_violations
+                        ),
+                    )
+                await self._record_tool_cost_outcome(
+                    policy=policy,
+                    calls=response.tool_calls,
+                    results=results,
+                    has_real_progress=True,
+                    compacted_code_mutation=compacted_code_mutation,
+                )
+                return self._result(
+                    stop_reason=AgentRuntimeStopReason.MODEL_STOP,
+                    iterations=iteration,
+                    tool_calls=tool_call_count,
+                    final_message=(
+                        "Successful scoped mutation handed to deterministic verification "
+                        "immediately after the mutation turn."
+                    ),
+                    prompt_tokens=total_prompt_tokens,
+                    completion_tokens=total_completion_tokens,
+                    total_tokens=total_tokens,
+                    latency_ms=total_latency_ms,
+                    observation_count=observation_count,
+                    mutation_count=mutation_count,
+                    mutation_gate_triggered=mutation_gate_triggered,
+                    events=events,
+                )
+
             candidate_completed_this_turn = (
                 candidate_readiness_known
                 and has_workspace_patch_before_turn
@@ -821,28 +900,43 @@ class AgentLoop:
                 ):
                     if not mutation_gate_triggered:
                         mutation_gate_triggered = True
-                        runtime_instruction = (
-                            self._post_mutation_convergence_prompt()
-                            if has_workspace_patch
-                            else self._mutation_required_prompt(
-                                strict=False,
+                        if (
+                            policy.mutation_only_after_gate_enabled
+                            and not has_workspace_patch
+                        ):
+                            runtime_instruction = self._mutation_required_prompt(
+                                strict=True,
                                 reason=(
-                                    "The Agent has accumulated observation evidence but "
-                                    "no candidate workspace mutation exists yet."
+                                    "The bounded evidence phase is complete and the allowed "
+                                    "supplementary observation turn has been used. The next "
+                                    "turn is mutation-only."
                                 ),
                             )
-                        )
+                            gate_detail = "observation_limit_reached_mutation_only"
+                        else:
+                            runtime_instruction = (
+                                self._post_mutation_convergence_prompt()
+                                if has_workspace_patch
+                                else self._mutation_required_prompt(
+                                    strict=False,
+                                    reason=(
+                                        "The Agent has accumulated observation evidence but "
+                                        "no candidate workspace mutation exists yet."
+                                    ),
+                                )
+                            )
+                            gate_detail = (
+                                "observation_limit_after_patch"
+                                if has_workspace_patch
+                                else "observation_limit_reached"
+                            )
                         events.append(
                             AgentRuntimeEvent(
                                 sequence=len(events),
                                 kind=AgentRuntimeEventKind.MUTATION_GATE,
                                 iteration=iteration,
                                 progress_kind=ToolProgressKind.OBSERVATION,
-                                detail=(
-                                    "observation_limit_after_patch"
-                                    if has_workspace_patch
-                                    else "observation_limit_reached"
-                                ),
+                                detail=gate_detail,
                             )
                         )
                     else:

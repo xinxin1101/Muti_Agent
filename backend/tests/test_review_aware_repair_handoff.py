@@ -1,4 +1,5 @@
 import asyncio
+import json
 import subprocess
 from pathlib import Path
 
@@ -21,13 +22,18 @@ class FakeDriver:
         return self._responses.pop(0)
 
 
-def _response(content: str = "No patch produced.") -> models.AgentResponse:
+def _response(
+    content: str = "No patch produced.",
+    *,
+    tool_calls: list[models.ToolCall] | None = None,
+) -> models.AgentResponse:
+    calls = tool_calls or []
     return models.AgentResponse(
         model="test/repair",
         content=content,
-        tool_calls=[],
+        tool_calls=calls,
         latency_ms=1,
-        finish_reason="stop",
+        finish_reason="tool_calls" if calls else "stop",
     )
 
 
@@ -237,3 +243,136 @@ def test_runtime_v3_first_repair_call_contains_review_target_and_source(tmp_path
     assert "path=src/gomoku_ui.js" in combined
     assert "line=108" in combined
     assert "reviewer-target-line-108" in combined
+
+
+def test_semantic_prefetch_allows_one_observation_then_forces_mutation_only(
+    tmp_path: Path,
+) -> None:
+    workspace = LocalGitWorkspace(_repository(tmp_path))
+    task = _task()
+    failure = _review_failure(file="src/gomoku_ui.js", line=108)
+    handoff = _handoff(task, workspace, failure)
+    observation = models.ToolCall(
+        id="observe-target",
+        name="read_range",
+        arguments=json.dumps(
+            {
+                "path": "src/gomoku_ui.js",
+                "start_line": 100,
+                "end_line": 115,
+            }
+        ),
+    )
+    patch = models.ToolCall(
+        id="repair-target",
+        name="apply_patch",
+        arguments=json.dumps(
+            {
+                "path": "src/gomoku_ui.js",
+                "old_text": (
+                    "const occupied = board[row][col]; // reviewer-target-line-108"
+                ),
+                "new_text": (
+                    "const occupied = board[row][col]; // reviewer-target-line-108\n"
+                    "if (occupied) return;"
+                ),
+            }
+        ),
+    )
+    driver = FakeDriver(
+        [
+            _response(content="", tool_calls=[observation]),
+            _response(content="", tool_calls=[patch]),
+            _response(content="unexpected extra model turn"),
+        ]
+    )
+    agent = agents.RepairAgent(
+        driver=driver,
+        model="test/repair",
+        max_iterations=4,
+        runtime_v3_enabled=True,
+        runtime_mutation_gate_enabled=True,
+        runtime_import_prefetch_enabled=True,
+    )
+
+    result = asyncio.run(
+        agent.repair(
+            task,
+            [failure],
+            attempt=1,
+            workspace=workspace,
+            handoff=handoff,
+        )
+    )
+
+    assert result.stop_reason is models.RepairStopReason.MODEL_STOP
+    assert result.iterations == 2
+    assert result.tool_calls == 2
+    assert len(driver.requests) == 2
+    assert {tool.name for tool in driver.requests[0].tools} > {
+        "apply_patch",
+        "write_file",
+    }
+    assert {tool.name for tool in driver.requests[1].tools} == {
+        "apply_patch",
+        "write_file",
+    }
+    second_prompt = "\n".join(message.content for message in driver.requests[1].messages)
+    assert "MUTATION REQUIRED" in second_prompt
+    assert "next turn is mutation-only" in second_prompt
+    assert "src/gomoku_ui.js" in result.changed_files
+
+
+def test_semantic_prefetch_hands_off_after_first_successful_mutation(
+    tmp_path: Path,
+) -> None:
+    workspace = LocalGitWorkspace(_repository(tmp_path))
+    task = _task()
+    failure = _review_failure(file="src/gomoku_ui.js", line=108)
+    handoff = _handoff(task, workspace, failure)
+    patch = models.ToolCall(
+        id="repair-immediately",
+        name="apply_patch",
+        arguments=json.dumps(
+            {
+                "path": "src/gomoku_ui.js",
+                "old_text": (
+                    "const occupied = board[row][col]; // reviewer-target-line-108"
+                ),
+                "new_text": (
+                    "const occupied = board[row][col]; // reviewer-target-line-108\n"
+                    "if (occupied) return;"
+                ),
+            }
+        ),
+    )
+    driver = FakeDriver(
+        [
+            _response(content="", tool_calls=[patch]),
+            _response(content="unexpected extra model turn"),
+        ]
+    )
+    agent = agents.RepairAgent(
+        driver=driver,
+        model="test/repair",
+        max_iterations=4,
+        runtime_v3_enabled=True,
+        runtime_mutation_gate_enabled=True,
+        runtime_import_prefetch_enabled=True,
+    )
+
+    result = asyncio.run(
+        agent.repair(
+            task,
+            [failure],
+            attempt=1,
+            workspace=workspace,
+            handoff=handoff,
+        )
+    )
+
+    assert result.stop_reason is models.RepairStopReason.MODEL_STOP
+    assert result.iterations == 1
+    assert result.tool_calls == 1
+    assert len(driver.requests) == 1
+    assert "src/gomoku_ui.js" in result.changed_files

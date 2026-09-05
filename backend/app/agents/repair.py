@@ -24,7 +24,12 @@ from app.models.agent import (
 )
 from app.models.context import ContextPacket
 from app.models.failure import FailureReport
-from app.models.repair import RepairHandoff, RepairRunResult, RepairStopReason
+from app.models.repair import (
+    RepairFailureKind,
+    RepairHandoff,
+    RepairRunResult,
+    RepairStopReason,
+)
 from app.models.task import TaskContract
 from app.models.tools import ToolErrorCode, ToolExecutionResult
 from app.providers.base import AgentDriver
@@ -509,6 +514,7 @@ class RepairAgent:
             context_packet=context_packet,
         )
         prefetch_performed = False
+        semantic_prefetch_ready = False
         if self._runtime_import_prefetch_enabled:
             prefetch = build_repair_prefetch(
                 handoff,
@@ -517,6 +523,11 @@ class RepairAgent:
             )
             if prefetch.performed:
                 prefetch_performed = True
+                semantic_prefetch_ready = (
+                    prefetch.failure_kind is RepairFailureKind.SEMANTIC_REVIEW_ISSUE
+                    and bool(prefetch.source_preview.strip())
+                    and not prefetch.errors
+                )
                 base_messages.append(
                     AgentMessage(
                         role=MessageRole.USER,
@@ -544,6 +555,8 @@ class RepairAgent:
             # additional observation turn, then require a mutation instead of re-exploration.
             max_observation_turns_without_mutation=1 if prefetch_performed else 2,
             max_mutation_gate_violations=1,
+            mutation_only_after_gate_enabled=semantic_prefetch_ready,
+            handoff_after_successful_mutation=semantic_prefetch_ready,
             event_condenser_enabled=self._runtime_event_condenser_enabled,
             stuck_detector_enabled=self._runtime_stuck_detector_enabled,
         )
