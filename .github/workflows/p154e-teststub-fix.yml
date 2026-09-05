@@ -1,5 +1,6 @@
 name: P1.5.4-E Reviewer Stub Compatibility Fix
 
+# Trigger after workflow registration. Production base remains pinned below.
 on:
   push:
     branches: [p154e-teststub-fix-20260905]
