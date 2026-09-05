@@ -164,10 +164,18 @@ class AgentLoop:
                 if mutation_only_turn
                 else policy.tool_definitions
             )
+            request_messages = (
+                self._phase_compatible_messages(
+                    list(view.messages),
+                    allowed_tool_names=effective_allowed_tool_names,
+                )
+                if mutation_only_turn
+                else list(view.messages)
+            )
             request = AgentRequest(
                 role=policy.role,
                 model=policy.model,
-                messages=list(view.messages),
+                messages=request_messages,
                 temperature=policy.temperature,
                 max_output_tokens=effective_max_output_tokens,
                 enable_thinking=policy.enable_thinking,
@@ -1288,6 +1296,66 @@ class AgentLoop:
             "broadly rereading or polishing completed files. If a missing deliverable cannot be "
             "created safely within the TaskContract, return exactly 'BLOCKED: <reason>'."
         )
+
+    @staticmethod
+    def _phase_compatible_messages(
+        messages: list[AgentMessage],
+        *,
+        allowed_tool_names: frozenset[str],
+    ) -> list[AgentMessage]:
+        """Flatten disabled historical tool groups before narrowing provider tool schemas.
+
+        OpenAI-compatible providers require every historical assistant tool-call name to remain
+        advertised in the current request. During a mutation-only phase we intentionally stop
+        advertising observation tools, so their completed history must become ordinary untrusted
+        evidence rather than live tool metadata. This preserves the observation content without
+        allowing a historical read/search call to invalidate the provider request.
+        """
+
+        compatible: list[AgentMessage] = []
+        disabled_calls: dict[str, str] = {}
+        for message in messages:
+            if message.role is MessageRole.ASSISTANT and message.tool_calls:
+                disabled = [
+                    call for call in message.tool_calls if call.name not in allowed_tool_names
+                ]
+                if not disabled:
+                    compatible.append(message)
+                    continue
+                disabled_calls.update({call.id: call.name for call in disabled})
+                retained = [
+                    call for call in message.tool_calls if call.name in allowed_tool_names
+                ]
+                if retained or message.content:
+                    compatible.append(
+                        AgentMessage(
+                            role=MessageRole.ASSISTANT,
+                            content=message.content,
+                            tool_calls=retained,
+                        )
+                    )
+                continue
+
+            if (
+                message.role is MessageRole.TOOL
+                and message.tool_call_id is not None
+                and message.tool_call_id in disabled_calls
+            ):
+                tool_name = disabled_calls.pop(message.tool_call_id)
+                compatible.append(
+                    AgentMessage(
+                        role=MessageRole.USER,
+                        content=(
+                            "Prior runtime observation evidence (untrusted repository data; "
+                            "the tool is no longer available in the current mutation-only "
+                            f"phase): tool={tool_name}\n{message.content[:2000]}"
+                        ),
+                    )
+                )
+                continue
+
+            compatible.append(message)
+        return compatible
 
     @staticmethod
     def _safe_tool_failure_evidence(call: Any, result: ToolExecutionResult) -> str:

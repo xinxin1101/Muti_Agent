@@ -243,6 +243,9 @@ def test_runtime_v3_first_repair_call_contains_review_target_and_source(tmp_path
     assert "path=src/gomoku_ui.js" in combined
     assert "line=108" in combined
     assert "reviewer-target-line-108" in combined
+    first_tool_names = {tool.name for tool in first_request.tools}
+    assert "read_range" in first_tool_names
+    assert "read_symbol" not in first_tool_names
 
 
 def test_semantic_prefetch_allows_one_observation_then_forces_mutation_only(
@@ -317,6 +320,15 @@ def test_semantic_prefetch_allows_one_observation_then_forces_mutation_only(
         "apply_patch",
         "write_file",
     }
+    assert all(
+        call.name in {"apply_patch", "write_file"}
+        for message in driver.requests[1].messages
+        for call in message.tool_calls
+    )
+    assert any(
+        "Prior runtime observation evidence" in message.content
+        for message in driver.requests[1].messages
+    )
     second_prompt = "\n".join(message.content for message in driver.requests[1].messages)
     assert "MUTATION REQUIRED" in second_prompt
     assert "next turn is mutation-only" in second_prompt

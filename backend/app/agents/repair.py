@@ -515,6 +515,7 @@ class RepairAgent:
         )
         prefetch_performed = False
         semantic_prefetch_ready = False
+        semantic_prefetch_path: str | None = None
         if self._runtime_import_prefetch_enabled:
             prefetch = build_repair_prefetch(
                 handoff,
@@ -528,12 +529,29 @@ class RepairAgent:
                     and bool(prefetch.source_preview.strip())
                     and not prefetch.errors
                 )
+                if semantic_prefetch_ready:
+                    semantic_prefetch_path = prefetch.path
                 base_messages.append(
                     AgentMessage(
                         role=MessageRole.USER,
                         content=prefetch.prompt_section(),
                     )
                 )
+
+        runtime_tool_definitions = tuple(tool_definitions)
+        if (
+            semantic_prefetch_ready
+            and semantic_prefetch_path is not None
+            and not semantic_prefetch_path.lower().endswith((".py", ".pyi"))
+        ):
+            runtime_tool_definitions = tuple(
+                definition
+                for definition in runtime_tool_definitions
+                if definition.name != "read_symbol"
+            )
+        runtime_tool_names = frozenset(
+            definition.name for definition in runtime_tool_definitions
+        )
 
         policy = AgentRuntimePolicy(
             role=AgentRole.REPAIR,
@@ -545,8 +563,8 @@ class RepairAgent:
             temperature=self._temperature,
             max_output_tokens=self._max_output_tokens,
             enable_thinking=self._enable_thinking,
-            allowed_tool_names=_REPAIR_TOOL_NAMES,
-            tool_definitions=tuple(tool_definitions),
+            allowed_tool_names=runtime_tool_names,
+            tool_definitions=runtime_tool_definitions,
             max_retained_tool_groups=1,
             max_single_tool_result_tokens=self._max_single_tool_result_tokens,
             max_tool_results_per_turn_tokens=self._max_tool_results_per_turn_tokens,
