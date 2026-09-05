@@ -1,0 +1,147 @@
+{
+  "schema_version": 1,
+  "suite_id": "devflow-p1-5-5-reviewer-closure-convergence",
+  "suite_version": "1.0.0",
+  "phase": "P1.5.5",
+  "title": "Cross-Bad-Case Reviewer Closure Runtime Convergence Benchmark",
+  "status": "FROZEN",
+  "hypothesis": "Reviewer Closure Mode reduces issue churn and extra Review→Repair→Review cycles after a prior semantic blocker is repaired.",
+  "design": {
+    "paired_cases": 8,
+    "runs": 16,
+    "same_frozen_runtime_for_A_and_B": true,
+    "runtime_sha": "97021ca208dedcd787ac90e1a77aa186aeb06848",
+    "analyzer_sha": "3eb45742250a3448090359ef979196c3852e3f2f",
+    "variant_A": "Real qwen reviewer with runtime ReviewerClosureContext deliberately not forwarded.",
+    "variant_B": "Real qwen reviewer with runtime ReviewerClosureContext forwarded normally.",
+    "developer": "Deterministic scripted candidate.",
+    "repair": "Deterministic scripted repair.",
+    "real_model_scope": "Reviewer only.",
+    "model": "qwen3.5-flash",
+    "temperature": 0.0,
+    "run_budget_tokens": 50000,
+    "evaluable_gate": "Both A and B must report a pre-registered PRIMARY_BLOCKER in review round 1, and neither may report a pre-registered CHURN_TRAP in review round 1.",
+    "confirmed_churn": "Only a later review issue matching a pre-registered CHURN_TRAP counts as confirmed churn."
+  },
+  "evidence": {
+    "workflow_run_id": 33961828839,
+    "workflow_name": "P1.5.5 Tier1 Convergence Matrix",
+    "experiment_branch": "p155-convergence-matrix-20260905",
+    "experiment_harness_sha": "1433ac2583fa2f6422bde8daf08aa4642f97db64",
+    "aggregate_artifact_id": 9968299294,
+    "aggregate_artifact_name": "p155-convergence-summary",
+    "aggregate_artifact_sha256": "2560bbd54516c8b60388c44983d3869179e18569bb4450bd3a529f9d39c58f77",
+    "matrix_complete": true,
+    "report_count": 16,
+    "harness_errors": [],
+    "integrity_errors": []
+  },
+  "aggregate": {
+    "sample_count": 8,
+    "evaluable_pair_count": 5,
+    "inconclusive_pairs": 3,
+    "baseline_success_rate": 1.0,
+    "closure_success_rate": 1.0,
+    "baseline_confirmed_churn_case_rate": 0.0,
+    "closure_confirmed_churn_case_rate": 0.0,
+    "churn_pair_improvements": 0,
+    "churn_pair_regressions": 0,
+    "churn_mcnemar_exact_p": null,
+    "cycle_pair_wins": 0,
+    "cycle_pair_losses": 0,
+    "cycle_sign_test_exact_p": null,
+    "improved_pairs": 0,
+    "regressed_pairs": 0,
+    "equivalent_pairs": 0,
+    "overhead_only_pairs": 5,
+    "mean_total_token_delta": 723.2,
+    "median_total_token_delta": 710.0,
+    "mean_total_token_delta_pct": 0.11595989531710399
+  },
+  "cases": [
+    {
+      "case_id": "duplicate-restart",
+      "evaluable": true,
+      "verdict": "EQUIVALENT_WITH_OVERHEAD",
+      "baseline_churn": 0,
+      "closure_churn": 0,
+      "baseline_extra_cycles": 0,
+      "closure_extra_cycles": 0,
+      "reviewer_token_delta": 798,
+      "reviewer_token_delta_pct": 0.12739463601532566
+    },
+    {
+      "case_id": "external-resource",
+      "evaluable": true,
+      "verdict": "EQUIVALENT_WITH_OVERHEAD",
+      "baseline_churn": 0,
+      "closure_churn": 0,
+      "baseline_extra_cycles": 0,
+      "closure_extra_cycles": 0,
+      "reviewer_token_delta": 735,
+      "reviewer_token_delta_pct": 0.11830033800096572
+    },
+    {
+      "case_id": "missing-restart-control",
+      "evaluable": true,
+      "verdict": "EQUIVALENT_WITH_OVERHEAD",
+      "baseline_churn": 0,
+      "closure_churn": 0,
+      "baseline_extra_cycles": 0,
+      "closure_extra_cycles": 0,
+      "reviewer_token_delta": 710,
+      "reviewer_token_delta_pct": 0.11369095276220977
+    },
+    {
+      "case_id": "reset-no-redraw",
+      "evaluable": true,
+      "verdict": "EQUIVALENT_WITH_OVERHEAD",
+      "baseline_churn": 0,
+      "closure_churn": 0,
+      "baseline_extra_cycles": 0,
+      "closure_extra_cycles": 0,
+      "reviewer_token_delta": 710,
+      "reviewer_token_delta_pct": 0.11387329591018444
+    },
+    {
+      "case_id": "restart-unbound",
+      "evaluable": true,
+      "verdict": "EQUIVALENT_WITH_OVERHEAD",
+      "baseline_churn": 0,
+      "closure_churn": 0,
+      "baseline_extra_cycles": 0,
+      "closure_extra_cycles": 0,
+      "reviewer_token_delta": 663,
+      "reviewer_token_delta_pct": 0.10654025389683433
+    },
+    {
+      "case_id": "no-player-alternation",
+      "evaluable": false,
+      "verdict": "INCONCLUSIVE",
+      "reason": "The frozen pre-registered PRIMARY_BLOCKER matcher did not match the round-1 reviewer wording, so the pair is excluded from churn statistics."
+    },
+    {
+      "case_id": "occupied-overwrite",
+      "evaluable": false,
+      "verdict": "INCONCLUSIVE",
+      "reason": "Variant A passed the first review and missed the pre-registered primary blocker while variant B detected it; causal comparison is invalid."
+    },
+    {
+      "case_id": "wrong-board-size",
+      "evaluable": false,
+      "verdict": "INCONCLUSIVE",
+      "reason": "Deterministic Verification intercepted the candidate before semantic Reviewer closure conditions were established."
+    }
+  ],
+  "conclusion": {
+    "benchmark_execution": "PASS",
+    "benchmark_complete": true,
+    "closure_churn_reduction_established": false,
+    "reason": "Among the five evaluable paired cases, neither baseline nor Closure Mode produced any confirmed churn or extra Review→Repair cycle. With zero discordant pairs, exact paired significance tests are undefined rather than evidence of improvement.",
+    "success_regression_observed": false,
+    "closure_overhead_observed": true,
+    "overhead_summary": "Closure Mode added a mean 723.2 reviewer tokens per evaluable pair, with mean relative overhead 11.60% and median absolute overhead 710 tokens.",
+    "engineering_interpretation": "Closure Mode remains mechanism-valid and caused no observed convergence regression, but this matrix does not justify claiming statistical anti-churn benefit for qwen3.5-flash on these workloads. Do not further tune the Reviewer prompt based on this benchmark alone.",
+    "next_recommended_phase": "Build a broader semantic-pressure challenge set that naturally exhibits fresh-review issue churn across multiple workload shapes before deciding whether Closure Mode should remain unconditional or become risk-triggered."
+  }
+}
