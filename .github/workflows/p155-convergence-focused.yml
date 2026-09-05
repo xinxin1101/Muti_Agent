@@ -19,10 +19,10 @@ jobs:
       - name: Check out exact benchmark source
         uses: actions/checkout@v6
         with:
-          ref: a7fe708beb25d086b9e47357e8d3ab9bd9952b85
+          ref: 12c5d03f8c2174ab0919d877199233ce12a84890
 
       - name: Prove exact benchmark source
-        run: test "$(git rev-parse HEAD)" = "a7fe708beb25d086b9e47357e8d3ab9bd9952b85"
+        run: test "$(git rev-parse HEAD)" = "12c5d03f8c2174ab0919d877199233ce12a84890"
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v6
@@ -42,6 +42,7 @@ jobs:
         working-directory: backend
         run: >-
           ruff check
+          app/benchmark/__init__.py
           app/benchmark/convergence.py
           tests/test_convergence_benchmark.py
 
