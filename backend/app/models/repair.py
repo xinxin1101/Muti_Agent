@@ -151,9 +151,7 @@ class RepairHandoff(BaseModel):
             return False
         if len(path) >= 2 and path[1] == ":":
             return False
-        if path == "." or any(part == ".." for part in path.split("/")):
-            return False
-        return True
+        return path != "." and all(part != ".." for part in path.split("/"))
 
 
 class RepairStopReason(StrEnum):
