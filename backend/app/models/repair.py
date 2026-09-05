@@ -1,14 +1,23 @@
-from enum import StrEnum
+from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+import re
+from enum import StrEnum
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.agent import TokenUsage
 from app.models.failure import FailureSource, FailureType
+
+_REVIEW_ISSUE_EVIDENCE_RE = re.compile(
+    r"^issue_\d+=severity:(?:low|medium|high|critical);location:(?P<location>.*?);message:"
+)
 
 
 class RepairFailureKind(StrEnum):
     IMPORT_SYMBOL_MISSING = "IMPORT_SYMBOL_MISSING"
     PYTHON_ATTRIBUTE_MISSING = "PYTHON_ATTRIBUTE_MISSING"
+    SEMANTIC_REVIEW_ISSUE = "SEMANTIC_REVIEW_ISSUE"
 
 
 class RepairFailureDigest(BaseModel):
@@ -38,6 +47,7 @@ class RepairHandoff(BaseModel):
     relevant_paths: tuple[str, ...] = Field(default_factory=tuple, max_length=16)
     failure_kind: RepairFailureKind | None = None
     suspected_path: str | None = Field(default=None, max_length=500)
+    suspected_line: int | None = Field(default=None, ge=1)
     suspected_symbol: str | None = Field(
         default=None,
         pattern=r"^[A-Za-z_][A-Za-z0-9_]*$",
@@ -49,6 +59,101 @@ class RepairHandoff(BaseModel):
         max_length=256,
     )
     failures: tuple[RepairFailureDigest, ...] = Field(min_length=1, max_length=8)
+
+    @model_validator(mode="before")
+    @classmethod
+    def derive_semantic_review_target(cls, data: Any) -> Any:
+        """Recover Reviewer file/line only from DevFlow's fixed REVIEW_REJECTED evidence shape."""
+
+        if not isinstance(data, dict):
+            return data
+        if (
+            data.get("failure_kind") is not None
+            or data.get("suspected_path") is not None
+            or data.get("suspected_line") is not None
+        ):
+            return data
+
+        target = cls._semantic_review_target(data.get("failures"))
+        if target is None:
+            return data
+
+        path, line = target
+        normalized = dict(data)
+        normalized["failure_kind"] = RepairFailureKind.SEMANTIC_REVIEW_ISSUE
+        normalized["suspected_path"] = path
+        normalized["suspected_line"] = line
+
+        relevant_paths = list(normalized.get("relevant_paths") or ())
+        if path not in relevant_paths and len(relevant_paths) < 16:
+            relevant_paths.append(path)
+            normalized["relevant_paths"] = tuple(relevant_paths)
+        return normalized
+
+    @classmethod
+    def _semantic_review_target(cls, failures: Any) -> tuple[str, int | None] | None:
+        if not isinstance(failures, (list, tuple)):
+            return None
+        for failure in failures:
+            if isinstance(failure, RepairFailureDigest):
+                failure_type = failure.failure_type
+                source = failure.source
+                evidence = failure.evidence
+            elif isinstance(failure, dict):
+                failure_type = failure.get("failure_type")
+                source = failure.get("source")
+                evidence = failure.get("evidence") or ()
+            else:
+                continue
+            if (
+                failure_type not in {FailureType.REVIEW_REJECTED, FailureType.REVIEW_REJECTED.value}
+                or source not in {FailureSource.REVIEW, FailureSource.REVIEW.value}
+                or not isinstance(evidence, (list, tuple))
+            ):
+                continue
+            for item in evidence:
+                if not isinstance(item, str):
+                    continue
+                match = _REVIEW_ISSUE_EVIDENCE_RE.match(item)
+                if match is None:
+                    continue
+                parsed = cls._parse_review_location(match.group("location"))
+                if parsed is not None:
+                    return parsed
+        return None
+
+    @staticmethod
+    def _parse_review_location(location: str) -> tuple[str, int | None] | None:
+        normalized = location.strip()
+        if not normalized or normalized == "unknown":
+            return None
+
+        path = normalized
+        line: int | None = None
+        candidate_path, separator, candidate_line = normalized.rpartition(":")
+        if separator and candidate_line.isdigit():
+            parsed_line = int(candidate_line)
+            if parsed_line < 1:
+                return None
+            path = candidate_path
+            line = parsed_line
+
+        path = path.strip()
+        if not RepairHandoff._is_safe_repository_path(path):
+            return None
+        return path, line
+
+    @staticmethod
+    def _is_safe_repository_path(path: str) -> bool:
+        if not path or len(path) > 500:
+            return False
+        if path.startswith(("/", "\\")) or "\\" in path:
+            return False
+        if len(path) >= 2 and path[1] == ":":
+            return False
+        if path == "." or any(part == ".." for part in path.split("/")):
+            return False
+        return True
 
 
 class RepairStopReason(StrEnum):
