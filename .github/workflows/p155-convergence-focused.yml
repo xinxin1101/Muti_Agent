@@ -16,14 +16,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Check out validation branch
+      - name: Check out exact benchmark source
         uses: actions/checkout@v6
         with:
-          ref: p155-convergence-validation-20260905
-          fetch-depth: 2
+          ref: a7fe708beb25d086b9e47357e8d3ab9bd9952b85
 
-      - name: Prove benchmark source parent
-        run: test "$(git rev-parse HEAD^)" = "a7fe708beb25d086b9e47357e8d3ab9bd9952b85"
+      - name: Prove exact benchmark source
+        run: test "$(git rev-parse HEAD)" = "a7fe708beb25d086b9e47357e8d3ab9bd9952b85"
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v6
