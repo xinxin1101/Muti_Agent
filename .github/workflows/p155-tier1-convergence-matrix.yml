@@ -1,0 +1,213 @@
+name: P1.5.5 Tier1 Convergence Matrix
+
+on:
+  push:
+    branches:
+      - p155-convergence-matrix-20260905
+    paths:
+      - ".github/workflows/p155-tier1-convergence-matrix.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  paired-case:
+    name: P1.5.5 ${{ matrix.case_id }} A-B
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        case_id:
+          - duplicate-restart
+          - restart-unbound
+          - reset-no-redraw
+          - occupied-overwrite
+          - no-player-alternation
+          - wrong-board-size
+          - external-resource
+          - missing-restart-control
+
+    env:
+      DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY || secrets.SILICONFLOW_API_KEY }}
+      DEVFLOW_DATABASE_URL: postgresql+psycopg://devflow:devflow@127.0.0.1:5432/devflow_acceptance
+      DEVFLOW_REDIS_URL: redis://127.0.0.1:6379/14
+      DEVFLOW_WORKSPACE_ROOT: .devflow/p155-convergence
+      DEVFLOW_RUN_TOKEN_BUDGET_TOKENS: "50000"
+      DEVFLOW_AGENT_RUNTIME_V3_ENABLED: "true"
+      DEVFLOW_DEVELOPER_RUNTIME_V3_ENABLED: "true"
+      DEVFLOW_REPAIR_RUNTIME_V3_ENABLED: "true"
+      DEVFLOW_RUNTIME_MUTATION_GATE_ENABLED: "true"
+      DEVFLOW_RUNTIME_IMPORT_PREFETCH_ENABLED: "true"
+      DEVFLOW_RUNTIME_REPO_MAP_ENABLED: "true"
+      DEVFLOW_RUNTIME_EVENT_CONDENSER_ENABLED: "true"
+      DEVFLOW_RUNTIME_STUCK_DETECTOR_ENABLED: "true"
+      DEVFLOW_OPENHANDS_PATCH_ENABLED: "true"
+      DEVFLOW_CONTEXT_COMPACTION_ENABLED: "true"
+      DEVFLOW_ROLE_CONTEXT_PROJECTION_ENABLED: "true"
+      DEVFLOW_ADAPTIVE_PACKAGE_BUDGET_ENABLED: "true"
+      DEVFLOW_SILICONFLOW_BASE_URL: https://dashscope.aliyuncs.com/compatible-mode/v1
+      DEVFLOW_PLANNER_MODEL: qwen3.5-flash
+      DEVFLOW_DEVELOPER_MODEL: qwen3.5-flash
+      DEVFLOW_REPAIR_MODEL: qwen3.5-flash
+      DEVFLOW_REVIEWER_MODEL: qwen3.5-flash
+      DEVFLOW_FAILURE_EXPLANATION_MODEL: qwen3.5-flash
+      DEVFLOW_SILICONFLOW_MAX_RETRIES: "2"
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: devflow
+          POSTGRES_PASSWORD: devflow
+          POSTGRES_DB: devflow_acceptance
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U devflow -d devflow_acceptance"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Check out experiment harness
+        uses: actions/checkout@v6
+        with:
+          ref: p155-convergence-matrix-20260905
+
+      - name: Preserve frozen harness
+        run: |
+          cp scripts/p154c_fixed_candidate_repair_ab.py /tmp/p154c_fixed_candidate_repair_ab.py
+          cp scripts/p155_convergence_matrix.py /tmp/p155_convergence_matrix.py
+
+      - name: Check out exact frozen Runtime
+        uses: actions/checkout@v6
+        with:
+          ref: 97021ca208dedcd787ac90e1a77aa186aeb06848
+          clean: true
+
+      - name: Prove frozen Runtime
+        run: test "$(git rev-parse HEAD)" = "97021ca208dedcd787ac90e1a77aa186aeb06848"
+
+      - name: Require provider secret
+        run: test -n "${DASHSCOPE_API_KEY:-}"
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.lock
+
+      - name: Install frozen backend
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.lock
+          python -m pip install --no-deps -e .
+
+      - name: Apply migrations
+        working-directory: backend
+        run: alembic upgrade head
+
+      - name: Build verification sandbox
+        run: docker build -f backend/docker/verification.Dockerfile -t devflow-verifier:py311 backend
+
+      - name: Run paired closure variants
+        shell: bash
+        run: |
+          set +e
+          python /tmp/p155_convergence_matrix.py \
+            --case-id "${{ matrix.case_id }}" \
+            --label A \
+            --source-sha 97021ca208dedcd787ac90e1a77aa186aeb06848 \
+            --report "p155-${{ matrix.case_id }}-A.json"
+          A_RC=$?
+
+          python /tmp/p155_convergence_matrix.py \
+            --case-id "${{ matrix.case_id }}" \
+            --label B \
+            --source-sha 97021ca208dedcd787ac90e1a77aa186aeb06848 \
+            --report "p155-${{ matrix.case_id }}-B.json"
+          B_RC=$?
+
+          if [ "$A_RC" -ne 0 ] || [ "$B_RC" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Upload paired raw reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p155-${{ matrix.case_id }}
+          path: p155-${{ matrix.case_id }}-*.json
+          if-no-files-found: warn
+
+  aggregate:
+    name: P1.5.5 Aggregate
+    if: always()
+    needs: paired-case
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out experiment harness
+        uses: actions/checkout@v6
+        with:
+          ref: p155-convergence-matrix-20260905
+
+      - name: Preserve aggregator
+        run: cp scripts/p155_aggregate_convergence.py /tmp/p155_aggregate_convergence.py
+
+      - name: Check out frozen analyzer
+        uses: actions/checkout@v6
+        with:
+          ref: 3eb45742250a3448090359ef979196c3852e3f2f
+          clean: true
+
+      - name: Prove frozen analyzer
+        run: test "$(git rev-parse HEAD)" = "3eb45742250a3448090359ef979196c3852e3f2f"
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.lock
+
+      - name: Install frozen analyzer environment
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.lock
+          python -m pip install --no-deps -e .
+
+      - name: Download all paired reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: p155-*
+          path: p155-artifacts
+          merge-multiple: true
+
+      - name: Aggregate pre-registered convergence metrics
+        run: >-
+          PYTHONPATH=backend python /tmp/p155_aggregate_convergence.py
+          --input-root p155-artifacts
+          --output p155-convergence-summary.json
+
+      - name: Upload aggregate summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p155-convergence-summary
+          path: p155-convergence-summary.json
+          if-no-files-found: warn
