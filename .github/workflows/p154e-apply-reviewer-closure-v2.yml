@@ -1,0 +1,45 @@
+name: P1.5.4-E Apply Reviewer Closure Mode v2
+
+on:
+  push:
+    branches:
+      - p154e-closure-apply-20260905
+    paths:
+      - ".github/workflows/p154e-apply-reviewer-closure-v2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out patch harness
+        uses: actions/checkout@v6
+        with:
+          ref: p154e-closure-apply-20260905
+      - name: Preserve asserted patcher
+        run: cp scripts/p154e_apply_reviewer_closure.py /tmp/p154e_apply_reviewer_closure.py
+      - name: Check out exact production base
+        uses: actions/checkout@v6
+        with:
+          ref: xin_01
+          fetch-depth: 0
+          clean: true
+      - name: Prove expected base
+        run: test "$(git rev-parse HEAD)" = "357debe3bd4ae08aa3ff5a255ea3b2bf7e3fb1d0"
+      - name: Apply asserted P1.5.4-E patch
+        run: python /tmp/p154e_apply_reviewer_closure.py
+      - name: Validate patch syntax
+        run: |
+          git diff --check
+          python -m compileall -q backend/app backend/tests
+      - name: Commit and push xin_01
+        run: |
+          git config user.name "DevFlow P1.5.4-E"
+          git config user.email "actions@users.noreply.github.com"
+          git add backend/app/models/review.py backend/app/models/__init__.py backend/app/runtime/reviewer_closure.py backend/app/agents/reviewer.py backend/app/runtime/orchestrator.py backend/tests/test_reviewer_closure_mode.py backend/tests/test_reviewer_agent.py backend/tests/test_orchestrator.py
+          git diff --cached --stat
+          git commit -m "feat(review): add closure mode after repair"
+          git push origin HEAD:xin_01
