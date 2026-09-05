@@ -1,0 +1,109 @@
+name: P1.5.4-D.1 Apply Phase-Compatible Mutation Handoff
+
+on:
+  push:
+    branches:
+      - p154d1-phase-compaction-apply-20260905
+    paths:
+      - ".github/workflows/p154d1-apply-phase-compaction.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact xin_01
+        uses: actions/checkout@v6
+        with:
+          ref: xin_01
+          fetch-depth: 0
+
+      - name: Prove expected base
+        run: test "$(git rev-parse HEAD)" = "a151e66dbc31956ea13a513628edcbdfa320c572"
+
+      - name: Apply asserted D.1 patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              target = Path(path)
+              text = target.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected exactly one match, found {count}")
+              target.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          loop = "backend/app/agent_runtime/loop.py"
+          repair = "backend/app/agents/repair.py"
+          test = "backend/tests/test_review_aware_repair_handoff.py"
+
+          replace_once(
+              loop,
+              """            effective_tool_definitions = (\n                tuple(\n                    definition\n                    for definition in policy.tool_definitions\n                    if definition.name in effective_allowed_tool_names\n                )\n                if mutation_only_turn\n                else policy.tool_definitions\n            )\n            request = AgentRequest(\n""",
+              """            effective_tool_definitions = (\n                tuple(\n                    definition\n                    for definition in policy.tool_definitions\n                    if definition.name in effective_allowed_tool_names\n                )\n                if mutation_only_turn\n                else policy.tool_definitions\n            )\n            request_messages = (\n                self._phase_compatible_messages(\n                    list(view.messages),\n                    allowed_tool_names=effective_allowed_tool_names,\n                )\n                if mutation_only_turn\n                else list(view.messages)\n            )\n            request = AgentRequest(\n""",
+          )
+          replace_once(
+              loop,
+              """                messages=list(view.messages),\n""",
+              """                messages=request_messages,\n""",
+          )
+          replace_once(
+              loop,
+              """    @staticmethod\n    def _safe_tool_failure_evidence(call: Any, result: ToolExecutionResult) -> str:\n""",
+              """    @staticmethod\n    def _phase_compatible_messages(\n        messages: list[AgentMessage],\n        *,\n        allowed_tool_names: frozenset[str],\n    ) -> list[AgentMessage]:\n        \"\"\"Flatten disabled historical tool groups before narrowing provider tool schemas.\n\n        OpenAI-compatible providers require every historical assistant tool-call name to remain\n        advertised in the current request. During a mutation-only phase we intentionally stop\n        advertising observation tools, so their completed history must become ordinary untrusted\n        evidence rather than live tool metadata. This preserves the observation content without\n        allowing a historical read/search call to invalidate the provider request.\n        \"\"\"\n\n        compatible: list[AgentMessage] = []\n        disabled_calls: dict[str, str] = {}\n        for message in messages:\n            if message.role is MessageRole.ASSISTANT and message.tool_calls:\n                disabled = [\n                    call for call in message.tool_calls if call.name not in allowed_tool_names\n                ]\n                if not disabled:\n                    compatible.append(message)\n                    continue\n                disabled_calls.update({call.id: call.name for call in disabled})\n                retained = [\n                    call for call in message.tool_calls if call.name in allowed_tool_names\n                ]\n                if retained or message.content:\n                    compatible.append(\n                        AgentMessage(\n                            role=MessageRole.ASSISTANT,\n                            content=message.content,\n                            tool_calls=retained,\n                        )\n                    )\n                continue\n\n            if (\n                message.role is MessageRole.TOOL\n                and message.tool_call_id is not None\n                and message.tool_call_id in disabled_calls\n            ):\n                tool_name = disabled_calls.pop(message.tool_call_id)\n                compatible.append(\n                    AgentMessage(\n                        role=MessageRole.USER,\n                        content=(\n                            \"Prior runtime observation evidence (untrusted repository data; \"\n                            \"the tool is no longer available in the current mutation-only \"\n                            f\"phase): tool={tool_name}\\n{message.content[:2000]}\"\n                        ),\n                    )\n                )\n                continue\n\n            compatible.append(message)\n        return compatible\n\n    @staticmethod\n    def _safe_tool_failure_evidence(call: Any, result: ToolExecutionResult) -> str:\n""",
+          )
+
+          replace_once(
+              repair,
+              """        prefetch_performed = False\n        semantic_prefetch_ready = False\n""",
+              """        prefetch_performed = False\n        semantic_prefetch_ready = False\n        semantic_prefetch_path: str | None = None\n""",
+          )
+          replace_once(
+              repair,
+              """                semantic_prefetch_ready = (\n                    prefetch.failure_kind is RepairFailureKind.SEMANTIC_REVIEW_ISSUE\n                    and bool(prefetch.source_preview.strip())\n                    and not prefetch.errors\n                )\n                base_messages.append(\n""",
+              """                semantic_prefetch_ready = (\n                    prefetch.failure_kind is RepairFailureKind.SEMANTIC_REVIEW_ISSUE\n                    and bool(prefetch.source_preview.strip())\n                    and not prefetch.errors\n                )\n                if semantic_prefetch_ready:\n                    semantic_prefetch_path = prefetch.path\n                base_messages.append(\n""",
+          )
+          replace_once(
+              repair,
+              """        policy = AgentRuntimePolicy(\n""",
+              """        runtime_tool_definitions = tuple(tool_definitions)\n        if (\n            semantic_prefetch_ready\n            and semantic_prefetch_path is not None\n            and not semantic_prefetch_path.lower().endswith((\".py\", \".pyi\"))\n        ):\n            runtime_tool_definitions = tuple(\n                definition\n                for definition in runtime_tool_definitions\n                if definition.name != \"read_symbol\"\n            )\n        runtime_tool_names = frozenset(\n            definition.name for definition in runtime_tool_definitions\n        )\n\n        policy = AgentRuntimePolicy(\n""",
+          )
+          replace_once(
+              repair,
+              """            allowed_tool_names=_REPAIR_TOOL_NAMES,\n            tool_definitions=tuple(tool_definitions),\n""",
+              """            allowed_tool_names=runtime_tool_names,\n            tool_definitions=runtime_tool_definitions,\n""",
+          )
+
+          replace_once(
+              test,
+              """    assert \"reviewer-target-line-108\" in combined\n\n\ndef test_semantic_prefetch_allows_one_observation_then_forces_mutation_only(\n""",
+              """    assert \"reviewer-target-line-108\" in combined\n    first_tool_names = {tool.name for tool in first_request.tools}\n    assert \"read_range\" in first_tool_names\n    assert \"read_symbol\" not in first_tool_names\n\n\ndef test_semantic_prefetch_allows_one_observation_then_forces_mutation_only(\n""",
+          )
+          replace_once(
+              test,
+              """    assert {tool.name for tool in driver.requests[1].tools} == {\n        \"apply_patch\",\n        \"write_file\",\n    }\n    second_prompt = \"\\n\".join(message.content for message in driver.requests[1].messages)\n""",
+              """    assert {tool.name for tool in driver.requests[1].tools} == {\n        \"apply_patch\",\n        \"write_file\",\n    }\n    assert all(\n        call.name in {\"apply_patch\", \"write_file\"}\n        for message in driver.requests[1].messages\n        for call in message.tool_calls\n    )\n    assert any(\n        \"Prior runtime observation evidence\" in message.content\n        for message in driver.requests[1].messages\n    )\n    second_prompt = \"\\n\".join(message.content for message in driver.requests[1].messages)\n""",
+          )
+          PY
+
+      - name: Validate D.1 patch
+        shell: bash
+        run: |
+          git diff --check
+          python -m compileall -q backend/app backend/tests/test_review_aware_repair_handoff.py
+          git diff -- backend/app/agent_runtime/loop.py backend/app/agents/repair.py backend/tests/test_review_aware_repair_handoff.py
+
+      - name: Commit and push xin_01
+        shell: bash
+        run: |
+          git config user.name "DevFlow P1.5.4-D.1"
+          git config user.email "actions@users.noreply.github.com"
+          git add backend/app/agent_runtime/loop.py backend/app/agents/repair.py backend/tests/test_review_aware_repair_handoff.py
+          git diff --cached --quiet && { echo "::error::No D.1 changes produced"; exit 1; }
+          git commit -m "fix(repair): compact observation history before mutation-only turn"
+          git push origin HEAD:xin_01
