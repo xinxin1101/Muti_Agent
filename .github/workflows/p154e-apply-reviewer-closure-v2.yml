@@ -1,6 +1,6 @@
 name: P1.5.4-E Apply Reviewer Closure Mode v2
 
-# Diagnostic trigger: every replacement prints its exact anchor count.
+# Asserted application from the exact production baseline.
 on:
   push:
     branches:
@@ -23,7 +23,7 @@ jobs:
       - name: Preserve asserted patchers
         run: |
           cp scripts/p154e_apply_reviewer_closure.py /tmp/p154e_apply_reviewer_closure.py
-          cp scripts/p154e_apply_reviewer_closure_v3.py /tmp/p154e_apply_reviewer_closure_v3.py
+          cp scripts/p154e_apply_reviewer_closure_v4.py /tmp/p154e_apply_reviewer_closure_v4.py
       - name: Check out exact production base
         uses: actions/checkout@v6
         with:
@@ -33,7 +33,7 @@ jobs:
       - name: Prove expected base
         run: test "$(git rev-parse HEAD)" = "357debe3bd4ae08aa3ff5a255ea3b2bf7e3fb1d0"
       - name: Apply asserted P1.5.4-E patch
-        run: python /tmp/p154e_apply_reviewer_closure_v3.py
+        run: python /tmp/p154e_apply_reviewer_closure_v4.py
       - name: Validate patch syntax
         run: |
           git diff --check
