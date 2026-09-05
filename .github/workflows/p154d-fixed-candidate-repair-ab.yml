@@ -1,6 +1,5 @@
-name: P1.5.4-D Fixed Candidate Repair A-B
+name: P1.5.4-D.1 Fixed Candidate Repair Validation
 
-# Production sources remain pinned; harness labels stay A/B for compatibility.
 on:
   push:
     branches:
@@ -14,27 +13,14 @@ permissions:
 
 jobs:
   fixed-candidate:
-    name: P1.5.4-D ${{ matrix.variant }}
+    name: P1.5.4-D.1 NEW_D
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        include:
-          - label: A
-            variant: BASELINE_B
-            source_sha: e730aeecdf512f30e9f5070a471e9bccb38acf5d
-            artifact: p154d-baseline-b
-          - label: B
-            variant: NEW_D
-            source_sha: a151e66dbc31956ea13a513628edcbdfa320c572
-            artifact: p154d-new-d
     env:
       DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY || secrets.SILICONFLOW_API_KEY }}
       DEVFLOW_DATABASE_URL: postgresql+psycopg://devflow:devflow@127.0.0.1:5432/devflow_acceptance
       DEVFLOW_REDIS_URL: redis://127.0.0.1:6379/14
-      DEVFLOW_WORKSPACE_ROOT: .devflow/p154d-fixed
+      DEVFLOW_WORKSPACE_ROOT: .devflow/p154d1-fixed
       DEVFLOW_RUN_TOKEN_BUDGET_TOKENS: "50000"
       DEVFLOW_AGENT_RUNTIME_V3_ENABLED: "true"
       DEVFLOW_DEVELOPER_RUNTIME_V3_ENABLED: "true"
@@ -86,14 +72,14 @@ jobs:
         with:
           ref: p154c-gomoku-ab-20260905
       - name: Preserve fixed-candidate harness
-        run: cp scripts/p154c_fixed_candidate_repair_ab.py /tmp/p154d_fixed_candidate_repair_ab.py
-      - name: Check out exact A-B source
+        run: cp scripts/p154c_fixed_candidate_repair_ab.py /tmp/p154d1_fixed_candidate_repair.py
+      - name: Check out exact D.1 source
         uses: actions/checkout@v6
         with:
-          ref: ${{ matrix.source_sha }}
+          ref: 357debe3bd4ae08aa3ff5a255ea3b2bf7e3fb1d0
           clean: true
-      - name: Prove pinned source
-        run: test "$(git rev-parse HEAD)" = "${{ matrix.source_sha }}"
+      - name: Prove pinned D.1 source
+        run: test "$(git rev-parse HEAD)" = "357debe3bd4ae08aa3ff5a255ea3b2bf7e3fb1d0"
       - name: Require provider secret
         run: test -n "${DASHSCOPE_API_KEY:-}"
       - name: Set up Python
@@ -113,16 +99,16 @@ jobs:
         run: alembic upgrade head
       - name: Build verification sandbox
         run: docker build -f backend/docker/verification.Dockerfile -t devflow-verifier:py311 backend
-      - name: Run fixed-candidate variant
+      - name: Run fixed-candidate D.1
         run: >-
-          python /tmp/p154d_fixed_candidate_repair_ab.py
-          --label "${{ matrix.label }}"
-          --source-sha "${{ matrix.source_sha }}"
-          --report "p154d-${{ matrix.label }}.json"
-      - name: Upload fixed-candidate report
+          python /tmp/p154d1_fixed_candidate_repair.py
+          --label B
+          --source-sha 357debe3bd4ae08aa3ff5a255ea3b2bf7e3fb1d0
+          --report p154d1-B.json
+      - name: Upload D.1 report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: p154d-${{ matrix.label }}.json
+          name: p154d1-new-d
+          path: p154d1-B.json
           if-no-files-found: warn
