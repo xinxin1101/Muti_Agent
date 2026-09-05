@@ -1,0 +1,90 @@
+name: P1.5.5 Convergence Matrix Preflight
+
+on:
+  push:
+    branches:
+      - p155-convergence-matrix-20260905
+    paths:
+      - ".github/workflows/p155-convergence-preflight.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out experiment harness
+        uses: actions/checkout@v6
+        with:
+          ref: p155-convergence-matrix-20260905
+
+      - name: Preserve harness scripts
+        run: |
+          cp scripts/p154c_fixed_candidate_repair_ab.py /tmp/p154c_fixed_candidate_repair_ab.py
+          cp scripts/p155_convergence_matrix.py /tmp/p155_convergence_matrix.py
+          cp scripts/p155_aggregate_convergence.py /tmp/p155_aggregate_convergence.py
+
+      - name: Check out frozen closure runtime
+        uses: actions/checkout@v6
+        with:
+          ref: 97021ca208dedcd787ac90e1a77aa186aeb06848
+          clean: true
+
+      - name: Prove frozen runtime
+        run: test "$(git rev-parse HEAD)" = "97021ca208dedcd787ac90e1a77aa186aeb06848"
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.lock
+
+      - name: Install frozen backend
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.lock
+          python -m pip install --no-deps -e .
+
+      - name: Validate scenario registry without model calls
+        run: |
+          python -m py_compile /tmp/p155_convergence_matrix.py
+          python /tmp/p155_convergence_matrix.py --list-cases > /tmp/p155-cases.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          cases = json.loads(Path('/tmp/p155-cases.json').read_text(encoding='utf-8'))
+          expected = {
+              'duplicate-restart',
+              'restart-unbound',
+              'reset-no-redraw',
+              'occupied-overwrite',
+              'no-player-alternation',
+              'wrong-board-size',
+              'external-resource',
+              'missing-restart-control',
+          }
+          assert set(cases) == expected
+          for case_id, case in cases.items():
+              assert case['expectations'], case_id
+              fingerprints = case['fingerprints']
+              assert fingerprints['candidate_index_sha256'] != ''
+              assert fingerprints['candidate_ui_sha256'] != ''
+          print(json.dumps({'case_count': len(cases), 'case_ids': sorted(cases)}, indent=2))
+          PY
+
+      - name: Check out frozen analyzer
+        uses: actions/checkout@v6
+        with:
+          ref: 3eb45742250a3448090359ef979196c3852e3f2f
+          clean: true
+
+      - name: Validate aggregator imports against frozen analyzer
+        working-directory: backend
+        run: |
+          python -m py_compile /tmp/p155_aggregate_convergence.py
+          PYTHONPATH=. python /tmp/p155_aggregate_convergence.py --help >/dev/null
