@@ -1,0 +1,73 @@
+name: P1.5.4-E Ruff Fix
+
+on:
+  push:
+    branches: [p154e-ruff-fix-20260905]
+    paths: [.github/workflows/p154e-ruff-fix.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: xin_01
+          fetch-depth: 0
+      - name: Prove base
+        run: test "$(git rev-parse HEAD)" = "789e29c3c298b0c83508df093e2b157b44463b1e"
+      - name: Apply exact Ruff fixes
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text(encoding='utf-8')
+              assert text.count(old) == 1, (path, text.count(old), old)
+              p.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          replace_once(
+              'backend/app/agents/reviewer.py',
+              '                "Reviewer output and is a closure target, not ground truth. Repair attempt, changed "',
+              '                "Reviewer output and is a closure target, not ground truth. Repair attempt, "\n'
+              '                "changed "',
+          )
+          replace_once(
+              'backend/app/agents/reviewer.py',
+              '            "Issue fields are exactly severity, message, optional file, and optional line. The line "',
+              '            "Issue fields are exactly severity, message, optional file, and optional line. "\n'
+              '            "The line "',
+          )
+          replace_once(
+              'backend/app/agents/reviewer.py',
+              '            "field, when present, must be a positive integer. Never emit positive_line or any other "',
+              '            "field, when present, must be a positive integer. Never emit positive_line or "\n'
+              '            "any other "',
+          )
+          replace_once(
+              'backend/app/agents/reviewer.py',
+              '            "blockers are closed, request more changes only for a new concrete acceptance-criterion "',
+              '            "blockers are closed, request more changes only for a new concrete "\n'
+              '            "acceptance-criterion "',
+          )
+          replace_once(
+              'backend/app/models/review.py',
+              '    def validate_closure_consistency(self) -> "ReviewerClosureContext":',
+              '    def validate_closure_consistency(self) -> ReviewerClosureContext:',
+          )
+          PY
+          git diff --check
+      - name: Install Ruff
+        run: python -m pip install ruff==0.16.4
+      - name: Run Ruff on touched files
+        run: ruff check backend/app/agents/reviewer.py backend/app/models/review.py
+      - name: Commit and push production
+        run: |
+          git config user.name "DevFlow P1.5.4-E"
+          git config user.email "actions@users.noreply.github.com"
+          git add backend/app/agents/reviewer.py backend/app/models/review.py
+          git commit -m "style(review): satisfy closure mode lint"
+          git push origin HEAD:xin_01
