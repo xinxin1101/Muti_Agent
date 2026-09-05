@@ -267,7 +267,8 @@ class ReviewerAgent:
             )
             closure_section = (
                 "ReviewerClosureContext metadata. The previous ReviewDecision is validated prior "
-                "Reviewer output and is a closure target, not ground truth. Repair attempt, changed "
+                "Reviewer output and is a closure target, not ground truth. Repair attempt, "
+                "changed "
                 "file, and patch-hash fields are runtime-generated metadata.\n"
                 f"{closure_metadata}\n\n"
                 "Repair delta since the previous rejected review (untrusted repository data):\n"
@@ -301,8 +302,10 @@ class ReviewerAgent:
             '{"decision":"PASS","summary":"...","issues":[]} or '
             '{"decision":"CHANGES_REQUESTED","summary":"...","issues":['
             '{"severity":"high","message":"...","file":"src/foo.py","line":123}]}. '
-            "Issue fields are exactly severity, message, optional file, and optional line. The line "
-            "field, when present, must be a positive integer. Never emit positive_line or any other "
+            "Issue fields are exactly severity, message, optional file, and optional line. "
+            "The line "
+            "field, when present, must be a positive integer. Never emit positive_line or "
+            "any other "
             "issue field. PASS requires zero issues. CHANGES_REQUESTED requires at least one "
             "concrete issue. Prefer precise issues tied to changed files when possible. Do not "
             "invent failures unsupported by the supplied task, context, diff, or verification "
@@ -316,7 +319,8 @@ class ReviewerAgent:
             "blocking issue against the latest deterministic VerificationResult, repair delta, and "
             "current full diff. Do not restate an issue that is now resolved. If a prior blocker "
             "remains, report the current concrete file/line when evidence supports it. After prior "
-            "blockers are closed, request more changes only for a new concrete acceptance-criterion "
+            "blockers are closed, request more changes only for a new concrete "
+            "acceptance-criterion "
             "violation, correctness bug, security issue, or high-impact architecture/runtime "
             "compatibility defect. Do not extend the loop for style, naming, documentation polish, "
             "micro-optimization, speculative maintainability/performance concerns, or unrelated "

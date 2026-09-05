@@ -93,7 +93,7 @@ class ReviewerClosureContext(BaseModel):
         return normalized
 
     @model_validator(mode="after")
-    def validate_closure_consistency(self) -> "ReviewerClosureContext":
+    def validate_closure_consistency(self) -> ReviewerClosureContext:
         if self.previous_decision.decision is not ReviewOutcome.CHANGES_REQUESTED:
             raise ValueError("reviewer closure requires a prior CHANGES_REQUESTED decision")
         if self.repair_attempt_end < self.repair_attempt_start:
