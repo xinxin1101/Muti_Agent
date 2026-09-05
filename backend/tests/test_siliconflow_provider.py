@@ -31,6 +31,21 @@ class FakeCompletions:
         return self.response
 
 
+class SequenceCompletions:
+    def __init__(self, outcomes: list[object]) -> None:
+        self.outcomes = list(outcomes)
+        self.calls: list[dict] = []
+
+    async def create(self, **kwargs):
+        self.calls.append(kwargs)
+        if not self.outcomes:
+            raise AssertionError("SequenceCompletions received more calls than expected")
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
 class FakeClient:
     def __init__(self, completions: FakeCompletions) -> None:
         self.chat = SimpleNamespace(completions=completions)
@@ -119,6 +134,26 @@ def test_settings_accepts_shared_clash_proxy_for_siliconflow(
     settings = Settings(_env_file=None)
 
     assert settings.siliconflow_proxy_url == "http://127.0.0.1:7897"
+
+
+def test_dashscope_provider_skips_unsupported_model_catalog_discovery() -> None:
+    driver = SiliconFlowDriver(
+        client=FakeClient(FakeCompletions(response=None)),
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+    )
+
+    assert driver.is_dashscope_compatible is True
+    assert driver.supports_model_catalog is False
+
+
+def test_siliconflow_provider_keeps_model_catalog_discovery() -> None:
+    driver = SiliconFlowDriver(
+        client=FakeClient(FakeCompletions(response=None)),
+        base_url="https://api.siliconflow.cn/v1",
+    )
+
+    assert driver.is_dashscope_compatible is False
+    assert driver.supports_model_catalog is True
 
 
 def test_driver_implements_agent_driver_protocol() -> None:
@@ -408,3 +443,85 @@ def test_service_unavailable_is_retryable() -> None:
     assert error.code is ProviderErrorCode.UNAVAILABLE
     assert error.retryable is True
     assert error.status_code == 503
+
+def test_transient_provider_failure_retries_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = SimpleNamespace(
+        model="model-a",
+        choices=[SimpleNamespace(message=SimpleNamespace(content="ok"), finish_reason="stop")],
+        usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+    )
+    completions = SequenceCompletions([FakeStatusError(503), response])
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(siliconflow_module.asyncio, "sleep", fake_sleep)
+    driver = SiliconFlowDriver(
+        client=FakeClient(completions),  # type: ignore[arg-type]
+        max_retries=2,
+    )
+
+    result = asyncio.run(driver.complete(make_request()))
+
+    assert result.content == "ok"
+    assert len(completions.calls) == 2
+    assert sleeps == [0.25]
+
+
+def test_non_retryable_provider_failure_is_not_repeated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    completions = SequenceCompletions([FakeStatusError(400)])
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(siliconflow_module.asyncio, "sleep", fake_sleep)
+    driver = SiliconFlowDriver(
+        client=FakeClient(completions),  # type: ignore[arg-type]
+        max_retries=2,
+    )
+
+    with pytest.raises(AgentProviderError) as exc_info:
+        asyncio.run(driver.complete(make_request()))
+
+    assert exc_info.value.code is ProviderErrorCode.BAD_REQUEST
+    assert len(completions.calls) == 1
+    assert sleeps == []
+
+
+def test_retry_exhaustion_records_bounded_attempt_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    completions = SequenceCompletions(
+        [FakeStatusError(503), FakeStatusError(503), FakeStatusError(503)]
+    )
+
+    async def fake_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(siliconflow_module.asyncio, "sleep", fake_sleep)
+    driver = SiliconFlowDriver(
+        client=FakeClient(completions),  # type: ignore[arg-type]
+        max_retries=2,
+    )
+
+    with pytest.raises(AgentProviderError) as exc_info:
+        asyncio.run(driver.complete(make_request()))
+
+    error = exc_info.value
+    assert error.code is ProviderErrorCode.UNAVAILABLE
+    assert len(completions.calls) == 3
+    assert "provider_attempts=3" in error.evidence
+    assert "provider_retries=2" in error.evidence
+
+
+def test_retry_after_header_is_bounded() -> None:
+    error = FakeStatusError(429)
+    error.response = SimpleNamespace(headers={"Retry-After": "12"})
+
+    assert SiliconFlowDriver._retry_delay_seconds(error, retry_index=0) == 5.0

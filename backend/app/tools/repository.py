@@ -7,6 +7,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from app.context.relevance import RelevantCodeExtractor
+from app.integrations.openhands import OpenHandsPatchAdapter, OpenHandsPatchError
 from app.models.task import TaskContract
 from app.models.tools import ToolCall, ToolDefinition, ToolErrorCode, ToolExecutionResult
 from app.workspace import LocalGitWorkspace, ScopeEnforcer
@@ -129,9 +130,21 @@ class WriteFileArgs(BaseModel):
 class ApplyPatchArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    path: str = Field(min_length=1, max_length=500)
-    old_text: str = Field(min_length=1, max_length=200_000)
-    new_text: str = Field(max_length=200_000)
+    patch: str | None = Field(default=None, min_length=1, max_length=400_000)
+    path: str | None = Field(default=None, min_length=1, max_length=500)
+    old_text: str | None = Field(default=None, min_length=1, max_length=200_000)
+    new_text: str | None = Field(default=None, max_length=200_000)
+
+    @model_validator(mode="after")
+    def validate_patch_shape(self) -> ApplyPatchArgs:
+        legacy_values = (self.path, self.old_text, self.new_text)
+        if self.patch is not None:
+            if any(value is not None for value in legacy_values):
+                raise ValueError("patch cannot be combined with path/old_text/new_text")
+            return self
+        if not all(value is not None for value in legacy_values):
+            raise ValueError("provide patch or all of path/old_text/new_text")
+        return self
 
 
 class RepositoryToolError(RuntimeError):
@@ -155,6 +168,7 @@ class RepositoryToolbox:
         task: TaskContract,
         scope_enforcer: ScopeEnforcer | None = None,
         max_read_range_lines: int = _MAX_READ_RANGE_LINES,
+        openhands_patch_enabled: bool = True,
     ) -> None:
         if not 1 <= max_read_range_lines <= _MAX_READ_RANGE_LINES:
             raise ValueError(
@@ -164,6 +178,7 @@ class RepositoryToolbox:
         self.task = task
         self.scope_enforcer = scope_enforcer or ScopeEnforcer()
         self._max_read_range_lines = max_read_range_lines
+        self._openhands_patch_enabled = openhands_patch_enabled
         self._relevance_extractor = RelevantCodeExtractor()
         self._handlers: dict[str, Callable[[dict], str]] = {
             "list_files": self._list_files,
@@ -247,8 +262,12 @@ class RepositoryToolbox:
             ToolDefinition(
                 name="apply_patch",
                 description=(
-                    "Apply one exact text replacement to an existing UTF-8 file. old_text must "
-                    "occur exactly once. The path must be writable and not read-only."
+                    "Prefer the OpenHands-style patch argument for bounded multi-file edits using "
+                    "'*** Begin Patch' ... '*** End Patch'. The engine supports add, update, "
+                    "delete, and move operations with context matching. Legacy "
+                    "path/old_text/new_text exact "
+                    "replacement remains accepted for compatibility. Every mutation is checked "
+                    "against DevFlow writable/read-only scopes before disk changes occur."
                 ),
                 parameters=ApplyPatchArgs.model_json_schema(),
             ),
@@ -529,6 +548,38 @@ class RepositoryToolbox:
 
     def _apply_patch(self, arguments: dict) -> str:
         args = ApplyPatchArgs.model_validate(arguments)
+        if args.patch is not None:
+            if not self._openhands_patch_enabled:
+                raise RepositoryToolError(
+                    ToolErrorCode.INVALID_ARGUMENTS,
+                    "OpenHands patch format is disabled; use "
+                    "path/old_text/new_text compatibility mode",
+                )
+            try:
+                result = OpenHandsPatchAdapter.apply(
+                    patch_text=args.patch,
+                    open_file=self._open_patch_file,
+                    preflight_write=self._preflight_patch_write,
+                    validate_content=self._validate_patch_content,
+                    path_exists=self._patch_path_exists,
+                    write_file=self._write_patch_file,
+                    remove_file=self._remove_patch_file,
+                )
+            except OpenHandsPatchError as exc:
+                raise RepositoryToolError(self._map_openhands_patch_error(exc), str(exc)) from exc
+            return json.dumps(
+                {
+                    "engine": "openhands",
+                    "paths": list(result.changed_paths),
+                    "operations": list(result.operations),
+                    "fuzz": result.fuzz,
+                },
+                ensure_ascii=False,
+            )
+
+        assert args.path is not None
+        assert args.old_text is not None
+        assert args.new_text is not None
         relative, path = self._resolve_for_write(args.path)
         if not path.is_file():
             raise RepositoryToolError(
@@ -556,7 +607,56 @@ class RepositoryToolbox:
                 "patched file would exceed the V0.1 file-size limit",
             )
         path.write_text(updated, encoding="utf-8")
-        return json.dumps({"path": relative, "replacements": 1}, ensure_ascii=False)
+        return json.dumps(
+            {"engine": "legacy_exact", "path": relative, "replacements": 1},
+            ensure_ascii=False,
+        )
+
+    def _open_patch_file(self, repository_path: str) -> str:
+        _, path = self._resolve_file_for_read(repository_path)
+        return self._read_text_file(path)
+
+    def _preflight_patch_write(self, repository_path: str) -> None:
+        self._resolve_for_write(repository_path)
+
+    def _validate_patch_content(self, repository_path: str, content: str) -> None:
+        if len(content.encode("utf-8")) > _MAX_FILE_BYTES:
+            raise RepositoryToolError(
+                ToolErrorCode.IO_ERROR,
+                f"patched file would exceed the V0.1 file-size limit: {repository_path}",
+            )
+
+    def _patch_path_exists(self, repository_path: str) -> bool:
+        _, path = self._resolve_for_write(repository_path)
+        return path.exists()
+
+    def _write_patch_file(self, repository_path: str, content: str) -> None:
+        _, path = self._resolve_for_write(repository_path)
+        self._validate_patch_content(repository_path, content)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    def _remove_patch_file(self, repository_path: str) -> None:
+        relative, path = self._resolve_for_write(repository_path)
+        if not path.is_file():
+            raise RepositoryToolError(
+                ToolErrorCode.NOT_FOUND,
+                f"Patch target does not exist: {relative}",
+            )
+        path.unlink()
+
+    @staticmethod
+    def _map_openhands_patch_error(error: OpenHandsPatchError) -> ToolErrorCode:
+        message = str(error)
+        if (
+            "Missing File" in message
+            or "Invalid Context" in message
+            or "Invalid EOF Context" in message
+        ):
+            return ToolErrorCode.NOT_FOUND
+        if "Duplicate Path" in message:
+            return ToolErrorCode.AMBIGUOUS_PATCH
+        return ToolErrorCode.INVALID_ARGUMENTS
 
     def _resolve_directory(self, repository_directory: str) -> Path:
         normalized = repository_directory.strip()

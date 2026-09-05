@@ -15,6 +15,7 @@ from app.context.token_estimator import TokenEstimator
 from app.models.agent import AgentRole, LivenessCredit, TokenUsage
 from app.models.dag import TaskDAG
 from app.models.token_budget import (
+    ModelTurnTokenObservation,
     RoleTokenUsage,
     RunTokenBudget,
     RunTokenBudgetStatus,
@@ -136,6 +137,9 @@ class BudgetDecisionFacts:
     reason: str | None
     limit_flags: tuple[str, ...] = ()
     recovery_action: str | None = None
+
+
+MAX_TOKEN_AUDIT_OBSERVATIONS = 256
 
 
 class PostgresRunTokenBudgetStore:
@@ -780,6 +784,31 @@ class PostgresRunTokenBudgetStore:
                     {"run_id": run_id},
                 )
             ).all()
+            cost_observation_count = int(
+                (
+                    await session.execute(
+                        text(
+                            "SELECT count(*) FROM run_task_cost_observations "
+                            "WHERE run_id = :run_id"
+                        ),
+                        {"run_id": run_id},
+                    )
+                ).scalar_one()
+            )
+            cost_rows_desc = (
+                await session.execute(
+                    text(
+                        "SELECT id, task_id, role, iteration, request_estimated_tokens, "
+                        "actual_prompt_tokens, actual_completion_tokens, context_growth_tokens, "
+                        "tool_argument_tokens, write_patch_argument_tokens, tool_result_tokens, "
+                        "compacted_tool_argument_tokens, has_real_progress "
+                        "FROM run_task_cost_observations WHERE run_id = :run_id "
+                        "ORDER BY id DESC LIMIT :limit"
+                    ),
+                    {"run_id": run_id, "limit": MAX_TOKEN_AUDIT_OBSERVATIONS},
+                )
+            ).all()
+            cost_rows = tuple(reversed(cost_rows_desc))
         if row is None:
             return RunTokenBudget(total_budget_tokens=self._default_total_budget_tokens)
         return RunTokenBudget(
@@ -866,6 +895,28 @@ class PostgresRunTokenBudgetStore:
                     status=TaskBudgetStatus(str(item.status)),
                 )
                 for item in package_rows
+            ),
+            cost_observations=tuple(
+                ModelTurnTokenObservation(
+                    observation_id=int(item.id),
+                    task_id=str(item.task_id),
+                    role=AgentRole(str(item.role)),
+                    iteration=int(item.iteration),
+                    request_estimated_tokens=int(item.request_estimated_tokens),
+                    actual_prompt_tokens=int(item.actual_prompt_tokens),
+                    actual_completion_tokens=int(item.actual_completion_tokens),
+                    context_growth_tokens=int(item.context_growth_tokens),
+                    tool_argument_tokens=int(item.tool_argument_tokens),
+                    write_patch_argument_tokens=int(item.write_patch_argument_tokens),
+                    tool_result_tokens=int(item.tool_result_tokens),
+                    compacted_tool_argument_tokens=int(item.compacted_tool_argument_tokens),
+                    has_real_progress=bool(item.has_real_progress),
+                )
+                for item in cost_rows
+            ),
+            cost_observation_count=cost_observation_count,
+            cost_observations_truncated=(
+                cost_observation_count > MAX_TOKEN_AUDIT_OBSERVATIONS
             ),
         )
 

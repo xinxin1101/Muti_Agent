@@ -7,6 +7,8 @@ from app.models.agent import TokenUsage
 
 class DeveloperStopReason(StrEnum):
     MODEL_STOP = "MODEL_STOP"
+    NO_PROGRESS = "NO_PROGRESS"
+    EXPLICIT_BLOCKER = "EXPLICIT_BLOCKER"
     ITERATION_LIMIT = "ITERATION_LIMIT"
     TIME_LIMIT = "TIME_LIMIT"
     TOOL_CALL_LIMIT = "TOOL_CALL_LIMIT"

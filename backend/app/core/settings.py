@@ -58,6 +58,22 @@ class Settings(BaseSettings):
     # independently for a safe rollback without changing execution authority.
     context_compaction_enabled: bool = True
     role_context_projection_enabled: bool = True
+    # Runtime V3 is intentionally enabled on the experimental xin_01 branch. Each layer
+    # remains independently switchable so production/main can adopt it incrementally.
+    agent_runtime_v3_enabled: bool = True
+    developer_runtime_v3_enabled: bool = True
+    repair_runtime_v3_enabled: bool = True
+    runtime_mutation_gate_enabled: bool = True
+    runtime_import_prefetch_enabled: bool = True
+    runtime_repo_map_enabled: bool = True
+    # OpenHands-style Event/View/Condensation backend for Runtime V3 context management.
+    runtime_event_condenser_enabled: bool = True
+    # OpenHands-derived stuck detection supplements, but does not replace, DevFlow's bounded
+    # Mutation Gate / repeated-tool-failure / token-budget authority.
+    runtime_stuck_detector_enabled: bool = True
+    # OpenHands-derived patch engine can be rolled back independently while the legacy exact
+    # replacement contract remains available for compatibility.
+    openhands_patch_enabled: bool = True
     # Legacy/general tool-result bounds remain for compatibility. Developer now has a
     # narrower role-specific budget because its compact working state can recover older facts.
     agent_max_single_tool_result_tokens: int = Field(default=1_200, ge=128, le=32_768)
@@ -85,9 +101,10 @@ class Settings(BaseSettings):
             "SILICONFLOW_API_KEY",
         ),
     )
-    siliconflow_base_url: str = "https://api.siliconflow.cn/v1"
+    # Historical field name kept for compatibility; the default provider is now Qwen/DashScope.
+    siliconflow_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     siliconflow_timeout_seconds: float = Field(default=60.0, gt=0.0, le=600.0)
-    siliconflow_max_retries: int = Field(default=0, ge=0, le=5)
+    siliconflow_max_retries: int = Field(default=2, ge=0, le=5)
     # Prefer an explicit model-provider proxy, while accepting the existing shared Clash proxy
     # variable for local development compatibility.
     siliconflow_proxy_url: str | None = Field(
@@ -118,13 +135,13 @@ class Settings(BaseSettings):
     secrets_encryption_key: SecretStr | None = None
     github_publication_timeout_seconds: float = Field(default=30.0, gt=0.0, le=30.0)
 
-    # /readyz validates configured model ids against the provider catalogue instead of assuming
-    # that a historical default remains available forever.
-    planner_model: str = "zai-org/GLM-5.2"
-    developer_model: str = "Pro/deepseek-ai/DeepSeek-V3.2"
-    reviewer_model: str = "zai-org/GLM-5.2"
-    repair_model: str = "Pro/deepseek-ai/DeepSeek-V3.2"
-    failure_explanation_model: str = "zai-org/GLM-5.2"
+    # Qwen/DashScope OpenAI-compatible mode does not expose GET /models. Model ids are pinned
+    # explicitly and real calls remain the authority for authentication/model availability.
+    planner_model: str = "qwen3.7-flash"
+    developer_model: str = "qwen3.7-flash"
+    reviewer_model: str = "qwen3.7-flash"
+    repair_model: str = "qwen3.7-flash"
+    failure_explanation_model: str = "qwen3.7-flash"
     planner_enable_thinking: bool = False
     developer_enable_thinking: bool = False
     reviewer_enable_thinking: bool = False

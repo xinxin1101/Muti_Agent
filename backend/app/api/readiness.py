@@ -168,7 +168,10 @@ class OperationalReadinessChecker:
             return (
                 ReadinessCheck(
                     state=ReadinessState.NOT_CONFIGURED,
-                    detail="SILICONFLOW_API_KEY is not configured.",
+                    detail=(
+                        "DASHSCOPE_API_KEY (or a compatible legacy provider-key alias) "
+                        "is not configured."
+                    ),
                 ),
                 tuple(
                     ModelReadiness(role=role, model=model, state=ReadinessState.NOT_CONFIGURED)
@@ -178,12 +181,28 @@ class OperationalReadinessChecker:
 
         driver = SiliconFlowDriver.from_settings(self._settings)
         try:
+            if not driver.supports_model_catalog:
+                models = tuple(
+                    ModelReadiness(role=role, model=model, state=ReadinessState.READY)
+                    for role, model in configured
+                )
+                return (
+                    ReadinessCheck(
+                        state=ReadinessState.READY,
+                        detail=(
+                            "Qwen/DashScope provider is configured. The OpenAI-compatible "
+                            "endpoint does not expose GET /models, so configured model ids are "
+                            "treated as manually pinned and validated by real requests."
+                        ),
+                    ),
+                    models,
+                )
             available = await driver.list_model_ids()
         except AgentProviderError as exc:
             return (
                 ReadinessCheck(
                     state=ReadinessState.UNAVAILABLE,
-                    detail=f"SiliconFlow model catalogue failed: {exc.code.value}.",
+                    detail=f"Provider model catalogue failed: {exc.code.value}.",
                 ),
                 tuple(
                     ModelReadiness(role=role, model=model, state=ReadinessState.UNAVAILABLE)
@@ -208,10 +227,10 @@ class OperationalReadinessChecker:
             ReadinessCheck(
                 state=(ReadinessState.READY if not missing else ReadinessState.MODEL_UNAVAILABLE),
                 detail=(
-                    "SiliconFlow is reachable and all configured models are available."
+                    "Provider is reachable and all configured models are available."
                     if not missing
                     else (
-                        "SiliconFlow is reachable but one or more configured models "
+                        "Provider is reachable but one or more configured models "
                         "are unavailable."
                     )
                 ),

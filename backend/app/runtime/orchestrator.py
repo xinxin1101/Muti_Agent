@@ -29,10 +29,16 @@ from app.models.context import ContextContinuationState, ContextFileDigest, Cont
 from app.models.run import AgentUsageSummary, SingleTaskRunResult, TaskRunState
 from app.providers.errors import AgentProviderError, ProviderErrorCode
 from app.runtime.failure_classifier import FailureClassifier
+from app.runtime.reviewer_closure import (
+    build_reviewer_closure_context,
+    capture_reviewer_closure_baseline,
+)
 from app.runtime.state_machine import TaskStateMachine
 from app.trace.collector import TaskTraceCollector
 from app.verification import DeterministicVerifier
 from app.workspace import LocalGitWorkspace
+
+_MAX_TOTAL_REPAIR_ATTEMPTS = 5
 
 
 class SingleTaskOrchestrator:
@@ -81,6 +87,7 @@ class SingleTaskOrchestrator:
         reviews = []
         repairs = []
         developer_result = None
+        pending_review_closure = None
 
         machine.transition(
             TaskRunState.RUNNING,
@@ -184,10 +191,12 @@ class SingleTaskOrchestrator:
             if not verification.passed:
                 failures = FailureClassifier.from_verification(verification)
                 failure_signature = self._failure_signature(failures)
+                failure_stage = self._repair_stage_key(failures)
                 self._record_repair_verification(
                     repairs,
                     verification=verification,
                     failure_signature=failure_signature,
+                    failure_stage=failure_stage,
                 )
                 repairable = FailureClassifier.repairable(failures)
                 if not repairable:
@@ -210,6 +219,7 @@ class SingleTaskOrchestrator:
                     task=task,
                     failures=repairable,
                     failure_signature_before=failure_signature,
+                    failure_stage_before=failure_stage,
                     workspace=workspace,
                     machine=machine,
                     developer=developer_result,
@@ -230,6 +240,7 @@ class SingleTaskOrchestrator:
                 repairs,
                 verification=verification,
                 failure_signature=None,
+                failure_stage=None,
             )
             machine.transition(
                 TaskRunState.REVIEWING,
@@ -253,6 +264,17 @@ class SingleTaskOrchestrator:
                     failures=[self._context_failure(exc, stage="reviewer")],
                 )
 
+            closure_context = (
+                build_reviewer_closure_context(
+                    pending_review_closure,
+                    workspace=workspace,
+                    review_round=len(reviews) + 1,
+                    repair_attempt_end=len(repairs),
+                )
+                if pending_review_closure is not None
+                else None
+            )
+
             try:
                 if trace is None:
                     decision = await self._reviewer.review(
@@ -260,6 +282,7 @@ class SingleTaskOrchestrator:
                         verification,
                         workspace=workspace,
                         context_packet=reviewer_context,
+                        closure_context=closure_context,
                     )
                 else:
                     decision = await self._reviewer.review(
@@ -267,6 +290,7 @@ class SingleTaskOrchestrator:
                         verification,
                         workspace=workspace,
                         context_packet=reviewer_context,
+                        closure_context=closure_context,
                         trace=trace,
                     )
             except InvalidReviewerOutputError as exc:
@@ -310,6 +334,7 @@ class SingleTaskOrchestrator:
                 )
 
             reviews.append(decision)
+            pending_review_closure = None
             if decision.decision is ReviewOutcome.PASS:
                 machine.transition(
                     TaskRunState.SUCCEEDED,
@@ -327,10 +352,17 @@ class SingleTaskOrchestrator:
                 )
 
             failures = FailureClassifier.from_review(decision)
+            pending_review_closure = capture_reviewer_closure_baseline(
+                task,
+                decision,
+                workspace=workspace,
+                repair_attempt_start=len(repairs) + 1,
+            )
             repair_result = await self._repair_until_patch(
                 task=task,
                 failures=failures,
                 failure_signature_before=self._failure_signature(failures),
+                failure_stage_before=self._repair_stage_key(failures),
                 workspace=workspace,
                 machine=machine,
                 developer=developer_result,
@@ -352,6 +384,7 @@ class SingleTaskOrchestrator:
         task: TaskContract,
         failures: Sequence[FailureReport],
         failure_signature_before: str,
+        failure_stage_before: str,
         workspace: LocalGitWorkspace,
         machine: TaskStateMachine,
         developer,
@@ -360,15 +393,44 @@ class SingleTaskOrchestrator:
         repairs,
         trace: TaskTraceCollector | None,
     ):
-        repair_budget = max(task.max_retries, self._minimum_repair_attempts)
+        stage_budget = max(task.max_retries, self._minimum_repair_attempts)
+        stage_attempts = self._repair_attempts_for_stage(
+            repairs,
+            failure_stage_before,
+        )
+        if (
+            stage_attempts >= stage_budget
+            or len(repairs) >= _MAX_TOTAL_REPAIR_ATTEMPTS
+        ):
+            return self._finish_repair_budget_exhausted(
+                task=task,
+                machine=machine,
+                workspace=workspace,
+                developer=developer,
+                verifications=verifications,
+                reviews=reviews,
+                repairs=repairs,
+                failures=failures,
+                stage_attempts=stage_attempts,
+                stage_budget=stage_budget,
+            )
+
         while True:
+            attempt = len(repairs) + 1
+            remaining_stage_attempts = stage_budget - stage_attempts
+            attempt_ceiling = min(
+                _MAX_TOTAL_REPAIR_ATTEMPTS,
+                attempt + remaining_stage_attempts - 1,
+            )
             repair_result = await self._repair_once(
                 task=task,
                 failures=self._repair_evidence_for_next_attempt(failures, repairs),
                 failure_signature_before=failure_signature_before,
+                failure_stage_before=failure_stage_before,
                 workspace=workspace,
                 machine=machine,
-                attempt=len(repairs) + 1,
+                attempt=attempt,
+                attempt_ceiling=attempt_ceiling,
                 developer=developer,
                 verifications=verifications,
                 reviews=reviews,
@@ -383,6 +445,7 @@ class SingleTaskOrchestrator:
             if progress is None or progress.has_patch:
                 return repair_result
 
+            stage_attempts += 1
             if repair_result.stop_reason is RepairStopReason.EXPLICIT_BLOCKER:
                 return self._finish_no_progress(
                     task=task,
@@ -396,7 +459,10 @@ class SingleTaskOrchestrator:
                     repair_result=repair_result,
                 )
 
-            if len(repairs) >= repair_budget:
+            if (
+                stage_attempts >= stage_budget
+                or len(repairs) >= _MAX_TOTAL_REPAIR_ATTEMPTS
+            ):
                 return self._finish_no_progress(
                     task=task,
                     machine=machine,
@@ -415,21 +481,22 @@ class SingleTaskOrchestrator:
         task: TaskContract,
         failures: Sequence[FailureReport],
         failure_signature_before: str,
+        failure_stage_before: str,
         workspace: LocalGitWorkspace,
         machine: TaskStateMachine,
         attempt: int,
+        attempt_ceiling: int,
         developer,
         verifications,
         reviews,
         repairs,
         trace: TaskTraceCollector | None,
     ):
-        repair_budget = max(task.max_retries, self._minimum_repair_attempts)
-        repair_task = task.model_copy(update={"max_retries": repair_budget})
-        if attempt > repair_budget:
+        repair_task = task.model_copy(update={"max_retries": attempt_ceiling})
+        if attempt > attempt_ceiling:
             terminal = FailureClassifier.terminalize(
                 failures,
-                max_retries=repair_budget,
+                max_retries=attempt_ceiling,
             )
             machine.transition(TaskRunState.FAILED, detail="Repair retry budget was exhausted.")
             return self._result(
@@ -534,6 +601,7 @@ class SingleTaskOrchestrator:
             patch_hash_before=before_state.patch_hash,
             patch_hash_after=after_state.patch_hash,
             failure_signature_before=failure_signature_before,
+            failure_stage_before=failure_stage_before,
         )
         return repair_result.model_copy(
             update={
@@ -550,7 +618,7 @@ class SingleTaskOrchestrator:
         workspace: LocalGitWorkspace,
     ) -> RepairHandoff:
         changed_files = tuple(workspace.changed_files())
-        failure_kind, suspected_path, suspected_symbol = (
+        failure_kind, suspected_path, suspected_symbol, suspected_member = (
             SingleTaskOrchestrator._repair_failure_hint(failures)
         )
         relevant_paths: list[str] = []
@@ -573,6 +641,7 @@ class SingleTaskOrchestrator:
             failure_kind=failure_kind,
             suspected_path=suspected_path,
             suspected_symbol=suspected_symbol,
+            suspected_member=suspected_member,
             failures=tuple(
                 RepairFailureDigest(
                     failure_type=failure.failure_type,
@@ -587,7 +656,7 @@ class SingleTaskOrchestrator:
     @staticmethod
     def _repair_failure_hint(
         failures: Sequence[FailureReport],
-    ) -> tuple[RepairFailureKind | None, str | None, str | None]:
+    ) -> tuple[RepairFailureKind | None, str | None, str | None, str | None]:
         flattened = "\n".join(
             item
             for group in (
@@ -596,18 +665,46 @@ class SingleTaskOrchestrator:
             )
             for item in group
         )
-        match = re.search(
+
+        # Prefer the more advanced failure state. A previous ImportError may remain in
+        # accumulated evidence even after Repair has created the class; when verification
+        # progresses to AttributeError, the missing member is now the actionable fact.
+        attribute_match = re.search(
+            r"AttributeError:\s*['\"](?P<owner>[A-Za-z_][A-Za-z0-9_]*)['\"]"
+            r"\s+object has no attribute\s+['\"]"
+            r"(?P<member>[A-Za-z_][A-Za-z0-9_]*)['\"]",
+            flattened,
+        )
+        if attribute_match is not None:
+            owner = attribute_match.group("owner")
+            member = attribute_match.group("member")
+            imported = re.search(
+                r"from\s+(?P<module>[A-Za-z_][A-Za-z0-9_.]*)\s+import\s+"
+                + re.escape(owner)
+                + r"\b",
+                flattened,
+            )
+            if imported is not None:
+                suspected_path = imported.group("module").replace(".", "/") + ".py"
+                return (
+                    RepairFailureKind.PYTHON_ATTRIBUTE_MISSING,
+                    suspected_path,
+                    owner,
+                    member,
+                )
+
+        import_match = re.search(
             r"ImportError:\s*cannot import name ['\"]"
             r"(?P<symbol>[A-Za-z_][A-Za-z0-9_]*)['\"]\s+from\s+['\"]"
             r"(?P<module>[A-Za-z_][A-Za-z0-9_.]*)['\"]",
             flattened,
         )
-        if match is None:
-            return None, None, None
-        symbol = match.group("symbol")
-        module = match.group("module")
+        if import_match is None:
+            return None, None, None, None
+        symbol = import_match.group("symbol")
+        module = import_match.group("module")
         suspected_path = module.replace(".", "/") + ".py"
-        return RepairFailureKind.IMPORT_SYMBOL_MISSING, suspected_path, symbol
+        return RepairFailureKind.IMPORT_SYMBOL_MISSING, suspected_path, symbol, None
 
     async def _build_context(
         self,
@@ -648,6 +745,28 @@ class SingleTaskOrchestrator:
         return f"Repair attempt {repair_result.attempt} completed; hard gate reruns."
 
     @staticmethod
+    def _repair_stage_key(failures: Sequence[FailureReport]) -> str:
+        """Stable retry stage; unlike raw traceback signatures it ignores incidental values."""
+
+        kind, path, symbol, member = SingleTaskOrchestrator._repair_failure_hint(failures)
+        if kind is not None:
+            return "|".join(
+                (
+                    kind.value,
+                    path or "unknown",
+                    symbol or "unknown",
+                    member or "none",
+                )
+            )
+        categories = sorted(
+            {
+                f"{failure.failure_type.value}:{failure.source.value}"
+                for failure in failures
+            }
+        )
+        return "GENERIC|" + ",".join(categories)
+
+    @staticmethod
     def _failure_signature(failures: Sequence[FailureReport]) -> str:
         """Hash stable failure content without volatile traceback addresses or whitespace."""
 
@@ -683,6 +802,7 @@ class SingleTaskOrchestrator:
         *,
         verification,
         failure_signature: str | None,
+        failure_stage: str | None,
     ) -> None:
         if not repairs:
             return
@@ -703,11 +823,68 @@ class SingleTaskOrchestrator:
                     update={
                         "status": status,
                         "failure_signature_after": failure_signature,
+                        "failure_stage_after": failure_stage,
                         "validation_executed": True,
                         "validation_commands": self._validation_commands(verification),
                     }
                 )
             }
+        )
+
+    @staticmethod
+    def _repair_attempts_for_stage(repairs, failure_stage: str) -> int:
+        return sum(
+            1
+            for repair in repairs
+            if repair.progress is not None
+            and repair.progress.failure_stage_before == failure_stage
+        )
+
+    def _finish_repair_budget_exhausted(
+        self,
+        *,
+        task,
+        machine,
+        workspace,
+        developer,
+        verifications,
+        reviews,
+        repairs,
+        failures,
+        stage_attempts: int,
+        stage_budget: int,
+    ) -> SingleTaskRunResult:
+        machine.transition(
+            TaskRunState.FAILED,
+            detail="Repair budget for the current failure signature was exhausted.",
+        )
+        terminal = FailureClassifier.terminalize(
+            failures,
+            max_retries=stage_budget,
+        )
+        terminal = [
+            failure.model_copy(
+                update={
+                    "evidence": [
+                        *failure.evidence,
+                        f"repair_stage_attempts={stage_attempts}",
+                        f"repair_stage_budget={stage_budget}",
+                        f"repair_total_attempts={len(repairs)}",
+                        f"repair_total_cap={_MAX_TOTAL_REPAIR_ATTEMPTS}",
+                    ]
+                }
+            )
+            for failure in terminal
+        ]
+        return self._result(
+            task=task,
+            machine=machine,
+            workspace=workspace,
+            developer=developer,
+            verifications=verifications,
+            reviews=reviews,
+            repairs=repairs,
+            failures=terminal,
         )
 
     @staticmethod
@@ -722,6 +899,8 @@ class SingleTaskOrchestrator:
             f"previous_patch_hash={progress.patch_hash_after}",
             f"previous_failure_signature_before={progress.failure_signature_before}",
             f"previous_failure_signature_after={progress.failure_signature_after}",
+            f"previous_failure_stage_before={progress.failure_stage_before}",
+            f"previous_failure_stage_after={progress.failure_stage_after}",
         ]
         if repair.final_message:
             evidence.append(
@@ -770,6 +949,7 @@ class SingleTaskOrchestrator:
                         f"patch_hash_before={progress.patch_hash_before}",
                         f"patch_hash_after={progress.patch_hash_after}",
                         f"failure_signature_before={progress.failure_signature_before}",
+                        f"failure_stage_before={progress.failure_stage_before}",
                         "validation_executed=false",
                     ],
                 }

@@ -53,6 +53,9 @@ class TaskCheckpoint(BaseModel):
     commit_sha: str = Field(pattern=r"^[0-9a-f]{40,64}$")
     changed_files: tuple[str, ...] = Field(min_length=1, max_length=512)
     reason: CheckpointReason
+    # New checkpoints persist where execution should resume. Historical checkpoints omit this
+    # field and are inferred from their bounded verification/context evidence at the API boundary.
+    resume_strategy: CheckpointResumeStrategy | None = None
     summary: str = Field(min_length=1, max_length=512)
     slice_index: int = Field(default=1, ge=1, le=20)
     max_slices: int = Field(default=1, ge=1, le=20)
