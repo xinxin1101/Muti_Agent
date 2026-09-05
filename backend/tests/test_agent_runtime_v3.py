@@ -518,8 +518,17 @@ class _ProgressiveGameVerifier:
 
 
 class _PassingReviewer:
-    async def review(self, task, verification, *, workspace, context_packet=None, trace=None):
-        del task, verification, workspace, context_packet, trace
+    async def review(
+        self,
+        task,
+        verification,
+        *,
+        workspace,
+        context_packet=None,
+        closure_context=None,
+        trace=None,
+    ):
+        del task, verification, workspace, context_packet, closure_context, trace
         return models.ReviewDecision(
             decision=models.ReviewOutcome.PASS,
             summary="Progressive runtime repair satisfied the deterministic contract.",
