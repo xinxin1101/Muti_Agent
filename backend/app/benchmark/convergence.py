@@ -151,12 +151,14 @@ class ConvergenceRunMetrics(BenchmarkModel):
     variant: str
     task_succeeded: bool
     final_review_passed: bool
+    evaluable: bool
     converged: bool
     review_rounds: int = Field(ge=0)
     review_rejections: int = Field(ge=0)
     completed_review_repair_cycles: int = Field(ge=0)
     extra_review_repair_cycles: int = Field(ge=0)
     repair_attempts: int = Field(ge=0)
+    initial_primary_events: int = Field(ge=0)
     primary_recurrence_events: int = Field(ge=0)
     late_primary_events: int = Field(ge=0)
     valid_new_blocker_events: int = Field(ge=0)
@@ -180,6 +182,8 @@ class ConvergencePairDelta(BenchmarkModel):
     verdict: ConvergencePairVerdict
     baseline_converged: bool
     closure_converged: bool
+    baseline_evaluable: bool
+    closure_evaluable: bool
     confirmed_churn_delta: int
     extra_cycle_delta: int
     repair_attempt_delta: int
@@ -191,10 +195,15 @@ class ConvergencePairDelta(BenchmarkModel):
 
 class ConvergenceAggregate(BenchmarkModel):
     sample_count: int = Field(ge=1)
+    evaluable_pair_count: int = Field(ge=0)
     baseline_success_rate: float = Field(ge=0.0, le=1.0)
     closure_success_rate: float = Field(ge=0.0, le=1.0)
-    baseline_confirmed_churn_case_rate: float = Field(ge=0.0, le=1.0)
-    closure_confirmed_churn_case_rate: float = Field(ge=0.0, le=1.0)
+    baseline_confirmed_churn_case_rate: float | None = Field(
+        default=None, ge=0.0, le=1.0
+    )
+    closure_confirmed_churn_case_rate: float | None = Field(
+        default=None, ge=0.0, le=1.0
+    )
     churn_pair_improvements: int = Field(ge=0)
     churn_pair_regressions: int = Field(ge=0)
     churn_mcnemar_exact_p: float | None = Field(default=None, ge=0.0, le=1.0)
@@ -206,8 +215,8 @@ class ConvergenceAggregate(BenchmarkModel):
     equivalent_pairs: int = Field(ge=0)
     overhead_only_pairs: int = Field(ge=0)
     inconclusive_pairs: int = Field(ge=0)
-    mean_total_token_delta: float
-    median_total_token_delta: float
+    mean_total_token_delta: float | None = None
+    median_total_token_delta: float | None = None
     mean_total_token_delta_pct: float | None = None
 
 
@@ -298,18 +307,27 @@ def analyze_convergence(run: ConvergenceRunInput) -> ConvergenceRunMetrics:
         and index + 1 < review_rounds
     )
     final_pass = bool(run.reviews) and run.reviews[-1].decision is ReviewOutcome.PASS
+    initial_primary_events = sum(
+        event.issue_class is ConvergenceIssueClass.INITIAL_PRIMARY for event in events
+    )
+    initial_churn_trap_events = sum(
+        event.issue_class is ConvergenceIssueClass.INITIAL_CHURN_TRAP for event in events
+    )
+    evaluable = initial_primary_events > 0 and initial_churn_trap_events == 0
 
     return ConvergenceRunMetrics(
         case_id=run.case_id,
         variant=run.variant,
         task_succeeded=run.task_succeeded,
         final_review_passed=final_pass,
+        evaluable=evaluable,
         converged=run.task_succeeded and final_pass,
         review_rounds=review_rounds,
         review_rejections=review_rejections,
         completed_review_repair_cycles=completed_cycles,
         extra_review_repair_cycles=max(0, completed_cycles - 1),
         repair_attempts=run.repair_attempts,
+        initial_primary_events=initial_primary_events,
         primary_recurrence_events=sum(
             event.issue_class is ConvergenceIssueClass.RECURRING_PRIMARY for event in events
         ),
@@ -325,9 +343,7 @@ def analyze_convergence(run: ConvergenceRunInput) -> ConvergenceRunMetrics:
         unexpected_new_issue_events=sum(
             event.issue_class is ConvergenceIssueClass.UNEXPECTED_NEW_ISSUE for event in events
         ),
-        initial_churn_trap_events=sum(
-            event.issue_class is ConvergenceIssueClass.INITIAL_CHURN_TRAP for event in events
-        ),
+        initial_churn_trap_events=initial_churn_trap_events,
         reviewer_tokens=run.reviewer_tokens,
         repair_tokens=run.repair_tokens,
         total_tokens=run.total_tokens,
@@ -347,7 +363,9 @@ def compare_convergence_pair(
     token_delta = closure.total_tokens - baseline.total_tokens
     token_delta_pct = token_delta / baseline.total_tokens if baseline.total_tokens else None
 
-    if baseline.converged and not closure.converged:
+    if not baseline.evaluable or not closure.evaluable:
+        verdict = ConvergencePairVerdict.INCONCLUSIVE
+    elif baseline.converged and not closure.converged:
         verdict = ConvergencePairVerdict.REGRESSED
     elif not baseline.converged and closure.converged:
         verdict = ConvergencePairVerdict.IMPROVED
@@ -371,6 +389,8 @@ def compare_convergence_pair(
         verdict=verdict,
         baseline_converged=baseline.converged,
         closure_converged=closure.converged,
+        baseline_evaluable=baseline.evaluable,
+        closure_evaluable=closure.evaluable,
         confirmed_churn_delta=churn_delta,
         extra_cycle_delta=cycle_delta,
         repair_attempt_delta=closure.repair_attempts - baseline.repair_attempts,
@@ -399,30 +419,39 @@ def aggregate_convergence_pairs(
     deltas = tuple(compare_convergence_pair(baseline, closure) for baseline, closure in pairs)
     baseline_runs = tuple(item[0] for item in pairs)
     closure_runs = tuple(item[1] for item in pairs)
+    evaluable_pairs = tuple(
+        (baseline, closure)
+        for baseline, closure in pairs
+        if baseline.evaluable and closure.evaluable
+    )
+    evaluable_deltas = tuple(
+        delta for delta in deltas if delta.verdict is not ConvergencePairVerdict.INCONCLUSIVE
+    )
 
     churn_improvements = sum(
         baseline.has_confirmed_churn and not closure.has_confirmed_churn
-        for baseline, closure in pairs
+        for baseline, closure in evaluable_pairs
     )
     churn_regressions = sum(
         not baseline.has_confirmed_churn and closure.has_confirmed_churn
-        for baseline, closure in pairs
+        for baseline, closure in evaluable_pairs
     )
     cycle_wins = sum(
         closure.extra_review_repair_cycles < baseline.extra_review_repair_cycles
-        for baseline, closure in pairs
+        for baseline, closure in evaluable_pairs
     )
     cycle_losses = sum(
         closure.extra_review_repair_cycles > baseline.extra_review_repair_cycles
-        for baseline, closure in pairs
+        for baseline, closure in evaluable_pairs
     )
     token_delta_pcts = [
         delta.total_token_delta_pct
-        for delta in deltas
+        for delta in evaluable_deltas
         if delta.total_token_delta_pct is not None
     ]
 
     sample_count = len(pairs)
+    evaluable_pair_count = len(evaluable_pairs)
     equivalent = sum(delta.verdict is ConvergencePairVerdict.EQUIVALENT for delta in deltas)
     overhead_only = sum(
         delta.verdict is ConvergencePairVerdict.EQUIVALENT_WITH_OVERHEAD for delta in deltas
@@ -430,13 +459,20 @@ def aggregate_convergence_pairs(
 
     return ConvergenceAggregate(
         sample_count=sample_count,
+        evaluable_pair_count=evaluable_pair_count,
         baseline_success_rate=sum(item.converged for item in baseline_runs) / sample_count,
         closure_success_rate=sum(item.converged for item in closure_runs) / sample_count,
         baseline_confirmed_churn_case_rate=(
-            sum(item.has_confirmed_churn for item in baseline_runs) / sample_count
+            sum(baseline.has_confirmed_churn for baseline, _ in evaluable_pairs)
+            / evaluable_pair_count
+            if evaluable_pair_count
+            else None
         ),
         closure_confirmed_churn_case_rate=(
-            sum(item.has_confirmed_churn for item in closure_runs) / sample_count
+            sum(closure.has_confirmed_churn for _, closure in evaluable_pairs)
+            / evaluable_pair_count
+            if evaluable_pair_count
+            else None
         ),
         churn_pair_improvements=churn_improvements,
         churn_pair_regressions=churn_regressions,
@@ -454,7 +490,15 @@ def aggregate_convergence_pairs(
         inconclusive_pairs=sum(
             delta.verdict is ConvergencePairVerdict.INCONCLUSIVE for delta in deltas
         ),
-        mean_total_token_delta=mean(delta.total_token_delta for delta in deltas),
-        median_total_token_delta=median(delta.total_token_delta for delta in deltas),
+        mean_total_token_delta=(
+            mean(delta.total_token_delta for delta in evaluable_deltas)
+            if evaluable_deltas
+            else None
+        ),
+        median_total_token_delta=(
+            median(delta.total_token_delta for delta in evaluable_deltas)
+            if evaluable_deltas
+            else None
+        ),
         mean_total_token_delta_pct=(mean(token_delta_pcts) if token_delta_pcts else None),
     )

@@ -286,6 +286,95 @@ def test_aggregate_reports_paired_churn_and_cycle_significance() -> None:
     assert aggregate.regressed_pairs == 0
 
 
+def test_pair_is_inconclusive_when_primary_is_not_observed() -> None:
+    baseline = _run(
+        variant="baseline",
+        reviews=(_changes(_issue("canvas sizing concern", line=60)), _pass()),
+        repair_attempts=1,
+        total_tokens=10000,
+    )
+    closure = _run(
+        variant="closure",
+        reviews=(_changes(_issue("canvas sizing concern", line=60)), _pass()),
+        repair_attempts=1,
+        total_tokens=10000,
+    )
+
+    delta = compare_convergence_pair(baseline, closure)
+
+    assert baseline.evaluable is False
+    assert closure.evaluable is False
+    assert delta.verdict is ConvergencePairVerdict.INCONCLUSIVE
+
+
+def test_pair_is_inconclusive_when_trap_is_already_in_initial_review() -> None:
+    initial = _changes(
+        _issue("duplicate restart button"),
+        _issue("style naming should be cleaned up", line=80),
+    )
+    baseline = _run(
+        variant="baseline",
+        reviews=(initial, _pass()),
+        repair_attempts=1,
+        total_tokens=10000,
+    )
+    closure = _run(
+        variant="closure",
+        reviews=(initial, _pass()),
+        repair_attempts=1,
+        total_tokens=10000,
+    )
+
+    delta = compare_convergence_pair(baseline, closure)
+
+    assert baseline.initial_primary_events == 1
+    assert baseline.initial_churn_trap_events == 1
+    assert baseline.evaluable is False
+    assert delta.verdict is ConvergencePairVerdict.INCONCLUSIVE
+
+
+def test_aggregate_excludes_inconclusive_pairs_from_churn_statistics() -> None:
+    valid_baseline = _run(
+        variant="baseline-valid",
+        reviews=(
+            _changes(_issue("duplicate restart button")),
+            _changes(_issue("style naming should be cleaned up", line=80)),
+            _pass(),
+        ),
+        repair_attempts=2,
+        total_tokens=10000,
+    )
+    valid_closure = _run(
+        variant="closure-valid",
+        reviews=(_changes(_issue("duplicate restart button")), _pass()),
+        repair_attempts=1,
+        total_tokens=9500,
+    )
+    invalid_baseline = _run(
+        variant="baseline-invalid",
+        reviews=(_changes(_issue("canvas sizing concern", line=60)), _pass()),
+        repair_attempts=1,
+        total_tokens=8000,
+    )
+    invalid_closure = _run(
+        variant="closure-invalid",
+        reviews=(_changes(_issue("canvas sizing concern", line=60)), _pass()),
+        repair_attempts=1,
+        total_tokens=7000,
+    )
+
+    aggregate = aggregate_convergence_pairs(
+        ((valid_baseline, valid_closure), (invalid_baseline, invalid_closure))
+    )
+
+    assert aggregate.sample_count == 2
+    assert aggregate.evaluable_pair_count == 1
+    assert aggregate.baseline_confirmed_churn_case_rate == 1.0
+    assert aggregate.closure_confirmed_churn_case_rate == 0.0
+    assert aggregate.inconclusive_pairs == 1
+    assert aggregate.mean_total_token_delta == -500
+
+
 def test_aggregate_rejects_empty_input() -> None:
     with pytest.raises(ValueError, match="at least one paired sample"):
         aggregate_convergence_pairs(())
