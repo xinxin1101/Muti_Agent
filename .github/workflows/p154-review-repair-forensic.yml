@@ -1,0 +1,109 @@
+name: P1.5.4 Reviewer Repair Forensic
+
+on:
+  push:
+    branches:
+      - p153-gomoku-ab-20260905
+    paths:
+      - ".github/workflows/p154-review-repair-forensic.yml"
+      - "scripts/p154_review_repair_forensic.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  forensic:
+    name: Reviewer Repair Forensic
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY || secrets.SILICONFLOW_API_KEY }}
+      DEVFLOW_DATABASE_URL: postgresql+psycopg://devflow:devflow@127.0.0.1:5432/devflow_acceptance
+      DEVFLOW_REDIS_URL: redis://127.0.0.1:6379/14
+      DEVFLOW_WORKSPACE_ROOT: .devflow/p154-forensic
+      DEVFLOW_RUN_TOKEN_BUDGET_TOKENS: "50000"
+      DEVFLOW_AGENT_RUNTIME_V3_ENABLED: "true"
+      DEVFLOW_DEVELOPER_RUNTIME_V3_ENABLED: "true"
+      DEVFLOW_REPAIR_RUNTIME_V3_ENABLED: "true"
+      DEVFLOW_RUNTIME_MUTATION_GATE_ENABLED: "true"
+      DEVFLOW_RUNTIME_IMPORT_PREFETCH_ENABLED: "true"
+      DEVFLOW_RUNTIME_REPO_MAP_ENABLED: "true"
+      DEVFLOW_RUNTIME_EVENT_CONDENSER_ENABLED: "true"
+      DEVFLOW_RUNTIME_STUCK_DETECTOR_ENABLED: "true"
+      DEVFLOW_OPENHANDS_PATCH_ENABLED: "true"
+      DEVFLOW_CONTEXT_COMPACTION_ENABLED: "true"
+      DEVFLOW_ROLE_CONTEXT_PROJECTION_ENABLED: "true"
+      DEVFLOW_ADAPTIVE_PACKAGE_BUDGET_ENABLED: "true"
+      DEVFLOW_SILICONFLOW_BASE_URL: https://dashscope.aliyuncs.com/compatible-mode/v1
+      DEVFLOW_PLANNER_MODEL: qwen3.5-flash
+      DEVFLOW_DEVELOPER_MODEL: qwen3.5-flash
+      DEVFLOW_REPAIR_MODEL: qwen3.5-flash
+      DEVFLOW_REVIEWER_MODEL: qwen3.5-flash
+      DEVFLOW_FAILURE_EXPLANATION_MODEL: qwen3.5-flash
+      DEVFLOW_SILICONFLOW_MAX_RETRIES: "2"
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: devflow
+          POSTGRES_PASSWORD: devflow
+          POSTGRES_DB: devflow_acceptance
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U devflow -d devflow_acceptance"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Check out forensic harness
+        uses: actions/checkout@v6
+      - name: Preserve forensic harness
+        run: cp scripts/p154_review_repair_forensic.py /tmp/p154_review_repair_forensic.py
+      - name: Check out exact P1.5.2 baseline
+        uses: actions/checkout@v6
+        with:
+          ref: 3e8fee7ff31187e403f23f0af8764e70f23eb408
+          clean: true
+      - name: Prove pinned baseline
+        run: test "$(git rev-parse HEAD)" = "3e8fee7ff31187e403f23f0af8764e70f23eb408"
+      - name: Require provider secret
+        run: test -n "${DASHSCOPE_API_KEY:-}"
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.lock
+      - name: Install backend
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.lock
+          python -m pip install --no-deps -e .
+      - name: Apply migrations
+        working-directory: backend
+        run: alembic upgrade head
+      - name: Build verification sandbox
+        run: docker build -f backend/docker/verification.Dockerfile -t devflow-verifier:py311 backend
+      - name: Run forensic
+        run: python /tmp/p154_review_repair_forensic.py --report p154-review-repair-forensic.json
+      - name: Upload forensic report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p154-review-repair-forensic
+          path: p154-review-repair-forensic.json
+          if-no-files-found: warn
