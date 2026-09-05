@@ -1,5 +1,6 @@
 name: P1.5.4-E Apply Reviewer Closure Mode v2
 
+# Trigger after workflow registration. Production source remains pinned below.
 on:
   push:
     branches:
