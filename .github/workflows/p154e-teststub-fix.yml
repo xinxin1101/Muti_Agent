@@ -1,6 +1,6 @@
 name: P1.5.4-E Reviewer Stub Compatibility Fix
 
-# Trigger after workflow registration. Production base remains pinned below.
+# Production base remains pinned; focused regression uses the supported Python runtime.
 on:
   push:
     branches: [p154e-teststub-fix-20260905]
@@ -17,6 +17,11 @@ jobs:
         with:
           ref: xin_01
           fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.lock
       - name: Prove base
         run: test "$(git rev-parse HEAD)" = "aaf1c87b4646a5ca02e9e619789c064d51d7e5d1"
       - name: Update reviewer test double signature
