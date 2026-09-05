@@ -104,9 +104,18 @@ class TaskTraceCollector:
         consecutive_mutation_turns: int,
         same_file_mutation_streak: int,
         convergence_nudge_triggered: bool,
+        candidate_readiness_known: bool = False,
+        candidate_ready: bool | None = None,
+        missing_required_deliverables: tuple[str, ...] = (),
+        deliverable_progress: bool = False,
+        deliverable_completion_mode: bool = False,
+        deliverable_convergence_violations: int = 0,
     ) -> None:
         safe_changed_files = tuple(
             path[:512] for path in changed_files_this_turn[:8] if path
+        )
+        safe_missing_deliverables = tuple(
+            path[:512] for path in missing_required_deliverables[:8] if path
         )
         for index, span in enumerate(self._spans):
             if span.span_id != agent_turn_span_id:
@@ -121,6 +130,14 @@ class TaskTraceCollector:
                     "consecutive_mutation_turns": max(0, consecutive_mutation_turns),
                     "same_file_mutation_streak": max(0, same_file_mutation_streak),
                     "convergence_nudge_triggered": convergence_nudge_triggered,
+                    "candidate_readiness_known": candidate_readiness_known,
+                    "candidate_ready": candidate_ready,
+                    "missing_required_deliverables": safe_missing_deliverables,
+                    "deliverable_progress": deliverable_progress,
+                    "deliverable_completion_mode": deliverable_completion_mode,
+                    "deliverable_convergence_violations": max(
+                        0, deliverable_convergence_violations
+                    ),
                 }
             )
             return

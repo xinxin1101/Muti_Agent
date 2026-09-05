@@ -392,6 +392,16 @@ class CausalTraceProjector:
                     consecutive_mutation_turns=item.consecutive_mutation_turns,
                     same_file_mutation_streak=item.same_file_mutation_streak,
                     convergence_nudge_triggered=item.convergence_nudge_triggered,
+                    candidate_readiness_known=item.candidate_readiness_known,
+                    candidate_ready=item.candidate_ready,
+                    missing_required_deliverables=(
+                        item.missing_required_deliverables
+                    ),
+                    deliverable_progress=item.deliverable_progress,
+                    deliverable_completion_mode=item.deliverable_completion_mode,
+                    deliverable_convergence_violations=(
+                        item.deliverable_convergence_violations
+                    ),
                 )
                 existing_ids.add(item.span_id)
 
@@ -735,6 +745,12 @@ class CausalTraceProjector:
         consecutive_mutation_turns: int = 0,
         same_file_mutation_streak: int = 0,
         convergence_nudge_triggered: bool = False,
+        candidate_readiness_known: bool = False,
+        candidate_ready: bool | None = None,
+        missing_required_deliverables: tuple[str, ...] = (),
+        deliverable_progress: bool = False,
+        deliverable_completion_mode: bool = False,
+        deliverable_convergence_violations: int = 0,
     ) -> None:
         spans.append(
             CausalTraceSpan(
@@ -777,5 +793,13 @@ class CausalTraceProjector:
                 consecutive_mutation_turns=consecutive_mutation_turns,
                 same_file_mutation_streak=same_file_mutation_streak,
                 convergence_nudge_triggered=convergence_nudge_triggered,
+                candidate_readiness_known=candidate_readiness_known,
+                candidate_ready=candidate_ready,
+                missing_required_deliverables=missing_required_deliverables,
+                deliverable_progress=deliverable_progress,
+                deliverable_completion_mode=deliverable_completion_mode,
+                deliverable_convergence_violations=(
+                    deliverable_convergence_violations
+                ),
             )
         )

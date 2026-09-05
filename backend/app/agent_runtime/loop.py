@@ -91,6 +91,9 @@ class AgentLoop:
         observation_turns_without_mutation = 0
         mutation_gate_triggered = False
         mutation_gate_violations = 0
+        deliverable_completion_mode = False
+        deliverable_convergence_violations = 0
+        deliverable_focus_files: tuple[str, ...] = ()
         no_patch_model_stops = 0
         runtime_instruction: str | None = None
         last_tool_failure: tuple[str, ToolErrorCode, str] | None = None
@@ -215,8 +218,18 @@ class AgentLoop:
             )
 
             if not response.tool_calls:
-                has_workspace_patch = (
-                    workspace.change_snapshot().patch_hash != start_snapshot.patch_hash
+                current_snapshot = workspace.change_snapshot()
+                has_workspace_patch = current_snapshot.patch_hash != start_snapshot.patch_hash
+                candidate_changed_files = set(
+                    current_snapshot.files_changed_since(start_snapshot)
+                )
+                candidate_ready = candidate_required_paths is not None and set(
+                    candidate_required_paths
+                ).issubset(candidate_changed_files)
+                missing_required_paths = tuple(
+                    path
+                    for path in (candidate_required_paths or ())
+                    if path not in candidate_changed_files
                 )
                 if trace is not None:
                     assert turn_span_id is not None
@@ -228,6 +241,16 @@ class AgentLoop:
                         consecutive_mutation_turns=0,
                         same_file_mutation_streak=0,
                         convergence_nudge_triggered=False,
+                        candidate_readiness_known=candidate_readiness_known,
+                        candidate_ready=(
+                            candidate_ready if candidate_readiness_known else None
+                        ),
+                        missing_required_deliverables=missing_required_paths,
+                        deliverable_progress=False,
+                        deliverable_completion_mode=deliverable_completion_mode,
+                        deliverable_convergence_violations=(
+                            deliverable_convergence_violations
+                        ),
                     )
                 previous_turn_made_progress = False
                 if has_workspace_patch:
@@ -319,6 +342,14 @@ class AgentLoop:
             candidate_ready_before_turn = candidate_required_paths is not None and set(
                 candidate_required_paths
             ).issubset(candidate_changed_files_before_turn)
+            missing_required_paths_before_turn = tuple(
+                path
+                for path in (candidate_required_paths or ())
+                if path not in candidate_changed_files_before_turn
+            )
+            completed_required_paths_before_turn = set(candidate_required_paths or ()) - set(
+                missing_required_paths_before_turn
+            )
             results: list[ToolExecutionResult] = []
             for call in response.tool_calls:
                 tool_started = trace.clock() if trace is not None else 0.0
@@ -458,6 +489,27 @@ class AgentLoop:
             candidate_ready = candidate_required_paths is not None and set(
                 candidate_required_paths
             ).issubset(candidate_changed_files)
+            missing_required_paths = tuple(
+                path
+                for path in (candidate_required_paths or ())
+                if path not in candidate_changed_files
+            )
+            completed_required_paths = tuple(
+                path
+                for path in (candidate_required_paths or ())
+                if path in candidate_changed_files
+            )
+            deliverable_progress = (
+                candidate_readiness_known
+                and len(missing_required_paths) < len(missing_required_paths_before_turn)
+            )
+            mutation_only_touched_completed_deliverables = (
+                bool(changed_files_this_turn)
+                and candidate_readiness_known
+                and set(changed_files_this_turn).issubset(
+                    completed_required_paths_before_turn
+                )
+            )
             progress = ToolProgressClassifier.summarize(
                 response.tool_calls,
                 results,
@@ -485,6 +537,121 @@ class AgentLoop:
                         else self._post_mutation_convergence_prompt()
                     )
                     convergence_nudge_triggered = True
+                    if policy.deliverable_convergence_enabled and candidate_readiness_known:
+                        if deliverable_progress:
+                            deliverable_completion_mode = False
+                            deliverable_convergence_violations = 0
+                            deliverable_focus_files = ()
+                        elif (
+                            deliverable_completion_mode
+                            and missing_required_paths
+                            and progress.failed_count == 0
+                        ):
+                            deliverable_convergence_violations += 1
+                            deliverable_focus_files = changed_files_this_turn
+                            runtime_instruction = self._deliverable_completion_prompt(
+                                strict=True,
+                                completed_paths=completed_required_paths,
+                                missing_paths=missing_required_paths,
+                                repeated_files=deliverable_focus_files,
+                            )
+                            convergence_nudge_triggered = True
+                            events.append(
+                                AgentRuntimeEvent(
+                                    sequence=len(events),
+                                    kind=AgentRuntimeEventKind.MUTATION_GATE,
+                                    iteration=iteration,
+                                    progress_kind=ToolProgressKind.MUTATION,
+                                    detail=(
+                                        "deliverable_completion_violation:"
+                                        f"{deliverable_convergence_violations}"
+                                    ),
+                                )
+                            )
+                            if (
+                                deliverable_convergence_violations
+                                > policy.max_deliverable_convergence_violations
+                            ):
+                                events.append(
+                                    AgentRuntimeEvent(
+                                        sequence=len(events),
+                                        kind=AgentRuntimeEventKind.MUTATION_GATE,
+                                        iteration=iteration,
+                                        progress_kind=ToolProgressKind.MUTATION,
+                                        detail="deliverable_completion_gate_exhausted",
+                                    )
+                                )
+                                if trace is not None:
+                                    assert turn_span_id is not None
+                                    trace.record_runtime_progress(
+                                        agent_turn_span_id=turn_span_id,
+                                        has_workspace_patch=has_workspace_patch,
+                                        turn_made_progress=turn_made_progress,
+                                        changed_files_this_turn=changed_files_this_turn,
+                                        consecutive_mutation_turns=consecutive_mutation_turns,
+                                        same_file_mutation_streak=same_file_mutation_streak,
+                                        convergence_nudge_triggered=True,
+                                        candidate_readiness_known=candidate_readiness_known,
+                                        candidate_ready=candidate_ready,
+                                        missing_required_deliverables=missing_required_paths,
+                                        deliverable_progress=deliverable_progress,
+                                        deliverable_completion_mode=True,
+                                        deliverable_convergence_violations=(
+                                            deliverable_convergence_violations
+                                        ),
+                                    )
+                                await self._record_tool_cost_outcome(
+                                    policy=policy,
+                                    calls=response.tool_calls,
+                                    results=results,
+                                    has_real_progress=True,
+                                    compacted_code_mutation=compacted_code_mutation,
+                                )
+                                return self._result(
+                                    stop_reason=AgentRuntimeStopReason.NO_PROGRESS,
+                                    iterations=iteration,
+                                    tool_calls=tool_call_count,
+                                    final_message=(
+                                        "Developer stopped after repeatedly mutating already-"
+                                        "covered deliverables without reducing the exact missing "
+                                        "deliverable set: "
+                                        + self._format_paths(missing_required_paths)
+                                    ),
+                                    prompt_tokens=total_prompt_tokens,
+                                    completion_tokens=total_completion_tokens,
+                                    total_tokens=total_tokens,
+                                    latency_ms=total_latency_ms,
+                                    observation_count=observation_count,
+                                    mutation_count=mutation_count,
+                                    mutation_gate_triggered=True,
+                                    events=events,
+                                )
+                        elif (
+                            missing_required_paths
+                            and same_file_mutation_streak
+                            >= policy.same_file_mutation_nudge_threshold
+                            and mutation_only_touched_completed_deliverables
+                            and progress.failed_count == 0
+                        ):
+                            deliverable_completion_mode = True
+                            deliverable_convergence_violations = 0
+                            deliverable_focus_files = changed_files_this_turn
+                            runtime_instruction = self._deliverable_completion_prompt(
+                                strict=False,
+                                completed_paths=completed_required_paths,
+                                missing_paths=missing_required_paths,
+                                repeated_files=deliverable_focus_files,
+                            )
+                            convergence_nudge_triggered = True
+                            events.append(
+                                AgentRuntimeEvent(
+                                    sequence=len(events),
+                                    kind=AgentRuntimeEventKind.MUTATION_GATE,
+                                    iteration=iteration,
+                                    progress_kind=ToolProgressKind.MUTATION,
+                                    detail="deliverable_completion_mode_entered",
+                                )
+                            )
             else:
                 consecutive_mutation_turns = 0
                 last_mutated_files = ()
@@ -521,6 +688,18 @@ class AgentLoop:
                         consecutive_mutation_turns=consecutive_mutation_turns,
                         same_file_mutation_streak=same_file_mutation_streak,
                         convergence_nudge_triggered=convergence_nudge_triggered,
+                        candidate_readiness_known=candidate_readiness_known,
+                        candidate_ready=(
+                                        candidate_ready
+                                        if candidate_readiness_known
+                                        else None
+                                    ),
+                        missing_required_deliverables=missing_required_paths,
+                        deliverable_progress=deliverable_progress,
+                        deliverable_completion_mode=deliverable_completion_mode,
+                        deliverable_convergence_violations=(
+                            deliverable_convergence_violations
+                        ),
                     )
                 await self._record_tool_cost_outcome(
                     policy=policy,
@@ -589,6 +768,18 @@ class AgentLoop:
                             consecutive_mutation_turns=consecutive_mutation_turns,
                             same_file_mutation_streak=same_file_mutation_streak,
                             convergence_nudge_triggered=convergence_nudge_triggered,
+                            candidate_readiness_known=candidate_readiness_known,
+                            candidate_ready=(
+                                    candidate_ready
+                                    if candidate_readiness_known
+                                    else None
+                                ),
+                            missing_required_deliverables=missing_required_paths,
+                            deliverable_progress=deliverable_progress,
+                            deliverable_completion_mode=deliverable_completion_mode,
+                            deliverable_convergence_violations=(
+                                deliverable_convergence_violations
+                            ),
                         )
                     await self._record_tool_cost_outcome(
                         policy=policy,
@@ -667,6 +858,18 @@ class AgentLoop:
                                     consecutive_mutation_turns=consecutive_mutation_turns,
                                     same_file_mutation_streak=same_file_mutation_streak,
                                     convergence_nudge_triggered=(convergence_nudge_triggered),
+                                    candidate_readiness_known=candidate_readiness_known,
+                                    candidate_ready=(
+                                        candidate_ready
+                                        if candidate_readiness_known
+                                        else None
+                                    ),
+                                    missing_required_deliverables=missing_required_paths,
+                                    deliverable_progress=deliverable_progress,
+                                    deliverable_completion_mode=deliverable_completion_mode,
+                                    deliverable_convergence_violations=(
+                                        deliverable_convergence_violations
+                                    ),
                                 )
                             await self._record_tool_cost_outcome(
                                 policy=policy,
@@ -701,6 +904,21 @@ class AgentLoop:
                             )
                         )
 
+            if (
+                policy.deliverable_convergence_enabled
+                and deliverable_completion_mode
+                and candidate_readiness_known
+                and missing_required_paths
+                and not turn_made_progress
+            ):
+                runtime_instruction = self._deliverable_completion_prompt(
+                    strict=deliverable_convergence_violations > 0,
+                    completed_paths=completed_required_paths,
+                    missing_paths=missing_required_paths,
+                    repeated_files=deliverable_focus_files,
+                )
+                convergence_nudge_triggered = True
+
             if tool_recovery_instruction is not None:
                 if not turn_made_progress:
                     runtime_instruction = tool_recovery_instruction
@@ -717,6 +935,18 @@ class AgentLoop:
                     consecutive_mutation_turns=consecutive_mutation_turns,
                     same_file_mutation_streak=same_file_mutation_streak,
                     convergence_nudge_triggered=convergence_nudge_triggered,
+                    candidate_readiness_known=candidate_readiness_known,
+                    candidate_ready=(
+                                    candidate_ready
+                                    if candidate_readiness_known
+                                    else None
+                                ),
+                    missing_required_deliverables=missing_required_paths,
+                    deliverable_progress=deliverable_progress,
+                    deliverable_completion_mode=deliverable_completion_mode,
+                    deliverable_convergence_violations=(
+                        deliverable_convergence_violations
+                    ),
                 )
 
             stuck_decision = stuck_detector.inspect()
@@ -893,6 +1123,76 @@ class AgentLoop:
             "Do not continue rewriting without a concrete unmet acceptance criterion. Inspect "
             "only the specific remaining uncertainty if needed. If no concrete requirement "
             "remains, stop tool use and hand the candidate to deterministic verification."
+        )
+
+    @staticmethod
+    def _format_paths(paths: tuple[str, ...]) -> str:
+        bounded = tuple(path[:256] for path in paths[:8] if path)
+        return "[" + ", ".join(bounded) + "]"
+
+    @classmethod
+    def _deliverable_completion_prompt(
+        cls,
+        *,
+        strict: bool,
+        completed_paths: tuple[str, ...],
+        missing_paths: tuple[str, ...],
+        repeated_files: tuple[str, ...],
+    ) -> str:
+        prefix = (
+            "DELIVERABLE COMPLETION MODE — FINAL BOUNDED CHANCE. "
+            if strict
+            else "DELIVERABLE COMPLETION MODE. "
+        )
+        return (
+            prefix
+            + "The exact structural candidate is incomplete. Completed required paths: "
+            + cls._format_paths(completed_paths)
+            + ". Missing required paths: "
+            + cls._format_paths(missing_paths)
+            + ". Recently repeated completed paths: "
+            + cls._format_paths(repeated_files)
+            + ". The next successful repository mutation should make structural delivery "
+            "progress by completing one missing required path. You may make one bounded "
+            "correction to an already-completed path only when a concrete acceptance criterion "
+            "requires it; do not repeat that correction across turns. Do not spend another turn "
+            "broadly rereading or polishing completed files. If a missing deliverable cannot be "
+            "created safely within the TaskContract, return exactly 'BLOCKED: <reason>'."
+        )
+
+    @staticmethod
+    def _format_paths(paths: tuple[str, ...]) -> str:
+        bounded = tuple(path[:256] for path in paths[:8] if path)
+        return "[" + ", ".join(bounded) + "]"
+
+    @classmethod
+    def _deliverable_completion_prompt(
+        cls,
+        *,
+        strict: bool,
+        completed_paths: tuple[str, ...],
+        missing_paths: tuple[str, ...],
+        repeated_files: tuple[str, ...],
+    ) -> str:
+        prefix = (
+            "DELIVERABLE COMPLETION MODE — FINAL BOUNDED CHANCE. "
+            if strict
+            else "DELIVERABLE COMPLETION MODE. "
+        )
+        return (
+            prefix
+            + "The exact structural candidate is incomplete. Completed required paths: "
+            + cls._format_paths(completed_paths)
+            + ". Missing required paths: "
+            + cls._format_paths(missing_paths)
+            + ". Recently repeated completed paths: "
+            + cls._format_paths(repeated_files)
+            + ". The next successful repository mutation should make structural delivery "
+            "progress by completing one missing required path. You may make one bounded "
+            "correction to an already-completed path only when a concrete acceptance criterion "
+            "requires it; do not repeat that correction across turns. Do not spend another turn "
+            "broadly rereading or polishing completed files. If a missing deliverable cannot be "
+            "created safely within the TaskContract, return exactly 'BLOCKED: <reason>'."
         )
 
     @staticmethod

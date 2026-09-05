@@ -49,6 +49,8 @@ class AgentRuntimePolicy:
     post_mutation_observation_handoff_threshold: int = 2
     consecutive_mutation_nudge_threshold: int = 3
     same_file_mutation_nudge_threshold: int = 2
+    deliverable_convergence_enabled: bool = False
+    max_deliverable_convergence_violations: int = 1
     tool_recovery_enabled: bool = False
     tool_recovery_max_output_tokens: int | None = None
     repeated_tool_failure_limit: int = 2
