@@ -1,4 +1,4 @@
-name: P1.5.5 Apply Convergence Lint Fix
+name: P1.5.5 Apply Convergence Focused Fixes
 
 on:
   workflow_dispatch:
@@ -25,7 +25,7 @@ jobs:
       - name: Prove expected feature head
         run: test "$(git rev-parse HEAD)" = "a7fe708beb25d086b9e47357e8d3ab9bd9952b85"
 
-      - name: Apply exact lint-only patch
+      - name: Apply exact focused fixes
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -45,6 +45,14 @@ jobs:
               raise SystemExit("unexpected expectation_id source")
           text = text.replace(old, new)
           path.write_text(text, encoding="utf-8")
+
+          test_path = Path("backend/tests/test_convergence_benchmark.py")
+          test_text = test_path.read_text(encoding="utf-8")
+          old = '        message_patterns=(r"null|missing element|不存在"),\n'
+          new = '        message_patterns=(r"null|missing element|不存在",),\n'
+          if test_text.count(old) != 1:
+              raise SystemExit("unexpected valid-new test fixture source")
+          test_path.write_text(test_text.replace(old, new), encoding="utf-8")
           PY
 
       - name: Set up Python 3.11
@@ -71,7 +79,7 @@ jobs:
         run: |
           git config user.name "DevFlow P1.5.5"
           git config user.email "actions@users.noreply.github.com"
-          git add backend/app/benchmark/convergence.py
+          git add backend/app/benchmark/convergence.py backend/tests/test_convergence_benchmark.py
           git diff --cached --check
-          git commit -m "style(benchmark): satisfy convergence analyzer lint"
+          git commit -m "fix(benchmark): validate convergence analyzer fixtures"
           git push origin HEAD:p155-convergence-benchmark-20260905
