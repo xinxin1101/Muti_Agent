@@ -133,3 +133,5 @@ jobs:
           name: ${{ matrix.artifact }}
           path: p154e-closure-${{ matrix.label }}.json
           if-no-files-found: warn
+
+# Trigger after registration so GitHub observes the workflow on push.
