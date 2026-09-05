@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.benchmark.convergence import (
+from app.benchmark import (
     ConvergenceExpectationKind,
     ConvergenceIssueExpectation,
     ConvergencePairVerdict,
