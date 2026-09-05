@@ -1,5 +1,6 @@
 name: P1.5.4-D Fixed Candidate Repair A-B
 
+# Triggered after workflow registration; production sources stay pinned below.
 on:
   push:
     branches:
