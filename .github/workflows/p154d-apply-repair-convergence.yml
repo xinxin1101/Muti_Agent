@@ -1,0 +1,123 @@
+name: P1.5.4-D Apply Repair Convergence
+
+on:
+  push:
+    branches:
+      - p154d-repair-convergence-apply-20260905
+    paths:
+      - ".github/workflows/p154d-apply-repair-convergence.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact xin_01
+        uses: actions/checkout@v6
+        with:
+          ref: xin_01
+          fetch-depth: 0
+
+      - name: Prove expected base
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "4644009bd8da4163c053eaa80f1daf13ab28598c"
+
+      - name: Apply asserted P1.5.4-D patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              target = Path(path)
+              text = target.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected exactly one match, found {count}")
+              target.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          loop = "backend/app/agent_runtime/loop.py"
+          repair = "backend/app/agents/repair.py"
+          test = "backend/tests/test_review_aware_repair_handoff.py"
+
+          replace_once(
+              loop,
+              """            request = AgentRequest(\n""",
+              """            mutation_only_turn = (\n                policy.mutation_only_after_gate_enabled and mutation_gate_triggered\n            )\n            effective_allowed_tool_names = (\n                policy.allowed_tool_names.intersection({\"apply_patch\", \"write_file\"})\n                if mutation_only_turn\n                else policy.allowed_tool_names\n            )\n            effective_tool_definitions = (\n                tuple(\n                    definition\n                    for definition in policy.tool_definitions\n                    if definition.name in effective_allowed_tool_names\n                )\n                if mutation_only_turn\n                else policy.tool_definitions\n            )\n            request = AgentRequest(\n""",
+          )
+          replace_once(
+              loop,
+              """                tools=list(policy.tool_definitions),\n""",
+              """                tools=list(effective_tool_definitions),\n""",
+          )
+          replace_once(
+              loop,
+              """                if call.name not in policy.allowed_tool_names:\n""",
+              """                if call.name not in effective_allowed_tool_names:\n""",
+          )
+          replace_once(
+              loop,
+              """                    if not mutation_gate_triggered:\n                        mutation_gate_triggered = True\n                        runtime_instruction = (\n                            self._post_mutation_convergence_prompt()\n                            if has_workspace_patch\n                            else self._mutation_required_prompt(\n                                strict=False,\n                                reason=(\n                                    \"The Agent has accumulated observation evidence but \"\n                                    \"no candidate workspace mutation exists yet.\"\n                                ),\n                            )\n                        )\n                        events.append(\n                            AgentRuntimeEvent(\n                                sequence=len(events),\n                                kind=AgentRuntimeEventKind.MUTATION_GATE,\n                                iteration=iteration,\n                                progress_kind=ToolProgressKind.OBSERVATION,\n                                detail=(\n                                    \"observation_limit_after_patch\"\n                                    if has_workspace_patch\n                                    else \"observation_limit_reached\"\n                                ),\n                            )\n                        )\n""",
+              """                    if not mutation_gate_triggered:\n                        mutation_gate_triggered = True\n                        if (\n                            policy.mutation_only_after_gate_enabled\n                            and not has_workspace_patch\n                        ):\n                            runtime_instruction = self._mutation_required_prompt(\n                                strict=True,\n                                reason=(\n                                    \"The bounded evidence phase is complete and the allowed \"\n                                    \"supplementary observation turn has been used. The next \"\n                                    \"turn is mutation-only.\"\n                                ),\n                            )\n                            gate_detail = \"observation_limit_reached_mutation_only\"\n                        else:\n                            runtime_instruction = (\n                                self._post_mutation_convergence_prompt()\n                                if has_workspace_patch\n                                else self._mutation_required_prompt(\n                                    strict=False,\n                                    reason=(\n                                        \"The Agent has accumulated observation evidence but \"\n                                        \"no candidate workspace mutation exists yet.\"\n                                    ),\n                                )\n                            )\n                            gate_detail = (\n                                \"observation_limit_after_patch\"\n                                if has_workspace_patch\n                                else \"observation_limit_reached\"\n                            )\n                        events.append(\n                            AgentRuntimeEvent(\n                                sequence=len(events),\n                                kind=AgentRuntimeEventKind.MUTATION_GATE,\n                                iteration=iteration,\n                                progress_kind=ToolProgressKind.OBSERVATION,\n                                detail=gate_detail,\n                            )\n                        )\n""",
+          )
+          replace_once(
+              loop,
+              """            else:\n                consecutive_mutation_turns = 0\n                last_mutated_files = ()\n                same_file_mutation_streak = 0\n\n            candidate_completed_this_turn = (\n""",
+              """            else:\n                consecutive_mutation_turns = 0\n                last_mutated_files = ()\n                same_file_mutation_streak = 0\n\n            if (\n                policy.handoff_after_successful_mutation\n                and turn_made_progress\n                and has_workspace_patch\n                and progress.successful_mutation_tool_count > 0\n                and progress.failed_count == 0\n            ):\n                events.append(\n                    AgentRuntimeEvent(\n                        sequence=len(events),\n                        kind=AgentRuntimeEventKind.MUTATION_GATE,\n                        iteration=iteration,\n                        progress_kind=ToolProgressKind.MUTATION,\n                        detail=\"handoff_after_successful_mutation\",\n                    )\n                )\n                if trace is not None:\n                    assert turn_span_id is not None\n                    trace.record_runtime_progress(\n                        agent_turn_span_id=turn_span_id,\n                        has_workspace_patch=has_workspace_patch,\n                        turn_made_progress=turn_made_progress,\n                        changed_files_this_turn=changed_files_this_turn,\n                        consecutive_mutation_turns=consecutive_mutation_turns,\n                        same_file_mutation_streak=same_file_mutation_streak,\n                        convergence_nudge_triggered=convergence_nudge_triggered,\n                        candidate_readiness_known=candidate_readiness_known,\n                        candidate_ready=(\n                            candidate_ready if candidate_readiness_known else None\n                        ),\n                        missing_required_deliverables=missing_required_paths,\n                        deliverable_progress=deliverable_progress,\n                        deliverable_completion_mode=deliverable_completion_mode,\n                        deliverable_convergence_violations=(\n                            deliverable_convergence_violations\n                        ),\n                    )\n                await self._record_tool_cost_outcome(\n                    policy=policy,\n                    calls=response.tool_calls,\n                    results=results,\n                    has_real_progress=True,\n                    compacted_code_mutation=compacted_code_mutation,\n                )\n                return self._result(\n                    stop_reason=AgentRuntimeStopReason.MODEL_STOP,\n                    iterations=iteration,\n                    tool_calls=tool_call_count,\n                    final_message=(\n                        \"Successful scoped mutation handed to deterministic verification \"\n                        \"immediately after the mutation turn.\"\n                    ),\n                    prompt_tokens=total_prompt_tokens,\n                    completion_tokens=total_completion_tokens,\n                    total_tokens=total_tokens,\n                    latency_ms=total_latency_ms,\n                    observation_count=observation_count,\n                    mutation_count=mutation_count,\n                    mutation_gate_triggered=mutation_gate_triggered,\n                    events=events,\n                )\n\n            candidate_completed_this_turn = (\n""",
+          )
+
+          replace_once(
+              repair,
+              """from app.models.repair import RepairHandoff, RepairRunResult, RepairStopReason\n""",
+              """from app.models.repair import (\n    RepairFailureKind,\n    RepairHandoff,\n    RepairRunResult,\n    RepairStopReason,\n)\n""",
+          )
+          replace_once(
+              repair,
+              """        prefetch_performed = False\n        if self._runtime_import_prefetch_enabled:\n""",
+              """        prefetch_performed = False\n        semantic_prefetch_ready = False\n        if self._runtime_import_prefetch_enabled:\n""",
+          )
+          replace_once(
+              repair,
+              """            if prefetch.performed:\n                prefetch_performed = True\n                base_messages.append(\n""",
+              """            if prefetch.performed:\n                prefetch_performed = True\n                semantic_prefetch_ready = (\n                    prefetch.failure_kind is RepairFailureKind.SEMANTIC_REVIEW_ISSUE\n                    and bool(prefetch.source_preview.strip())\n                    and not prefetch.errors\n                )\n                base_messages.append(\n""",
+          )
+          replace_once(
+              repair,
+              """            max_mutation_gate_violations=1,\n            event_condenser_enabled=self._runtime_event_condenser_enabled,\n""",
+              """            max_mutation_gate_violations=1,\n            mutation_only_after_gate_enabled=semantic_prefetch_ready,\n            handoff_after_successful_mutation=semantic_prefetch_ready,\n            event_condenser_enabled=self._runtime_event_condenser_enabled,\n""",
+          )
+
+          replace_once(
+              test,
+              """import asyncio\nimport subprocess\n""",
+              """import asyncio\nimport json\nimport subprocess\n""",
+          )
+          replace_once(
+              test,
+              """def _response(content: str = \"No patch produced.\") -> models.AgentResponse:\n    return models.AgentResponse(\n        model=\"test/repair\",\n        content=content,\n        tool_calls=[],\n        latency_ms=1,\n        finish_reason=\"stop\",\n    )\n""",
+              """def _response(\n    content: str = \"No patch produced.\",\n    *,\n    tool_calls: list[models.ToolCall] | None = None,\n) -> models.AgentResponse:\n    calls = tool_calls or []\n    return models.AgentResponse(\n        model=\"test/repair\",\n        content=content,\n        tool_calls=calls,\n        latency_ms=1,\n        finish_reason=\"tool_calls\" if calls else \"stop\",\n    )\n""",
+          )
+          append_marker = """    assert \"reviewer-target-line-108\" in combined\n"""
+          append_tests = """    assert \"reviewer-target-line-108\" in combined\n\n\ndef test_semantic_prefetch_allows_one_observation_then_forces_mutation_only(\n    tmp_path: Path,\n) -> None:\n    workspace = LocalGitWorkspace(_repository(tmp_path))\n    task = _task()\n    failure = _review_failure(file=\"src/gomoku_ui.js\", line=108)\n    handoff = _handoff(task, workspace, failure)\n    observation = models.ToolCall(\n        id=\"observe-target\",\n        name=\"read_range\",\n        arguments=json.dumps(\n            {\n                \"path\": \"src/gomoku_ui.js\",\n                \"start_line\": 100,\n                \"end_line\": 115,\n            }\n        ),\n    )\n    patch = models.ToolCall(\n        id=\"repair-target\",\n        name=\"apply_patch\",\n        arguments=json.dumps(\n            {\n                \"path\": \"src/gomoku_ui.js\",\n                \"old_text\": (\n                    \"const occupied = board[row][col]; // reviewer-target-line-108\"\n                ),\n                \"new_text\": (\n                    \"const occupied = board[row][col]; // reviewer-target-line-108\\n\"\n                    \"if (occupied) return;\"\n                ),\n            }\n        ),\n    )\n    driver = FakeDriver(\n        [\n            _response(content=\"\", tool_calls=[observation]),\n            _response(content=\"\", tool_calls=[patch]),\n            _response(content=\"unexpected extra model turn\"),\n        ]\n    )\n    agent = agents.RepairAgent(\n        driver=driver,\n        model=\"test/repair\",\n        max_iterations=4,\n        runtime_v3_enabled=True,\n        runtime_mutation_gate_enabled=True,\n        runtime_import_prefetch_enabled=True,\n    )\n\n    result = asyncio.run(\n        agent.repair(\n            task,\n            [failure],\n            attempt=1,\n            workspace=workspace,\n            handoff=handoff,\n        )\n    )\n\n    assert result.stop_reason is models.RepairStopReason.MODEL_STOP\n    assert result.iterations == 2\n    assert result.tool_calls == 2\n    assert len(driver.requests) == 2\n    assert {tool.name for tool in driver.requests[0].tools} > {\n        \"apply_patch\",\n        \"write_file\",\n    }\n    assert {tool.name for tool in driver.requests[1].tools} == {\n        \"apply_patch\",\n        \"write_file\",\n    }\n    second_prompt = \"\\n\".join(message.content for message in driver.requests[1].messages)\n    assert \"MUTATION REQUIRED\" in second_prompt\n    assert \"next turn is mutation-only\" in second_prompt\n    assert \"src/gomoku_ui.js\" in result.changed_files\n\n\ndef test_semantic_prefetch_hands_off_after_first_successful_mutation(\n    tmp_path: Path,\n) -> None:\n    workspace = LocalGitWorkspace(_repository(tmp_path))\n    task = _task()\n    failure = _review_failure(file=\"src/gomoku_ui.js\", line=108)\n    handoff = _handoff(task, workspace, failure)\n    patch = models.ToolCall(\n        id=\"repair-immediately\",\n        name=\"apply_patch\",\n        arguments=json.dumps(\n            {\n                \"path\": \"src/gomoku_ui.js\",\n                \"old_text\": (\n                    \"const occupied = board[row][col]; // reviewer-target-line-108\"\n                ),\n                \"new_text\": (\n                    \"const occupied = board[row][col]; // reviewer-target-line-108\\n\"\n                    \"if (occupied) return;\"\n                ),\n            }\n        ),\n    )\n    driver = FakeDriver(\n        [\n            _response(content=\"\", tool_calls=[patch]),\n            _response(content=\"unexpected extra model turn\"),\n        ]\n    )\n    agent = agents.RepairAgent(\n        driver=driver,\n        model=\"test/repair\",\n        max_iterations=4,\n        runtime_v3_enabled=True,\n        runtime_mutation_gate_enabled=True,\n        runtime_import_prefetch_enabled=True,\n    )\n\n    result = asyncio.run(\n        agent.repair(\n            task,\n            [failure],\n            attempt=1,\n            workspace=workspace,\n            handoff=handoff,\n        )\n    )\n\n    assert result.stop_reason is models.RepairStopReason.MODEL_STOP\n    assert result.iterations == 1\n    assert result.tool_calls == 1\n    assert len(driver.requests) == 1\n    assert \"src/gomoku_ui.js\" in result.changed_files\n"""
+          replace_once(test, append_marker, append_tests)
+          PY
+
+      - name: Validate patch shape
+        shell: bash
+        run: |
+          git diff --check
+          python -m compileall -q backend/app backend/tests/test_review_aware_repair_handoff.py
+          git diff -- backend/app/agent_runtime/types.py backend/app/agent_runtime/loop.py backend/app/agents/repair.py backend/tests/test_review_aware_repair_handoff.py
+
+      - name: Commit and push xin_01
+        shell: bash
+        run: |
+          git config user.name "DevFlow P1.5.4-D"
+          git config user.email "actions@users.noreply.github.com"
+          git add backend/app/agent_runtime/loop.py backend/app/agents/repair.py backend/tests/test_review_aware_repair_handoff.py
+          git diff --cached --quiet && { echo "::error::No P1.5.4-D changes produced"; exit 1; }
+          git commit -m "feat(repair): converge semantic repairs after prefetch"
+          git push origin HEAD:xin_01
