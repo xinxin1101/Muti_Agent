@@ -1,6 +1,6 @@
 name: P1.5.4-D Fixed Candidate Repair A-B
 
-# Triggered after workflow registration; production sources stay pinned below.
+# Production sources remain pinned; harness labels stay A/B for compatibility.
 on:
   push:
     branches:
@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   fixed-candidate:
-    name: P1.5.4-D ${{ matrix.label }}
+    name: P1.5.4-D ${{ matrix.variant }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -22,10 +22,12 @@ jobs:
       max-parallel: 1
       matrix:
         include:
-          - label: BASELINE_B
+          - label: A
+            variant: BASELINE_B
             source_sha: e730aeecdf512f30e9f5070a471e9bccb38acf5d
             artifact: p154d-baseline-b
-          - label: NEW_D
+          - label: B
+            variant: NEW_D
             source_sha: a151e66dbc31956ea13a513628edcbdfa320c572
             artifact: p154d-new-d
     env:
