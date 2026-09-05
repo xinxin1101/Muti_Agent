@@ -20,6 +20,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: p155-convergence-validation-20260905
+          fetch-depth: 2
 
       - name: Prove benchmark source parent
         run: test "$(git rev-parse HEAD^)" = "a7fe708beb25d086b9e47357e8d3ab9bd9952b85"
