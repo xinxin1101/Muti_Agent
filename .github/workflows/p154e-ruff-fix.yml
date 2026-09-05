@@ -1,5 +1,6 @@
 name: P1.5.4-E Ruff Fix
 
+# Trigger after workflow registration; production base remains pinned below.
 on:
   push:
     branches: [p154e-ruff-fix-20260905]
