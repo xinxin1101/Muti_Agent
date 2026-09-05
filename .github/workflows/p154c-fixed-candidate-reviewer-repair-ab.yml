@@ -134,3 +134,5 @@ jobs:
           name: ${{ matrix.artifact }}
           path: p154c-fixed-${{ matrix.label }}.json
           if-no-files-found: warn
+
+# Triggered after workflow registration to guarantee a push event observes this file.
