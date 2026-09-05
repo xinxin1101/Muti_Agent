@@ -1,6 +1,6 @@
 name: P1.5.4-E Apply Reviewer Closure Mode v2
 
-# Asserted application from the exact production baseline.
+# Diagnostic source print before static validation. Production remains pinned.
 on:
   push:
     branches:
@@ -35,6 +35,14 @@ jobs:
         run: test "$(git rev-parse HEAD)" = "357debe3bd4ae08aa3ff5a255ea3b2bf7e3fb1d0"
       - name: Apply asserted P1.5.4-E patch
         run: python /tmp/p154e_apply_reviewer_closure_v5.py
+      - name: Print generated source diagnostics
+        run: |
+          echo '=== reviewer.py 255-305 ==='
+          nl -ba backend/app/agents/reviewer.py | sed -n '255,305p'
+          echo '=== reviewer_closure.py 1-60 ==='
+          nl -ba backend/app/runtime/reviewer_closure.py | sed -n '1,60p'
+          echo '=== test_reviewer_closure_mode.py 1-45 ==='
+          nl -ba backend/tests/test_reviewer_closure_mode.py | sed -n '1,45p'
       - name: Validate patch syntax
         run: |
           git diff --check
