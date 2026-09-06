@@ -122,7 +122,10 @@ class BudgetedAgentDriver:
                 usage=response.usage,
                 tool_argument_tokens=self._tool_argument_tokens(response.tool_calls),
                 write_patch_argument_tokens=self._write_patch_argument_tokens(response.tool_calls),
-                has_real_progress=request.budget_progress,
+                # request.budget_progress describes the previous completed tool turn and is
+                # intentionally used only for admission/liveness. The current model-turn audit
+                # starts with no proven progress and is completed by record_tool_outcome().
+                has_real_progress=False,
                 max_output_tokens=request.max_output_tokens,
             )
         )

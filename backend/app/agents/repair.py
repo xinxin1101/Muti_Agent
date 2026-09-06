@@ -5,6 +5,12 @@ import json
 from collections.abc import Callable, Sequence
 from time import monotonic
 
+from app.agent_runtime import (
+    AgentLoop,
+    AgentRuntimePolicy,
+    AgentRuntimeStopReason,
+    build_repair_prefetch,
+)
 from app.agents.errors import RepairBudgetExhaustedError
 from app.context.projector import AgentContextProjector
 from app.context.retention import AgentContextRetention
@@ -18,7 +24,12 @@ from app.models.agent import (
 )
 from app.models.context import ContextPacket
 from app.models.failure import FailureReport
-from app.models.repair import RepairHandoff, RepairRunResult, RepairStopReason
+from app.models.repair import (
+    RepairFailureKind,
+    RepairHandoff,
+    RepairRunResult,
+    RepairStopReason,
+)
 from app.models.task import TaskContract
 from app.models.tools import ToolErrorCode, ToolExecutionResult
 from app.providers.base import AgentDriver
@@ -61,6 +72,12 @@ class RepairAgent:
         max_tool_results_per_turn_tokens: int = 1_200,
         max_read_range_lines: int = 120,
         max_evidence_chars: int = 6_000,
+        runtime_v3_enabled: bool = False,
+        runtime_mutation_gate_enabled: bool = True,
+        runtime_import_prefetch_enabled: bool = True,
+        runtime_event_condenser_enabled: bool = True,
+        runtime_stuck_detector_enabled: bool = False,
+        openhands_patch_enabled: bool = True,
         clock: Callable[[], float] = monotonic,
     ) -> None:
         normalized_model = model.strip()
@@ -98,6 +115,12 @@ class RepairAgent:
         self._max_tool_results_per_turn_tokens = max_tool_results_per_turn_tokens
         self._max_read_range_lines = max_read_range_lines
         self._max_evidence_chars = max_evidence_chars
+        self._runtime_v3_enabled = runtime_v3_enabled
+        self._runtime_mutation_gate_enabled = runtime_mutation_gate_enabled
+        self._runtime_import_prefetch_enabled = runtime_import_prefetch_enabled
+        self._runtime_event_condenser_enabled = runtime_event_condenser_enabled
+        self._runtime_stuck_detector_enabled = runtime_stuck_detector_enabled
+        self._openhands_patch_enabled = openhands_patch_enabled
         self._clock = clock
 
     async def repair(
@@ -138,12 +161,26 @@ class RepairAgent:
             workspace=workspace,
             task=task,
             max_read_range_lines=self._max_read_range_lines,
+            openhands_patch_enabled=self._openhands_patch_enabled,
         )
         tool_definitions = [
             definition
             for definition in toolbox.definitions()
             if definition.name in _REPAIR_TOOL_NAMES
         ]
+        if self._runtime_v3_enabled:
+            return await self._repair_with_runtime_v3(
+                task=task,
+                failures=repairable,
+                attempt=attempt,
+                workspace=workspace,
+                toolbox=toolbox,
+                tool_definitions=tool_definitions,
+                handoff=handoff,
+                context_packet=context_packet,
+                trace=trace,
+            )
+
         retention = AgentContextRetention(
             task_id=task.task_id,
             base_messages=self._initial_messages(
@@ -456,6 +493,132 @@ class RepairAgent:
             latency_ms=total_latency_ms,
         )
 
+    async def _repair_with_runtime_v3(
+        self,
+        *,
+        task: TaskContract,
+        failures: Sequence[FailureReport],
+        attempt: int,
+        workspace: LocalGitWorkspace,
+        toolbox: RepositoryToolbox,
+        tool_definitions,
+        handoff: RepairHandoff | None,
+        context_packet: ContextPacket | None,
+        trace: TaskTraceCollector | None,
+    ) -> RepairRunResult:
+        base_messages = self._initial_messages(
+            task,
+            failures,
+            attempt=attempt,
+            handoff=handoff,
+            context_packet=context_packet,
+        )
+        prefetch_performed = False
+        semantic_prefetch_ready = False
+        semantic_prefetch_path: str | None = None
+        if self._runtime_import_prefetch_enabled:
+            prefetch = build_repair_prefetch(
+                handoff,
+                toolbox=toolbox,
+                max_read_range_lines=self._max_read_range_lines,
+            )
+            if prefetch.performed:
+                prefetch_performed = True
+                semantic_prefetch_ready = (
+                    prefetch.failure_kind is RepairFailureKind.SEMANTIC_REVIEW_ISSUE
+                    and bool(prefetch.source_preview.strip())
+                    and not prefetch.errors
+                )
+                if semantic_prefetch_ready:
+                    semantic_prefetch_path = prefetch.path
+                base_messages.append(
+                    AgentMessage(
+                        role=MessageRole.USER,
+                        content=prefetch.prompt_section(),
+                    )
+                )
+
+        runtime_tool_definitions = tuple(tool_definitions)
+        if (
+            semantic_prefetch_ready
+            and semantic_prefetch_path is not None
+            and not semantic_prefetch_path.lower().endswith((".py", ".pyi"))
+        ):
+            runtime_tool_definitions = tuple(
+                definition
+                for definition in runtime_tool_definitions
+                if definition.name != "read_symbol"
+            )
+        runtime_tool_names = frozenset(
+            definition.name for definition in runtime_tool_definitions
+        )
+
+        policy = AgentRuntimePolicy(
+            role=AgentRole.REPAIR,
+            model=self._model,
+            max_iterations=self._max_iterations,
+            max_duration_seconds=self._max_duration_seconds,
+            max_model_turn_seconds=self._max_model_turn_seconds,
+            max_tool_calls_per_turn=self._max_tool_calls_per_turn,
+            temperature=self._temperature,
+            max_output_tokens=self._max_output_tokens,
+            enable_thinking=self._enable_thinking,
+            allowed_tool_names=runtime_tool_names,
+            tool_definitions=runtime_tool_definitions,
+            max_retained_tool_groups=1,
+            max_single_tool_result_tokens=self._max_single_tool_result_tokens,
+            max_tool_results_per_turn_tokens=self._max_tool_results_per_turn_tokens,
+            mutation_gate_enabled=self._runtime_mutation_gate_enabled,
+            # Deterministic prefetch already provided the target class/source. Allow one
+            # additional observation turn, then require a mutation instead of re-exploration.
+            max_observation_turns_without_mutation=1 if prefetch_performed else 2,
+            max_mutation_gate_violations=1,
+            mutation_only_after_gate_enabled=semantic_prefetch_ready,
+            handoff_after_successful_mutation=semantic_prefetch_ready,
+            event_condenser_enabled=self._runtime_event_condenser_enabled,
+            stuck_detector_enabled=self._runtime_stuck_detector_enabled,
+        )
+        runtime_result = await AgentLoop(
+            driver=self._driver,
+            clock=self._clock,
+        ).run(
+            policy=policy,
+            task_id=task.task_id,
+            base_messages=base_messages,
+            toolbox=toolbox,
+            workspace=workspace,
+            context_estimated_tokens=(
+                0
+                if handoff is not None
+                else context_packet.usage.billable_prompt_tokens
+                if context_packet is not None
+                else 0
+            ),
+            context_usage=context_packet.usage if context_packet is not None else None,
+            trace=trace,
+        )
+        stop_reason = {
+            AgentRuntimeStopReason.MODEL_STOP: RepairStopReason.MODEL_STOP,
+            AgentRuntimeStopReason.NO_PROGRESS: RepairStopReason.NO_PROGRESS,
+            AgentRuntimeStopReason.EXPLICIT_BLOCKER: RepairStopReason.EXPLICIT_BLOCKER,
+            AgentRuntimeStopReason.TIME_LIMIT: RepairStopReason.TIME_LIMIT,
+            AgentRuntimeStopReason.TOOL_CALL_LIMIT: RepairStopReason.TOOL_CALL_LIMIT,
+            AgentRuntimeStopReason.ITERATION_LIMIT: RepairStopReason.ITERATION_LIMIT,
+            AgentRuntimeStopReason.REPEATED_TOOL_FAILURE: RepairStopReason.NO_PROGRESS,
+        }[runtime_result.stop_reason]
+        return self._result(
+            task=task,
+            failures=failures,
+            attempt=attempt,
+            stop_reason=stop_reason,
+            iterations=runtime_result.iterations,
+            tool_calls=runtime_result.tool_calls,
+            workspace=workspace,
+            usage=runtime_result.usage,
+            latency_ms=runtime_result.latency_ms,
+            final_message=runtime_result.final_message,
+        )
+
     @staticmethod
     def _is_explicit_blocker(content: str) -> bool:
         return content.lstrip().upper().startswith("BLOCKED:")
@@ -467,7 +630,8 @@ class RepairAgent:
             hint = (
                 f" Failure hint: kind={handoff.failure_kind.value};"
                 f" path={handoff.suspected_path or 'unknown'};"
-                f" symbol={handoff.suspected_symbol or 'unknown'}."
+                f" symbol={handoff.suspected_symbol or 'unknown'};"
+                f" member={handoff.suspected_member or 'none'}."
             )
         return (
             "No workspace patch has been produced and the deterministic verification failure "

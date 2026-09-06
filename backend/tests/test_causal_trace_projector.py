@@ -177,6 +177,15 @@ def _fixture(*, batch_generation: int = 2):
         ),
         duration_ms=2,
     )
+    collector.record_runtime_progress(
+        agent_turn_span_id=turn_id,
+        has_workspace_patch=True,
+        turn_made_progress=True,
+        changed_files_this_turn=("feature.py",),
+        consecutive_mutation_turns=1,
+        same_file_mutation_streak=1,
+        convergence_nudge_triggered=True,
+    )
     collector.record_verification(
         attempt=1,
         result=_verification(),
@@ -378,6 +387,12 @@ async def _projector_builds_full_diagnostic_causal_tree() -> None:
     assert turn.prompt_tokens == 4
     assert turn.completion_tokens == 3
     assert turn.total_tokens == 7
+    assert turn.has_workspace_patch is True
+    assert turn.turn_made_progress is True
+    assert turn.changed_files_this_turn == ("feature.py",)
+    assert turn.consecutive_mutation_turns == 1
+    assert turn.same_file_mutation_streak == 1
+    assert turn.convergence_nudge_triggered is True
 
     serialized = trace.model_dump_json()
     assert "secret completion" not in serialized

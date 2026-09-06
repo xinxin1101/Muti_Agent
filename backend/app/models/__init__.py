@@ -7,7 +7,12 @@ from app.models.agent import (
     MessageRole,
     TokenUsage,
 )
-from app.models.checkpoint import CheckpointReason, TaskCheckpoint
+from app.models.checkpoint import (
+    CheckpointReason,
+    CheckpointResumeStrategy,
+    TaskCheckpoint,
+    TaskResumeContext,
+)
 from app.models.conflict import (
     MergeConflictEvidence,
     MergeConflictFile,
@@ -112,6 +117,7 @@ from app.models.repair import (
 )
 from app.models.review import (
     ReviewDecision,
+    ReviewerClosureContext,
     ReviewIssue,
     ReviewOutcome,
     ReviewSeverity,
@@ -187,6 +193,7 @@ __all__ = [
     "CheckResult",
     "CheckType",
     "CheckpointReason",
+    "CheckpointResumeStrategy",
     "ContextBudget",
     "ContextContinuationState",
     "ContextFile",
@@ -250,6 +257,7 @@ __all__ = [
     "RepairRunResult",
     "RepairStopReason",
     "ReviewDecision",
+    "ReviewerClosureContext",
     "ReviewIssue",
     "ReviewOutcome",
     "ReviewSeverity",
@@ -265,6 +273,7 @@ __all__ = [
     "SingleTaskRunResult",
     "TaskContract",
     "TaskCheckpoint",
+    "TaskResumeContext",
     "TaskContinuationSummary",
     "TaskDAG",
     "TaskDispatchEnvelope",

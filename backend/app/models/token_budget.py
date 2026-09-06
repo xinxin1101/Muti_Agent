@@ -94,6 +94,34 @@ class RoleTokenUsage(BaseModel):
         return self
 
 
+class ModelTurnTokenObservation(BaseModel):
+    """Bounded, metadata-only per-turn cost observation for Developer/Repair audits."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    observation_id: int = Field(ge=1)
+    task_id: str = Field(min_length=1, max_length=128)
+    role: AgentRole
+    iteration: int = Field(ge=1)
+    request_estimated_tokens: int = Field(ge=0)
+    actual_prompt_tokens: int = Field(ge=0)
+    actual_completion_tokens: int = Field(ge=0)
+    context_growth_tokens: int = Field(ge=0)
+    tool_argument_tokens: int = Field(ge=0)
+    write_patch_argument_tokens: int = Field(ge=0)
+    tool_result_tokens: int = Field(ge=0)
+    compacted_tool_argument_tokens: int = Field(ge=0)
+    has_real_progress: bool = False
+
+    @property
+    def actual_total_tokens(self) -> int:
+        return self.actual_prompt_tokens + self.actual_completion_tokens
+
+    @property
+    def estimate_delta_tokens(self) -> int:
+        return self.request_estimated_tokens - self.actual_prompt_tokens
+
+
 class RunTokenBudget(BaseModel):
     """Persisted reservation-aware token budget. It is a safety gate, not billing data."""
 
@@ -108,6 +136,9 @@ class RunTokenBudget(BaseModel):
     roles: tuple[RoleTokenUsage, ...] = ()
     stages: tuple[StageTokenBudget, ...] = ()
     work_packages: tuple[WorkPackageTokenBudget, ...] = ()
+    cost_observations: tuple[ModelTurnTokenObservation, ...] = ()
+    cost_observation_count: int = Field(default=0, ge=0)
+    cost_observations_truncated: bool = False
 
     @model_validator(mode="after")
     def validate_usage(self) -> RunTokenBudget:

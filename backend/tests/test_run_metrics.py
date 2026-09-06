@@ -20,7 +20,7 @@ from app.models.events import (
     RuntimeEventSource,
 )
 from app.models.task import TaskContract
-from app.models.token_budget import RoleTokenUsage, RunTokenBudget
+from app.models.token_budget import ModelTurnTokenObservation, RoleTokenUsage, RunTokenBudget
 from app.models.workflow import (
     WorkflowActivationMode,
     WorkflowExecutionMode,
@@ -327,6 +327,52 @@ def test_metrics_expose_workflow_path_and_keep_saved_tokens_an_estimate() -> Non
     assert metrics.workflow.workflow_calls == 1
     assert metrics.workflow.agent_calls == 1
     assert metrics.workflow.estimated_tokens_saved == 1400
+
+
+def test_metrics_expose_bounded_per_turn_token_audit_without_raw_payloads() -> None:
+    budget = RunTokenBudget(
+        total_budget_tokens=50_000,
+        used_prompt_tokens=4_200,
+        used_completion_tokens=300,
+        used_total_tokens=4_500,
+        cost_observations=(
+            ModelTurnTokenObservation(
+                observation_id=7,
+                task_id="task-1",
+                role=AgentRole.DEVELOPER,
+                iteration=2,
+                request_estimated_tokens=5_240,
+                actual_prompt_tokens=4_200,
+                actual_completion_tokens=300,
+                context_growth_tokens=900,
+                tool_argument_tokens=1_700,
+                write_patch_argument_tokens=1_200,
+                tool_result_tokens=240,
+                compacted_tool_argument_tokens=1_200,
+                has_real_progress=True,
+            ),
+        ),
+        cost_observation_count=1,
+    )
+
+    metrics = build_run_metrics(
+        _snapshot(),
+        aggregate_runtime_events(RUN_ID, ()),
+        budget,
+    )
+
+    audit = metrics.token_budget.cost_observations
+    assert len(audit) == 1
+    assert audit[0].task_id == "task-1"
+    assert audit[0].request_estimated_tokens == 5_240
+    assert audit[0].actual_prompt_tokens == 4_200
+    assert audit[0].actual_completion_tokens == 300
+    assert audit[0].actual_total_tokens == 4_500
+    assert audit[0].estimate_delta_tokens == 1_040
+    assert audit[0].compacted_tool_argument_tokens == 1_200
+    assert audit[0].has_real_progress is True
+    assert metrics.token_budget.cost_observation_count == 1
+    assert metrics.token_budget.cost_observations_truncated is False
 
 
 def test_runtime_event_gap_or_cross_run_fails_closed() -> None:

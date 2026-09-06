@@ -299,6 +299,126 @@ def test_apply_patch_requires_unique_exact_context(tmp_path: Path) -> None:
     assert missing.error_code is ToolErrorCode.NOT_FOUND
 
 
+def test_openhands_apply_patch_supports_atomic_multi_file_update_and_add(tmp_path: Path) -> None:
+    root = _make_repository(tmp_path)
+    toolbox = RepositoryToolbox(workspace=LocalGitWorkspace(root), task=_task())
+    patch = """*** Begin Patch
+*** Update File: app/main.py
+@@
+-VALUE = 1
++VALUE = 2
+*** Add File: app/game.py
++def play():
++    return True
++
+*** End Patch"""
+
+    result = toolbox.execute(_call("oh-patch", "apply_patch", {"patch": patch}))
+
+    assert result.ok is True
+    payload = json.loads(result.content)
+    assert payload["engine"] == "openhands"
+    assert payload["fuzz"] == 0
+    assert payload["operations"] == ["update:app/main.py", "add:app/game.py"]
+    assert payload["paths"] == ["app/main.py", "app/game.py"]
+    assert (root / "app" / "main.py").read_text(encoding="utf-8") == "VALUE = 2\n"
+    assert (root / "app" / "game.py").read_text(encoding="utf-8") == (
+        "def play():\n    return True\n"
+    )
+
+
+def test_openhands_patch_supports_move_and_delete(tmp_path: Path) -> None:
+    root = _make_repository(tmp_path)
+    (root / "app" / "obsolete.py").write_text("OLD = True\n", encoding="utf-8")
+    toolbox = RepositoryToolbox(workspace=LocalGitWorkspace(root), task=_task())
+    patch = """*** Begin Patch
+*** Update File: app/main.py
+*** Move to: app/moved.py
+@@
+-VALUE = 1
++VALUE = 3
+*** Delete File: app/obsolete.py
+*** End Patch"""
+
+    result = toolbox.execute(_call("oh-move-delete", "apply_patch", {"patch": patch}))
+
+    assert result.ok is True
+    payload = json.loads(result.content)
+    assert payload["operations"] == ["update:app/moved.py", "delete:app/obsolete.py"]
+    assert payload["paths"] == ["app/main.py", "app/moved.py", "app/obsolete.py"]
+    assert not (root / "app" / "main.py").exists()
+    assert (root / "app" / "moved.py").read_text(encoding="utf-8") == "VALUE = 3\n"
+    assert not (root / "app" / "obsolete.py").exists()
+
+
+def test_openhands_patch_preflights_all_scopes_before_any_mutation(tmp_path: Path) -> None:
+    root = _make_repository(tmp_path)
+    toolbox = RepositoryToolbox(workspace=LocalGitWorkspace(root), task=_task())
+    patch = """*** Begin Patch
+*** Update File: app/main.py
+@@
+-VALUE = 1
++VALUE = 2
+*** Add File: tests/forbidden.py
++tampered = True
+*** End Patch"""
+
+    result = toolbox.execute(_call("oh-denied", "apply_patch", {"patch": patch}))
+
+    assert result.ok is False
+    assert result.error_code is ToolErrorCode.PATH_DENIED
+    assert (root / "app" / "main.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert not (root / "tests" / "forbidden.py").exists()
+
+
+def test_openhands_patch_rejects_path_escape_without_mutation(tmp_path: Path) -> None:
+    root = _make_repository(tmp_path)
+    toolbox = RepositoryToolbox(workspace=LocalGitWorkspace(root), task=_task())
+    patch = """*** Begin Patch
+*** Add File: ../escape.py
++ESCAPED = True
+*** End Patch"""
+
+    result = toolbox.execute(_call("oh-escape", "apply_patch", {"patch": patch}))
+
+    assert result.ok is False
+    assert result.error_code is ToolErrorCode.INVALID_ARGUMENTS
+    assert not (root.parent / "escape.py").exists()
+
+
+def test_openhands_patch_flag_can_roll_back_to_legacy_exact_mode(tmp_path: Path) -> None:
+    root = _make_repository(tmp_path)
+    toolbox = RepositoryToolbox(
+        workspace=LocalGitWorkspace(root),
+        task=_task(),
+        openhands_patch_enabled=False,
+    )
+    structured = toolbox.execute(
+        _call(
+            "oh-disabled",
+            "apply_patch",
+            {
+                "patch": (
+                    "*** Begin Patch\n*** Update File: app/main.py\n@@\n"
+                    "-VALUE = 1\n+VALUE = 2\n*** End Patch"
+                )
+            },
+        )
+    )
+    legacy = toolbox.execute(
+        _call(
+            "legacy-still-works",
+            "apply_patch",
+            {"path": "app/main.py", "old_text": "VALUE = 1", "new_text": "VALUE = 2"},
+        )
+    )
+
+    assert structured.ok is False
+    assert structured.error_code is ToolErrorCode.INVALID_ARGUMENTS
+    assert legacy.ok is True
+    assert (root / "app" / "main.py").read_text(encoding="utf-8") == "VALUE = 2\n"
+
+
 def test_internal_symlink_cannot_redirect_writable_path_to_readonly_file(tmp_path: Path) -> None:
     root = _make_repository(tmp_path)
     link = root / "app" / "linked_test.py"
@@ -791,3 +911,238 @@ def test_developer_agent_rejects_tool_call_fanout_before_execution(tmp_path: Pat
     assert result.tool_calls == 0
     assert not (root / "app" / "a.py").exists()
     assert not (root / "app" / "b.py").exists()
+
+def test_developer_runtime_v3_observation_does_not_count_as_budget_progress(
+    tmp_path: Path,
+) -> None:
+    root = _make_repository(tmp_path)
+    workspace = LocalGitWorkspace(root)
+    driver = FakeDriver(
+        [
+            _response(tool_calls=[_call("read-v3", "read_file", {"path": "app/main.py"})]),
+            _response(
+                tool_calls=[
+                    _call(
+                        "patch-v3",
+                        "apply_patch",
+                        {
+                            "path": "app/main.py",
+                            "old_text": "VALUE = 1",
+                            "new_text": "VALUE = 2",
+                        },
+                    )
+                ]
+            ),
+            _response(content="已修改文件: app/main.py\n已执行验证: 无\n遗留事项: 无"),
+        ]
+    )
+    developer = DeveloperAgent(
+        driver=driver,
+        model="test/developer",
+        runtime_v3_enabled=True,
+    )
+
+    result = asyncio.run(developer.run(_task(), workspace=workspace))
+
+    assert result.stop_reason is DeveloperStopReason.MODEL_STOP
+    assert result.changed_files == ["app/main.py"]
+    assert len(driver.requests) == 3
+    assert driver.requests[0].budget_progress is False
+    assert driver.requests[1].budget_progress is False
+    assert driver.requests[2].budget_progress is True
+    assert (root / "app" / "main.py").read_text(encoding="utf-8") == "VALUE = 2\n"
+
+
+def test_developer_runtime_v3_preserves_tool_recovery_liveness_credit(
+    tmp_path: Path,
+) -> None:
+    class RecordingBudgetStore:
+        def __init__(self) -> None:
+            self.credits: list[LivenessCredit] = []
+
+        async def reserve(self, **kwargs):  # type: ignore[no-untyped-def]
+            self.credits.append(kwargs["liveness_credit"])
+            return object()
+
+        async def settle(self, _reservation, _usage):  # type: ignore[no-untyped-def]
+            return None
+
+        async def cancel(self, _reservation):  # type: ignore[no-untyped-def]
+            return None
+
+    root = _make_repository(tmp_path)
+    workspace = LocalGitWorkspace(root)
+    invalid_call = ToolCall(id="bad-write-v3", name="write_file", arguments="{")
+    provider = FakeDriver(
+        [
+            _response(tool_calls=[invalid_call]),
+            _response(
+                tool_calls=[
+                    _call(
+                        "fixed-write-v3",
+                        "write_file",
+                        {"path": "app/game.py", "content": "def run():\n    return 'ok'\n"},
+                    )
+                ]
+            ),
+            _response(content="已修改文件: app/game.py\n已执行验证: 无\n遗留事项: 无"),
+        ]
+    )
+    budget_store = RecordingBudgetStore()
+    developer = DeveloperAgent(
+        driver=BudgetedAgentDriver(
+            driver=provider,
+            budget_store=budget_store,  # type: ignore[arg-type]
+            run_id=uuid4(),
+            task_id="DEV-001",
+        ),
+        model="test/developer",
+        max_iterations=6,
+        runtime_v3_enabled=True,
+    )
+
+    result = asyncio.run(developer.run(_task(), workspace=workspace))
+
+    assert result.stop_reason is DeveloperStopReason.MODEL_STOP
+    assert budget_store.credits == [
+        LivenessCredit.INITIAL_STARTUP,
+        LivenessCredit.TOOL_RECOVERY,
+        LivenessCredit.VERIFIED_PROGRESS,
+    ]
+    assert provider.requests[1].max_output_tokens == 3_200
+    assert "complete JSON object" in provider.requests[1].messages[-1].content
+
+
+def test_developer_runtime_v3_repeated_invalid_tool_call_is_terminal(
+    tmp_path: Path,
+) -> None:
+    root = _make_repository(tmp_path)
+    workspace = LocalGitWorkspace(root)
+    invalid_call = ToolCall(id="bad-v3-1", name="write_file", arguments="{")
+    driver = FakeDriver(
+        [
+            _response(tool_calls=[invalid_call]),
+            _response(tool_calls=[invalid_call.model_copy(update={"id": "bad-v3-2"})]),
+        ]
+    )
+
+    result = asyncio.run(
+        DeveloperAgent(
+            driver=driver,
+            model="test/developer",
+            max_iterations=6,
+            runtime_v3_enabled=True,
+        ).run(_task(), workspace=workspace)
+    )
+
+    assert result.stop_reason is DeveloperStopReason.REPEATED_TOOL_FAILURE
+    assert result.changed_files == []
+    assert result.tool_failure_evidence == (
+        "tool=write_file;error_code=INVALID_ARGUMENTS;arguments=invalid_json;fields=-",
+    )
+
+def test_developer_runtime_v3_repo_map_is_navigation_only(tmp_path: Path) -> None:
+    root = _make_repository(tmp_path)
+    (root / "app" / "game.py").write_text(
+        (
+            "import json\n\n"
+            "class GameEngine:\n"
+            "    def play(self):\n"
+            "        hidden_value = 42\n"
+            "        return hidden_value\n"
+        ),
+        encoding="utf-8",
+    )
+    _git(root, "add", ".")
+    _git(root, "commit", "-m", "add game module")
+    workspace = LocalGitWorkspace(root)
+    driver = FakeDriver(
+        [
+            _response(
+                tool_calls=[
+                    _call(
+                        "patch-map",
+                        "apply_patch",
+                        {
+                            "path": "app/main.py",
+                            "old_text": "VALUE = 1",
+                            "new_text": "VALUE = 2",
+                        },
+                    )
+                ]
+            ),
+            _response(content="已修改文件: app/main.py\n已执行验证: 无\n遗留事项: 无"),
+        ]
+    )
+    developer = DeveloperAgent(
+        driver=driver,
+        model="test/developer",
+        runtime_v3_enabled=True,
+        runtime_repo_map_enabled=True,
+    )
+
+    result = asyncio.run(developer.run(_task(), workspace=workspace))
+
+    assert result.stop_reason is DeveloperStopReason.MODEL_STOP
+    first_prompt = "\n".join(message.content for message in driver.requests[0].messages)
+    assert "Deterministic Repository Map" in first_prompt
+    assert "app/game.py" in first_prompt
+    assert "GameEngine" in first_prompt
+    assert "GameEngine.play" in first_prompt
+    assert "imports=json" in first_prompt
+    # RepoMap is a structural navigation index, not a hidden source dump.
+    assert "hidden_value = 42" not in first_prompt
+
+
+def test_developer_runtime_v3_condenser_keeps_only_recent_complete_tool_group(
+    tmp_path: Path,
+) -> None:
+    root = _make_repository(tmp_path)
+    workspace = LocalGitWorkspace(root)
+    reads = [
+        _call(f"read-v3-{index}", "read_file", {"path": "app/main.py"})
+        for index in range(1, 4)
+    ]
+    patch = _call(
+        "patch-v3-final",
+        "apply_patch",
+        {
+            "path": "app/main.py",
+            "old_text": "VALUE = 1",
+            "new_text": "VALUE = 2",
+        },
+    )
+    driver = FakeDriver(
+        [
+            _response(tool_calls=[reads[0]]),
+            _response(tool_calls=[reads[1]]),
+            _response(tool_calls=[reads[2]]),
+            _response(tool_calls=[patch]),
+            _response(content="已修改文件: app/main.py\n已执行验证: 无\n遗留事项: 无"),
+        ]
+    )
+    developer = DeveloperAgent(
+        driver=driver,
+        model="test/developer",
+        max_iterations=5,
+        runtime_v3_enabled=True,
+        runtime_mutation_gate_enabled=True,
+        max_retained_tool_groups=1,
+    )
+
+    result = asyncio.run(developer.run(_task(), workspace=workspace))
+
+    assert result.stop_reason is DeveloperStopReason.MODEL_STOP
+    patch_request = driver.requests[3]
+    retained_tool_messages = [
+        message for message in patch_request.messages if message.role is MessageRole.TOOL
+    ]
+    assert [message.tool_call_id for message in retained_tool_messages] == ["read-v3-3"]
+    assert any(
+        "compact working state" in message.content
+        for message in patch_request.messages
+    )
+    assert any(
+        "no workspace mutation exists yet" in message.content
+        for message in patch_request.messages
+    )

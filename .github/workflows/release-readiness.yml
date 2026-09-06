@@ -114,7 +114,7 @@ jobs:
               'DEVFLOW_DATABASE_URL': 'postgresql+psycopg://devflow:devflow@127.0.0.1:5432/devflow_release',
               'DEVFLOW_REDIS_URL': 'redis://127.0.0.1:6379/0',
               'DEVFLOW_DRAMATIQ_NAMESPACE': 'devflow-release-smoke',
-              'SILICONFLOW_API_KEY': '',
+              'DASHSCOPE_API_KEY': '',
               'DEVFLOW_GITHUB_READ_TOKEN': '',
               'DEVFLOW_GITHUB_PUBLICATION_TOKEN': '',
               'DEVFLOW_VERIFICATION_SANDBOX_IMAGE': 'devflow-verifier:py311',

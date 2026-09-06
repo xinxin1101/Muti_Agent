@@ -105,6 +105,14 @@ def build_single_task_runner(
         max_retained_tool_groups=settings.developer_max_retained_tool_groups,
         max_single_tool_result_tokens=settings.developer_max_single_tool_result_tokens,
         max_tool_results_per_turn_tokens=settings.developer_max_tool_results_per_turn_tokens,
+        runtime_v3_enabled=(
+            settings.agent_runtime_v3_enabled and settings.developer_runtime_v3_enabled
+        ),
+        runtime_mutation_gate_enabled=settings.runtime_mutation_gate_enabled,
+        runtime_repo_map_enabled=settings.runtime_repo_map_enabled,
+        runtime_event_condenser_enabled=settings.runtime_event_condenser_enabled,
+        runtime_stuck_detector_enabled=settings.runtime_stuck_detector_enabled,
+        openhands_patch_enabled=settings.openhands_patch_enabled,
     )
     reviewer = ReviewerAgent(
         driver=driver,
@@ -126,6 +134,14 @@ def build_single_task_runner(
         max_single_tool_result_tokens=settings.repair_max_single_tool_result_tokens,
         max_tool_results_per_turn_tokens=settings.repair_max_tool_results_per_turn_tokens,
         max_read_range_lines=settings.repair_max_read_range_lines,
+        runtime_v3_enabled=(
+            settings.agent_runtime_v3_enabled and settings.repair_runtime_v3_enabled
+        ),
+        runtime_mutation_gate_enabled=settings.runtime_mutation_gate_enabled,
+        runtime_import_prefetch_enabled=settings.runtime_import_prefetch_enabled,
+        runtime_event_condenser_enabled=settings.runtime_event_condenser_enabled,
+        runtime_stuck_detector_enabled=settings.runtime_stuck_detector_enabled,
+        openhands_patch_enabled=settings.openhands_patch_enabled,
     )
     return SingleTaskOrchestrator(
         developer=developer,
@@ -339,6 +355,8 @@ async def execute_task_from_settings(
                 max_retained_tool_groups=settings.developer_max_retained_tool_groups,
                 max_single_tool_result_tokens=settings.developer_max_single_tool_result_tokens,
                 max_tool_results_per_turn_tokens=settings.developer_max_tool_results_per_turn_tokens,
+                runtime_event_condenser_enabled=settings.runtime_event_condenser_enabled,
+                openhands_patch_enabled=settings.openhands_patch_enabled,
             ),
             verifier=build_verifier(settings),
             repair_root=settings.workspace_root / "integration-repairs",

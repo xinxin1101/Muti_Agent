@@ -13,7 +13,11 @@ from uuid import UUID
 from pydantic import BaseModel
 
 from app.dispatch.errors import WorkerExecutionBoundaryError
-from app.models.checkpoint import CheckpointReason, TaskCheckpoint
+from app.models.checkpoint import (
+    CheckpointReason,
+    CheckpointResumeStrategy,
+    TaskCheckpoint,
+)
 from app.models.context import ContextContinuationState
 from app.models.continuation import TaskContinuationSummary
 from app.models.developer import DeveloperStopReason
@@ -329,12 +333,23 @@ class LocalQueuedTaskExecutionBackend:
             commit_sha=commit_sha,
             changed_files=changed_files,
             reason=reason,
+            resume_strategy=self._checkpoint_resume_strategy(run_result),
             summary=(
                 "已保存当前受控代码改动；从检查点继续时会复用仓库摘要和未变更文件哈希，"
                 "仅发送改动文件哈希、验证摘要与未完成工作。"
             ),
             context_state=context_state,
         )
+
+    @staticmethod
+    def _checkpoint_resume_strategy(
+        run_result: SingleTaskRunResult,
+    ) -> CheckpointResumeStrategy:
+        """Resume from the furthest deterministic stage already reached."""
+
+        if run_result.verifications:
+            return CheckpointResumeStrategy.VERIFY_THEN_REPAIR
+        return CheckpointResumeStrategy.CONTINUE_DEVELOPMENT
 
     @staticmethod
     def _checkpoint_reason(run_result: SingleTaskRunResult) -> CheckpointReason:

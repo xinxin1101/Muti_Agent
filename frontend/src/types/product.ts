@@ -286,6 +286,24 @@ export type ProductRoleTokenUsage = Readonly<{
   call_count: number;
 }>;
 
+export type ProductModelTurnTokenObservation = Readonly<{
+  observation_id: number;
+  task_id: string;
+  role: "developer" | "repair";
+  iteration: number;
+  request_estimated_tokens: number;
+  actual_prompt_tokens: number;
+  actual_completion_tokens: number;
+  actual_total_tokens: number;
+  estimate_delta_tokens: number;
+  context_growth_tokens: number;
+  tool_argument_tokens: number;
+  write_patch_argument_tokens: number;
+  tool_result_tokens: number;
+  compacted_tool_argument_tokens: number;
+  has_real_progress: boolean;
+}>;
+
 export type ProductRunTokenBudget = Readonly<{
   total_budget_tokens: number;
   used_prompt_tokens: number;
@@ -296,6 +314,9 @@ export type ProductRunTokenBudget = Readonly<{
   roles: readonly ProductRoleTokenUsage[];
   stages?: readonly ProductStageTokenBudget[];
   work_packages?: readonly ProductWorkPackageTokenBudget[];
+  cost_observations?: readonly ProductModelTurnTokenObservation[];
+  cost_observation_count?: number;
+  cost_observations_truncated?: boolean;
 }>;
 
 export type ProductStageTokenBudget = Readonly<{

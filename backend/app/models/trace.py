@@ -71,6 +71,20 @@ class TraceBatchSpan(BaseModel):
     finish_reason: str | None = Field(default=None, max_length=128)
     tool_call_count: int | None = Field(default=None, ge=0)
     enable_thinking: bool = False
+    has_workspace_patch: bool | None = None
+    turn_made_progress: bool | None = None
+    changed_files_this_turn: tuple[str, ...] = Field(default_factory=tuple, max_length=8)
+    consecutive_mutation_turns: int = Field(default=0, ge=0)
+    same_file_mutation_streak: int = Field(default=0, ge=0)
+    convergence_nudge_triggered: bool = False
+    candidate_readiness_known: bool = False
+    candidate_ready: bool | None = None
+    missing_required_deliverables: tuple[str, ...] = Field(
+        default_factory=tuple, max_length=8
+    )
+    deliverable_progress: bool = False
+    deliverable_completion_mode: bool = False
+    deliverable_convergence_violations: int = Field(default=0, ge=0)
     tool_name: str | None = Field(default=None, min_length=1, max_length=128)
     tool_error_code: ToolErrorCode | None = None
     attempt: int | None = Field(default=None, ge=1)
@@ -187,6 +201,20 @@ class CausalTraceSpan(BaseModel):
     context_trimmed_files: int = Field(default=0, ge=0)
     context_compacted_tool_groups: int = Field(default=0, ge=0)
     enable_thinking: bool = False
+    has_workspace_patch: bool | None = None
+    turn_made_progress: bool | None = None
+    changed_files_this_turn: tuple[str, ...] = Field(default_factory=tuple, max_length=8)
+    consecutive_mutation_turns: int = Field(default=0, ge=0)
+    same_file_mutation_streak: int = Field(default=0, ge=0)
+    convergence_nudge_triggered: bool = False
+    candidate_readiness_known: bool = False
+    candidate_ready: bool | None = None
+    missing_required_deliverables: tuple[str, ...] = Field(
+        default_factory=tuple, max_length=8
+    )
+    deliverable_progress: bool = False
+    deliverable_completion_mode: bool = False
+    deliverable_convergence_violations: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def validate_correlation(self) -> CausalTraceSpan:

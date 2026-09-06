@@ -78,6 +78,8 @@ export function RunMetrics({ metrics }: { metrics: ProductRunMetrics }) {
         </dl>
       </div>
 
+      <TokenBudgetAudit metrics={metrics} />
+
       <div className="grid gap-4 xl:grid-cols-2">
         <div className="rounded-xl border border-stone-200 bg-white p-5">
           <h3 className="font-semibold text-stone-900">已接受的执行证据</h3>
@@ -128,6 +130,87 @@ export function RunMetrics({ metrics }: { metrics: ProductRunMetrics }) {
       </div>
     </section>
   );
+}
+
+function TokenBudgetAudit({ metrics }: { metrics: ProductRunMetrics }) {
+  const observations = metrics.token_budget.cost_observations ?? [];
+  const recorded = metrics.token_budget.cost_observation_count ?? observations.length;
+  if (!observations.length) {
+    return (
+      <div className="rounded-xl border border-stone-200 bg-white p-5">
+        <h3 className="font-semibold text-stone-900">Token Budget Audit</h3>
+        <p className="mt-1 text-sm text-stone-600">
+          当前运行尚无 Developer/Repair 已结算轮次。预算拒绝仍以失败证据中的 reservation
+          事实为准。
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border border-stone-200 bg-white p-5">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="font-semibold text-stone-900">Token Budget Audit</h3>
+        <span className="text-xs text-stone-500">
+          已结算 {recorded} 轮
+          {metrics.token_budget.cost_observations_truncated ? " · 仅展示最近 256 轮" : ""}
+        </span>
+      </div>
+      <p className="mt-1 text-sm text-stone-600">
+        逐轮比较请求估算与供应商实际 Prompt。正偏差表示预算估算更保守，负偏差表示实际 Prompt
+        超过请求估算；这里不伪造历史 Completion reservation。
+      </p>
+      <div className="mt-4 overflow-x-auto">
+        <table className="min-w-full text-left text-xs text-stone-600">
+          <thead className="border-b border-stone-200 text-stone-500">
+            <tr>
+              <th className="px-2 py-2 font-medium">任务 / 角色</th>
+              <th className="px-2 py-2 font-medium">轮次</th>
+              <th className="px-2 py-2 font-medium">请求估算</th>
+              <th className="px-2 py-2 font-medium">实际 Prompt</th>
+              <th className="px-2 py-2 font-medium">Completion</th>
+              <th className="px-2 py-2 font-medium">估算偏差</th>
+              <th className="px-2 py-2 font-medium">上下文增长</th>
+              <th className="px-2 py-2 font-medium">Tool 参数 / 结果</th>
+              <th className="px-2 py-2 font-medium">压缩写入</th>
+              <th className="px-2 py-2 font-medium">代码进展</th>
+            </tr>
+          </thead>
+          <tbody>
+            {observations.map((item) => (
+              <tr key={item.observation_id} className="border-b border-stone-100 last:border-0">
+                <td className="whitespace-nowrap px-2 py-2">
+                  <span className="font-mono text-stone-700">{item.task_id}</span>
+                  <span className="ml-2 text-stone-400">{roleLabel(item.role)}</span>
+                </td>
+                <td className="px-2 py-2 font-mono">{item.iteration}</td>
+                <td className="px-2 py-2 font-mono">{item.request_estimated_tokens.toLocaleString()}</td>
+                <td className="px-2 py-2 font-mono">{item.actual_prompt_tokens.toLocaleString()}</td>
+                <td className="px-2 py-2 font-mono">{item.actual_completion_tokens.toLocaleString()}</td>
+                <td className="px-2 py-2 font-mono">{formatSigned(item.estimate_delta_tokens)}</td>
+                <td className="px-2 py-2 font-mono">{item.context_growth_tokens.toLocaleString()}</td>
+                <td className="px-2 py-2 font-mono">
+                  {item.tool_argument_tokens.toLocaleString()} / {item.tool_result_tokens.toLocaleString()}
+                </td>
+                <td className="px-2 py-2 font-mono">
+                  {item.compacted_tool_argument_tokens.toLocaleString()}
+                </td>
+                <td className="px-2 py-2">{item.has_real_progress ? "是" : "否"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="mt-3 text-xs text-stone-500">
+        Tool 参数中包含 write/apply_patch 参数的 Token 计数，但不包含源码或参数正文；“压缩写入”
+        表示成功变更后从下一轮 Provider View 中移除的写入参数 Token。
+      </p>
+    </div>
+  );
+}
+
+function formatSigned(value: number): string {
+  return value > 0 ? `+${value.toLocaleString()}` : value.toLocaleString();
 }
 
 function roleLabel(role: "planner" | "developer" | "repair" | "reviewer"): string {

@@ -328,6 +328,24 @@ class ProductWorkPackageTokenBudget(ProductModel):
     status: str = Field(pattern=r"^(ACTIVE|RECLAIMED)$")
 
 
+class ProductModelTurnTokenObservation(ProductModel):
+    observation_id: int = Field(ge=1)
+    task_id: str = Field(min_length=1, max_length=128)
+    role: str = Field(pattern=r"^(developer|repair)$")
+    iteration: int = Field(ge=1)
+    request_estimated_tokens: int = Field(ge=0)
+    actual_prompt_tokens: int = Field(ge=0)
+    actual_completion_tokens: int = Field(ge=0)
+    actual_total_tokens: int = Field(ge=0)
+    estimate_delta_tokens: int
+    context_growth_tokens: int = Field(ge=0)
+    tool_argument_tokens: int = Field(ge=0)
+    write_patch_argument_tokens: int = Field(ge=0)
+    tool_result_tokens: int = Field(ge=0)
+    compacted_tool_argument_tokens: int = Field(ge=0)
+    has_real_progress: bool
+
+
 class ProductRunTokenBudget(ProductModel):
     total_budget_tokens: int = Field(default=30_000, ge=1)
     used_prompt_tokens: int = Field(default=0, ge=0)
@@ -338,6 +356,9 @@ class ProductRunTokenBudget(ProductModel):
     roles: tuple[ProductRoleTokenUsage, ...] = ()
     stages: tuple[ProductStageTokenBudget, ...] = ()
     work_packages: tuple[ProductWorkPackageTokenBudget, ...] = ()
+    cost_observations: tuple[ProductModelTurnTokenObservation, ...] = ()
+    cost_observation_count: int = Field(default=0, ge=0)
+    cost_observations_truncated: bool = False
 
 
 class ProductPlanningTokenBudget(ProductModel):

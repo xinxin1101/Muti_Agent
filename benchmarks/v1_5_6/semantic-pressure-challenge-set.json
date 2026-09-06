@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "suite_id": "devflow-p1-5-6-semantic-pressure",
+  "suite_version": "0.1.0",
+  "phase": "P1.5.6",
+  "stage": "DISCOVERY",
+  "status": "PREREGISTERED",
+  "goal": "Discover workloads where a fresh Reviewer naturally produces issue churn after a primary semantic blocker is repaired, before running Closure OFF/ON comparisons.",
+  "discovery_gate": {
+    "review_round_1": "Must identify the preregistered primary blocker and must not already report the latent churn candidate.",
+    "repair": "Deterministic repair must address the primary blocker and record exact changed files, patch hashes, delta size, and repair scope.",
+    "verification": "Deterministic Verification must pass after the repair before Reviewer round 2 is considered.",
+    "confirmed_baseline_churn": "Reviewer round 2 or later reports a preregistered PREEXISTING CHURN_TRAP that was not reported in round 1, while the original primary blocker does not recur.",
+    "not_churn": [
+      "the primary blocker recurs",
+      "Verification intercepts the repair",
+      "the later blocker was genuinely introduced by the repair",
+      "the later issue is a preregistered legitimate correctness/security/contract blocker",
+      "the later issue is not preregistered and therefore cannot be causally classified"
+    ],
+    "closure_ab_entry": "Only BASELINE_CHURN_CONFIRMED cases may enter the subsequent Closure OFF/ON experiment."
+  },
+  "reviewer_matrix": {
+    "initial_model": "qwen3.5-flash",
+    "temperature": 0.0,
+    "fresh_review_only": true,
+    "closure_context_forwarded": false,
+    "additional_models": "Add only after provider/model availability is verified; do not change case labels or gates after seeing results."
+  },
+  "cases": [
+    {
+      "case_id": "py-exception-swallow",
+      "workload": "PYTHON_BACKEND_CORRECTNESS",
+      "repair_scope": "LOCAL",
+      "primary": "A service catches a domain exception and incorrectly returns success instead of propagating failure.",
+      "latent_churn_candidate": "A nearby helper uses a needlessly broad local variable name/style concern that is non-blocking and preexists the repair.",
+      "repair_induced_blocker": "The repair can accidentally convert the exception into a different uncaught type.",
+      "changed_files": ["app/service.py"]
+    },
+    {
+      "case_id": "api-response-contract",
+      "workload": "API_CONTRACT",
+      "repair_scope": "CONTRACT_TOUCHING",
+      "primary": "A response field required by the declared API contract is omitted on one success path.",
+      "latent_churn_candidate": "A preexisting response-building helper has cosmetic duplication that is not required for compatibility.",
+      "repair_induced_blocker": "The repair can rename an existing response field and break backward compatibility.",
+      "changed_files": ["app/api.py", "app/schemas.py"]
+    },
+    {
+      "case_id": "db-transaction-rollback",
+      "workload": "DATABASE_TRANSACTION",
+      "repair_scope": "STATEFUL",
+      "primary": "A multi-step write commits an earlier mutation even when a later write fails.",
+      "latent_churn_candidate": "A preexisting repository helper has a harmless naming/structure concern outside transaction correctness.",
+      "repair_induced_blocker": "The repair can rollback correctly but accidentally suppress the original database error.",
+      "changed_files": ["app/repository.py"]
+    },
+    {
+      "case_id": "concurrency-lost-update",
+      "workload": "CONCURRENCY",
+      "repair_scope": "STATEFUL",
+      "primary": "A read-modify-write counter update has no compare-and-swap/version guard and can lose concurrent updates.",
+      "latent_churn_candidate": "A preexisting helper contains a minor micro-optimization opportunity unrelated to correctness.",
+      "repair_induced_blocker": "The repair can add a retry loop without a bound, creating a new liveness risk.",
+      "changed_files": ["app/counter.py"]
+    },
+    {
+      "case_id": "security-path-scope",
+      "workload": "SECURITY_BOUNDARY",
+      "repair_scope": "SECURITY_TOUCHING",
+      "primary": "A file operation validates the requested path before normalization, allowing a scoped-path escape.",
+      "latent_churn_candidate": "A preexisting error message is slightly inconsistent but has no security or acceptance impact.",
+      "repair_induced_blocker": "The repair can normalize paths but forget to preserve symlink boundary checks.",
+      "changed_files": ["app/files.py"]
+    },
+    {
+      "case_id": "multifile-symbol-rename",
+      "workload": "MULTI_FILE_REFACTOR",
+      "repair_scope": "CROSS_FILE",
+      "primary": "A symbol rename updates the implementation but leaves one runtime import/caller on the old name.",
+      "latent_churn_candidate": "A preexisting adjacent helper could be renamed for consistency but remains fully compatible.",
+      "repair_induced_blocker": "The repair can update the caller while breaking an exported compatibility alias.",
+      "changed_files": ["app/domain.py", "app/consumer.py", "app/__init__.py"]
+    },
+    {
+      "case_id": "deploy-env-default",
+      "workload": "CONFIG_DEPLOYMENT",
+      "repair_scope": "CONFIGURATION",
+      "primary": "Production configuration silently falls back to an unsafe development default when a required environment variable is absent.",
+      "latent_churn_candidate": "A preexisting configuration key ordering/comment concern has no runtime impact.",
+      "repair_induced_blocker": "The repair can fail closed but break the documented test/development environment fallback.",
+      "changed_files": ["app/config.py", ".env.example"]
+    },
+    {
+      "case_id": "frontend-stale-submit",
+      "workload": "FRONTEND_STATE",
+      "repair_scope": "FRONTEND_STATE",
+      "primary": "A submit handler reads stale state captured before the latest input update.",
+      "latent_churn_candidate": "A preexisting UI helper has a non-blocking naming/layout concern.",
+      "repair_induced_blocker": "The repair can read fresh state but accidentally allow duplicate submissions while pending.",
+      "changed_files": ["src/form.js"]
+    },
+    {
+      "case_id": "cross-file-schema-drift",
+      "workload": "CROSS_FILE_COMPATIBILITY",
+      "repair_scope": "CROSS_FILE",
+      "primary": "A producer emits the new schema while a consumer still assumes the old field name.",
+      "latent_churn_candidate": "A preexisting compatibility helper contains harmless duplication unrelated to the schema boundary.",
+      "repair_induced_blocker": "The repair can update the consumer while removing fallback support for old persisted records.",
+      "changed_files": ["app/producer.py", "app/consumer.py"]
+    },
+    {
+      "case_id": "repair-induced-timeout-regression",
+      "workload": "REPAIR_INDUCED_REGRESSION",
+      "repair_scope": "CROSS_FILE",
+      "primary": "A client call lacks timeout handling and can block indefinitely.",
+      "latent_churn_candidate": "A preexisting helper contains a non-blocking readability concern.",
+      "repair_induced_blocker": "The deterministic repair deliberately has a separately labeled variant that adds timeout handling but retries non-idempotent writes, which must be classified as a legitimate repair-induced blocker rather than churn.",
+      "changed_files": ["app/client.py", "app/service.py"]
+    }
+  ],
+  "reporting": {
+    "required_dimensions": ["workload", "model", "repair_scope"],
+    "required_metrics": [
+      "sample_count",
+      "evaluable_count",
+      "confirmed_churn_cases",
+      "confirmed_churn_rate",
+      "closure_ab_eligible_case_ids",
+      "inconclusive_count"
+    ],
+    "anti_cherry_pick_rule": "All preregistered cases must be reported. Cases that miss the primary or fail the causal gate remain visible as inconclusive rather than being replaced after results are observed."
+  }
+}

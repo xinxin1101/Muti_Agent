@@ -239,6 +239,8 @@ def build_product_service(
                 max_retained_tool_groups=settings.developer_max_retained_tool_groups,
                 max_single_tool_result_tokens=settings.developer_max_single_tool_result_tokens,
                 max_tool_results_per_turn_tokens=settings.developer_max_tool_results_per_turn_tokens,
+                runtime_event_condenser_enabled=settings.runtime_event_condenser_enabled,
+                openhands_patch_enabled=settings.openhands_patch_enabled,
             ),
             verifier=DeterministicVerifier(
                 command_timeout_seconds=settings.verification_sandbox_timeout_seconds,
