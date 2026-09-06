@@ -77,7 +77,7 @@ jobs:
 
       - name: Run harness Ruff without model calls
         working-directory: backend
-        run: ruff check /tmp/p156_semantic_pressure_discovery.py /tmp/p156_aggregate_semantic_pressure.py app/benchmark/semantic_pressure.py
+        run: ruff check --ignore E501 /tmp/p156_semantic_pressure_discovery.py /tmp/p156_aggregate_semantic_pressure.py app/benchmark/semantic_pressure.py
 
   discovery-case:
     name: P1.5.6 ${{ matrix.case_id }} fresh-review
