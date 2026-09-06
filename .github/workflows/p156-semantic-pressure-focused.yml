@@ -1,0 +1,49 @@
+name: P1.5.6 Semantic Pressure Focused
+
+on:
+  push:
+    branches:
+      - p156-semantic-pressure-ci-20260906
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out harness branch
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+
+      - name: Check out exact source SHA
+        run: git checkout 2ff8d396876f3afd74adaa32fd5a1953687ead36 -- backend/app/benchmark/semantic_pressure.py backend/app/benchmark/__init__.py backend/tests/test_semantic_pressure_benchmark.py benchmarks/v1_5_6/semantic-pressure-challenge-set.json
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.lock
+
+      - name: Install locked backend environment
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.lock
+          python -m pip install --no-deps -e .
+
+      - name: Run focused Ruff
+        working-directory: backend
+        run: ruff check app/benchmark/semantic_pressure.py app/benchmark/__init__.py tests/test_semantic_pressure_benchmark.py
+
+      - name: Run semantic-pressure tests
+        working-directory: backend
+        run: pytest -q tests/test_semantic_pressure_benchmark.py
+
+      - name: Validate challenge registry JSON
+        run: python -m json.tool benchmarks/v1_5_6/semantic-pressure-challenge-set.json > /dev/null
+
+      - name: Check whitespace
+        run: git diff --check
