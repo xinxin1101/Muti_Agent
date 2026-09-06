@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from enum import StrEnum
 
 from pydantic import Field, field_validator, model_validator
@@ -10,7 +9,7 @@ from app.benchmark.convergence import (
     ConvergenceIssueExpectation,
 )
 from app.benchmark.models import BenchmarkModel
-from app.models.review import ReviewDecision, ReviewIssue, ReviewOutcome
+from app.models.review import ReviewDecision, ReviewIssue
 
 
 class SemanticPressureWorkload(StrEnum):
@@ -241,6 +240,13 @@ def _classify_issue(
     return SemanticPressureIssueClass.CONFIRMED_BASELINE_CHURN
 
 
+def _count_events(
+    events: list[SemanticPressureIssueEvent],
+    issue_class: SemanticPressureIssueClass,
+) -> int:
+    return sum(event.issue_class is issue_class for event in events)
+
+
 def analyze_semantic_pressure(
     run: SemanticPressureRunInput,
 ) -> SemanticPressureRunMetrics:
@@ -269,18 +275,34 @@ def analyze_semantic_pressure(
                     message=issue.message,
                 )
             )
-            if review_round == 1 and issue_class is SemanticPressureIssueClass.INITIAL_PRIMARY:
-                if expectation_id is not None:
-                    initial_primary_ids.add(expectation_id)
+            if (
+                review_round == 1
+                and issue_class is SemanticPressureIssueClass.INITIAL_PRIMARY
+                and expectation_id is not None
+            ):
+                initial_primary_ids.add(expectation_id)
 
-    count = lambda kind: sum(event.issue_class is kind for event in events)
-    initial_primary = count(SemanticPressureIssueClass.INITIAL_PRIMARY)
-    initial_churn = count(SemanticPressureIssueClass.INITIAL_CHURN_CANDIDATE)
-    recurring_primary = count(SemanticPressureIssueClass.RECURRING_PRIMARY)
-    confirmed_churn = count(SemanticPressureIssueClass.CONFIRMED_BASELINE_CHURN)
-    legitimate_new = count(SemanticPressureIssueClass.LEGITIMATE_NEW_BLOCKER)
-    repair_induced = count(SemanticPressureIssueClass.REPAIR_INDUCED_ISSUE)
-    unregistered_new = count(SemanticPressureIssueClass.UNREGISTERED_NEW_ISSUE)
+    initial_primary = _count_events(
+        events, SemanticPressureIssueClass.INITIAL_PRIMARY
+    )
+    initial_churn = _count_events(
+        events, SemanticPressureIssueClass.INITIAL_CHURN_CANDIDATE
+    )
+    recurring_primary = _count_events(
+        events, SemanticPressureIssueClass.RECURRING_PRIMARY
+    )
+    confirmed_churn = _count_events(
+        events, SemanticPressureIssueClass.CONFIRMED_BASELINE_CHURN
+    )
+    legitimate_new = _count_events(
+        events, SemanticPressureIssueClass.LEGITIMATE_NEW_BLOCKER
+    )
+    repair_induced = _count_events(
+        events, SemanticPressureIssueClass.REPAIR_INDUCED_ISSUE
+    )
+    unregistered_new = _count_events(
+        events, SemanticPressureIssueClass.UNREGISTERED_NEW_ISSUE
+    )
 
     has_followup = len(run.reviews) >= 2
     verification_intercepted = any(
@@ -378,7 +400,9 @@ def aggregate_semantic_pressure(
         members = [item for item in metrics if item.model == model]
         buckets.append(_bucket("model", model, members))
 
-    scope_members: dict[SemanticPressureRepairScope, list[SemanticPressureRunMetrics]] = {}
+    scope_members: dict[
+        SemanticPressureRepairScope, list[SemanticPressureRunMetrics]
+    ] = {}
     for run, metric in zip(runs, metrics, strict=True):
         if not run.repair_deltas:
             continue
